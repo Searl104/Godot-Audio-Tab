@@ -7,14 +7,19 @@ extends Control
 ## edges to trim, drag the small squares at its top corners to set fades.
 ## Drag on empty space to box-select; click empty space to deselect and move the playhead.
 ## Shift adds to the selection, Ctrl toggles. Double-click a clip to audition it.
-## Ctrl+wheel zooms, Shift+wheel scrolls time, plain wheel scrolls rows.
+## Ctrl+wheel zooms, Shift+wheel scrolls time, Alt+wheel changes the row height, plain wheel scrolls rows.
 ## Drop audio files from the FileSystem dock; several files land on consecutive rows.
 
-const ROW_H := 38.0
+const ROW_H_DEFAULT := 48.0
+const ROW_H_MIN := 28.0
+const ROW_H_MAX := 160.0
 const EDGE := 6.0
 const FADE_HANDLE := 7.0
 const MIN_ROWS := 6
 const PEAKS_PER_SEC := 120.0
+
+## Height of one grid row. Alt+wheel changes it (taller rows show the waveform better).
+var row_h := ROW_H_DEFAULT
 
 enum Drag { NONE, MOVE, TRIM_L, TRIM_R, FADE_IN, FADE_OUT, MARQUEE, CLICK }
 
@@ -60,20 +65,26 @@ func _ready() -> void:
 	_update_height()
 
 
+func set_row_height(h: float) -> void:
+	row_h = clampf(h, ROW_H_MIN, ROW_H_MAX)
+	_update_height()
+	queue_redraw()
+
+
 func _update_height() -> void:
-	custom_minimum_size.y = maxi(doc.project.max_row() + 2, MIN_ROWS) * ROW_H
+	custom_minimum_size.y = maxi(doc.project.max_row() + 2, MIN_ROWS) * row_h
 
 
 ## Rows drawn: enough to fill the visible area, plus one spare below the lowest clip.
 func row_count() -> int:
-	return maxi(ceili(size.y / ROW_H), doc.project.max_row() + 2)
+	return maxi(ceili(size.y / row_h), doc.project.max_row() + 2)
 
 
 # --- Geometry -----------------------------------------------------------------
 
 ## On the timeline a clip spans its played duration, which grows when it's pitched down.
 func clip_rect(c: AWClip) -> Rect2:
-	return Rect2(view.time_to_x(c.start_sec), c.row * ROW_H + 3.0, c.play_length() * view.pixels_per_sec, ROW_H - 6.0)
+	return Rect2(view.time_to_x(c.start_sec), c.row * row_h + 3.0, c.play_length() * view.pixels_per_sec, row_h - 6.0)
 
 
 ## Fade positions in pixels from the clip's left / right edge (fades are in clip time).
@@ -85,7 +96,7 @@ func _fade_px(c: AWClip) -> Vector2:
 
 
 func row_at(y: float) -> int:
-	return maxi(0, floori(y / ROW_H))
+	return maxi(0, floori(y / row_h))
 
 
 func clip_at(pos: Vector2) -> AWClip:
@@ -120,6 +131,10 @@ func clip_zone(c: AWClip, pos: Vector2) -> String:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
+		if mb.alt_pressed and mb.pressed and (mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+			set_row_height(row_h * (1.12 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / 1.12))
+			accept_event()
+			return
 		if view.handle_wheel(mb, mb.position.x):
 			accept_event()
 			return
@@ -129,7 +144,7 @@ func _gui_input(event: InputEvent) -> void:
 					var c := clip_at(mb.position)
 					if c:
 						doc.engine.audition_clip(c)
-						doc.message.emit("Audition \"%s\" (playback not implemented yet)" % c.name)
+						doc.message.emit("Audition \"%s\"" % c.name)
 				else:
 					_press(mb)
 			else:
@@ -345,7 +360,7 @@ func _can_drop_data(at_position: Vector2, data: Variant) -> bool:
 	if files.is_empty():
 		return false
 	var t := maxf(0.0, doc.snap(view.x_to_time(at_position.x)))
-	_drop_ghost = Rect2(view.time_to_x(t), row_at(at_position.y) * ROW_H + 3.0, 1.0 * view.pixels_per_sec, files.size() * ROW_H - 6.0)
+	_drop_ghost = Rect2(view.time_to_x(t), row_at(at_position.y) * row_h + 3.0, 1.0 * view.pixels_per_sec, files.size() * row_h - 6.0)
 	queue_redraw()
 	return true
 
@@ -377,8 +392,8 @@ func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), AWTheme.bg(self))
 	for r in rows:
 		if r % 2 == 1:
-			draw_rect(Rect2(0, r * ROW_H, size.x, ROW_H), Color(1, 1, 1, 0.015))
-		draw_line(Vector2(0, (r + 1) * ROW_H - 0.5), Vector2(size.x, (r + 1) * ROW_H - 0.5), Color(0, 0, 0, 0.25))
+			draw_rect(Rect2(0, r * row_h, size.x, row_h), Color(1, 1, 1, 0.015))
+		draw_line(Vector2(0, (r + 1) * row_h - 0.5), Vector2(size.x, (r + 1) * row_h - 0.5), Color(0, 0, 0, 0.25))
 	AWTheme.draw_time_grid(self, view, 0.0, size.y)
 
 	var p := doc.project
@@ -415,7 +430,9 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	# Columns are mapped through the clip's warp, so pitched-down audio is drawn stretched.
 	var w := c.warp()
 	var key := c.source_path if c.source_path != "" else c.name
-	var peaks := doc.engine.get_waveform_peaks(key, 512)
+	var real := doc.engine.get_peaks(c.source_path, PEAKS_PER_SEC) if c.source_path != "" else PackedFloat32Array()
+	var has_real := not real.is_empty()
+	var peaks := real if has_real else doc.engine.get_waveform_peaks(key, 512)
 	var wave_top := r.position.y + 14.0
 	var wave_h := r.size.y - 15.0
 	var mid := wave_top + wave_h * 0.5
@@ -426,7 +443,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	while x < x_end:
 		var local := w.unwarp((x - r.position.x) / view.pixels_per_sec)
 		var src := local + c.source_offset_sec
-		var peak := peaks[clampi(int(src * PEAKS_PER_SEC), 0, peaks.size() - 1)] if src * PEAKS_PER_SEC < peaks.size() else 0.05
+		var peak := peaks[clampi(int(src * PEAKS_PER_SEC), 0, peaks.size() - 1)] if src * PEAKS_PER_SEC < peaks.size() else (0.0 if has_real else 0.05)
 		var g := 1.0
 		if c.fade_in_sec > 0.0 and local < c.fade_in_sec:
 			g = local / c.fade_in_sec

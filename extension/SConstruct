@@ -18,24 +18,27 @@ if not os.path.isfile("godot-cpp/SConstruct"):
 
 env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
 
-env.Append(CPPPATH=["src/"])
-env.Append(CPPDEFINES=[("AW_ENGINE_VERSION", '\\"0.1.0\\"'), ("AW_GODOT_CPP", '\\"%s\\"' % GODOT_CPP_TAG)])
+# Our own sources get a clone of the environment, so the version defines below don't change the
+# godot-cpp command lines (changing them would rebuild all of godot-cpp, minutes of work).
+aw_env = env.Clone()
+aw_env.Append(CPPPATH=["src/"])
+aw_env.Append(CPPDEFINES=[("AW_ENGINE_VERSION", '\\"0.2.0\\"'), ("AW_GODOT_CPP", '\\"%s\\"' % GODOT_CPP_TAG)])
 sources = Glob("src/*.cpp")
 
 ADDON = "../addons/audio_workstation/"
 BIN = ADDON + "bin/"
 
 if env["platform"] == "macos":
-    library = env.SharedLibrary(
+    library = aw_env.SharedLibrary(
         BIN + "libawengine.macos.{0}.framework/libawengine.macos.{0}".format(env["target"]),
         source=sources,
     )
 else:
-    library = env.SharedLibrary(BIN + "libawengine{}{}".format(env["suffix"], env["SHLIBSUFFIX"]), source=sources)
+    library = aw_env.SharedLibrary(BIN + "libawengine{}{}".format(env["suffix"], env["SHLIBSUFFIX"]), source=sources)
 
 # The .gdextension file is only installed by a build, so an unbuilt checkout never asks
 # Godot to load a library that isn't there (the plugin then shows "Engine not built").
 manifest = env.Command(ADDON + "aw_engine.gdextension", "aw_engine.gdextension", Copy("$TARGET", "$SOURCE"))
 
-env.NoCache(library)
+aw_env.NoCache(library)
 Default(library, manifest)

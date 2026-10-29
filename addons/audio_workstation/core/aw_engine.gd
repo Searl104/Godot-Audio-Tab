@@ -9,7 +9,9 @@ extends RefCounted
 ## "Engine not built" and the stubs below keep everything else working.
 ##
 ## Milestone 1: the core is detected and reachable (version, build info, test render).
-## Playback, automation and baking arrive in later milestones (see TODO(logic)).
+## Milestone 2: dry playback. Sources are decoded here (AWSourceCache), a plan of clip voices
+## is built from the project and handed to the core, and an AudioStreamPlayer fed by the core's
+## AWPreviewStream plays it. Automation, effects and baking arrive in later milestones.
 
 signal playback_state_changed(playing: bool)
 ## Emitted by the engine while playing; the UI follows it.
@@ -19,14 +21,30 @@ signal render_finished(path: String, error: int)
 const CORE_CLASS := &"AWCore"
 
 var _peak_cache := {}
+var _sources: AWSourceCache
+var _project: AWProject
+var _player: AudioStreamPlayer
+var _plan_dirty := true
+var _dirty_age := 0.0
+var _audition := false
+var _was_playing := false
+var _last_reported_frame := -1
 ## The native core instance, or null when the library isn't loaded.
 var core: Object = null
+## Set when a library is loaded but too old for this plugin (rebuild it); "" otherwise.
+var outdated_version := ""
 
 
 func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
-		core = ClassDB.instantiate(CORE_CLASS)
-		core.call("set_sample_rate", AudioServer.get_mix_rate())
+		var c: Object = ClassDB.instantiate(CORE_CLASS)
+		# A library built for an older plugin version lacks the playback methods: don't use it.
+		if c.has_method("set_plan") and c.has_method("add_source"):
+			core = c
+			core.call("set_sample_rate", AudioServer.get_mix_rate())
+			_sources = AWSourceCache.new(core)
+		else:
+			outdated_version = str(c.call("get_version"))
 
 
 func is_available() -> bool:
@@ -39,10 +57,14 @@ func get_info() -> Dictionary:
 
 
 func status_text() -> String:
-	return "Engine %s" % core.call("get_version") if core else "Engine not built"
+	if core:
+		return "Engine %s" % core.call("get_version")
+	return "Engine %s is out of date" % outdated_version if outdated_version != "" else "Engine not built"
 
 
 func status_tooltip() -> String:
+	if core == null and outdated_version != "":
+		return "The loaded engine library (version %s) is older than this plugin needs.\nRebuild it from the extension/ folder (see BUILDING.md) and restart the editor." % outdated_version
 	if core == null:
 		return "The native audio engine (GDExtension) isn't loaded.\nBuild it from the extension/ folder (see BUILDING.md), then restart the editor.\nEditing works without it; playback and export need it."
 	var i := get_info()
@@ -60,44 +82,121 @@ func render_test(frames: int, tone_hz := 0.0, gain_db := -12.0) -> PackedVector2
 	return core.call("render", frames)
 
 
-## Timing contract for the logic phase:
+## Timing contract (what the plan builder implements):
 ##   - A clip starts at clip.start_sec (project time) and plays its audio from
 ##     clip.source_offset_sec at rate 2^(pitch/12), pitch = chain.value_at(effects[0], "pitch_semitones", s).
 ##   - Its curves are evaluated at clip time s = clip.project_to_local(project_t), i.e. they run
 ##     on the clip's audio clock, slower when pitched down. Master curves use project time.
 ##   - Fades and length_sec are in clip time too; clip.end_sec() is where it ends on the timeline.
-func set_project(_project: AWProject) -> void:
-	pass # TODO(logic): build the playback graph (one player per clip, chains, master).
+## Milestone 2 plays the dry clips: offset, length, fades, pitch-as-rate, and the static Gain
+## and Pan of the Clip card. Automation of those and the effect chains arrive in milestone 3/4.
+func set_project(project: AWProject) -> void:
+	_project = project
+	_plan_dirty = true
+	_apply_loop()
 
 
 ## Called after any edit so the engine can refresh what it plays.
 func project_edited(_structural: bool) -> void:
-	pass # TODO(logic)
+	_plan_dirty = true
 
 
-func play(_from_sec: float) -> void:
-	playback_state_changed.emit(true) # TODO(logic)
+## Creates the preview player under `host` and starts it (it plays silence until the core plays).
+func attach(host: Node) -> void:
+	if core == null or _player != null:
+		return
+	var stream: AudioStream = ClassDB.instantiate(&"AWPreviewStream")
+	if stream == null:
+		return
+	stream.call("set_core", core)
+	_player = AudioStreamPlayer.new()
+	_player.name = "AWPreview"
+	_player.stream = stream
+	host.add_child(_player)
+	_player.play()
+
+
+## Called every frame by the main screen: refreshes the plan, follows the playhead.
+func process(delta: float) -> void:
+	if core == null:
+		return
+	if _plan_dirty and not _audition:
+		_dirty_age += delta
+		if _dirty_age >= 0.05:
+			_rebuild_plan()
+	var now_playing: bool = core.call("is_playing")
+	var frame: int = core.call("get_position")
+	if now_playing and not _audition and frame != _last_reported_frame:
+		_last_reported_frame = frame
+		position_changed.emit(frame / _rate())
+	if _was_playing and not now_playing:
+		if _audition:
+			_audition = false
+			_plan_dirty = true
+			_apply_loop()
+		else:
+			position_changed.emit(frame / _rate())
+			playback_state_changed.emit(false)
+	_was_playing = now_playing
+
+
+func play(from_sec: float) -> void:
+	if core == null:
+		playback_state_changed.emit(true)
+		return
+	_audition = false
+	_apply_loop()
+	_rebuild_plan()
+	core.call("play", int(round(from_sec * _rate())))
+	_was_playing = true
+	playback_state_changed.emit(true)
 
 
 func stop() -> void:
-	playback_state_changed.emit(false) # TODO(logic)
+	if core:
+		core.call("stop")
+		_was_playing = false
+		if _audition:
+			_audition = false
+			_plan_dirty = true
+			_apply_loop()
+	playback_state_changed.emit(false)
 
 
-func seek(_seconds: float) -> void:
-	pass # TODO(logic)
+func seek(seconds: float) -> void:
+	if core and not _audition:
+		core.call("seek", int(round(seconds * _rate())))
 
 
 func set_loop(_enabled: bool, _start_sec: float, _end_sec: float) -> void:
-	pass # TODO(logic)
+	_apply_loop()
 
 
-## Previews a single clip from its start (e.g. on double-click). TODO(logic)
-func audition_clip(_clip: AWClip) -> void:
-	pass
+## Previews a single clip from its start (e.g. on double-click). The project plan is restored
+## when it ends.
+func audition_clip(clip: AWClip) -> void:
+	if core == null or clip == null or clip.source_path == "":
+		return
+	var voice := _voice_for(clip, 0)
+	if voice.is_empty():
+		return
+	_audition = true
+	core.call("set_loop", false, 0, 0)
+	core.call("set_plan", [voice])
+	core.call("play", 0)
+	_was_playing = true
 
 
-## Normalised peaks (0..1), `bucket_count` buckets across the whole source file.
-## PLACEHOLDER: a deterministic impact-shaped pseudo-waveform. TODO(logic): real peaks.
+## Real peaks (0..1) of a source file, `per_second` buckets per second. Empty when the engine
+## isn't built or the file can't be decoded; callers then use the placeholder.
+func get_peaks(path: String, per_second: float) -> PackedFloat32Array:
+	if _sources == null:
+		return PackedFloat32Array()
+	return _sources.get_peaks(path, per_second)
+
+
+## Normalised placeholder peaks (0..1) used when there are no real ones. A deterministic
+## impact-shaped pseudo-waveform keyed by name.
 func get_waveform_peaks(key: String, bucket_count: int = 256) -> PackedFloat32Array:
 	var cache_key := "%s|%d" % [key, bucket_count]
 	if _peak_cache.has(cache_key):
@@ -115,17 +214,93 @@ func get_waveform_peaks(key: String, bucket_count: int = 256) -> PackedFloat32Ar
 	return peaks
 
 
-## Source length in seconds, or 0 if unknown. Only reads the imported stream's length.
+## Source length in seconds, or 0 if unknown.
 func get_source_length(path: String) -> float:
-	if path == "" or not ResourceLoader.exists(path):
-		return 0.0
-	var stream := ResourceLoader.load(path) as AudioStream
-	return stream.get_length() if stream else 0.0
+	return AWSourceCache.stream_length(path)
+
+
+## Renders [from_sec, from_sec + length_sec) of the current plan, offline. Used by tests and
+## (later) baking. Needs the native core.
+func render_preview_range(from_sec: float, length_sec: float) -> PackedVector2Array:
+	if core == null:
+		return PackedVector2Array()
+	_rebuild_plan()
+	return core.call("render_range", int(round(from_sec * _rate())), int(round(length_sec * _rate())))
 
 
 func render_wav(_path: String) -> Error:
-	return ERR_UNAVAILABLE # TODO(logic): offline render of the whole sound.
+	return ERR_UNAVAILABLE # TODO(logic): offline render of the whole sound (milestone 5).
 
 
 func render_audio_stream(_path: String) -> Error:
-	return ERR_UNAVAILABLE # TODO(logic): bake to an AudioStreamWAV resource.
+	return ERR_UNAVAILABLE # TODO(logic): bake to an AudioStreamWAV resource (milestone 5).
+
+
+# --- Plan building ---------------------------------------------------------------
+
+const RATE_STEP := 64 # frames between playback-rate table entries
+
+var _rate_cache := {} # AWClip -> [chain revision, length, PackedFloat32Array]
+
+
+func _rate() -> float:
+	return float(core.call("get_sample_rate"))
+
+
+func _apply_loop() -> void:
+	if core == null or _project == null or _audition:
+		return
+	var r := _rate()
+	core.call("set_loop", _project.loop_enabled, int(round(_project.loop_start_sec * r)),
+		int(round(_project.loop_end_sec * r)))
+
+
+func _rebuild_plan() -> void:
+	_plan_dirty = false
+	_dirty_age = 0.0
+	if core == null or _project == null:
+		return
+	var voices: Array = []
+	for clip in _project.clips:
+		if clip.muted:
+			continue
+		var v := _voice_for(clip, int(round(clip.start_sec * _rate())))
+		if not v.is_empty():
+			voices.append(v)
+	core.call("set_plan", voices)
+
+
+## One voice for the native core. start_frame is where the clip lands on the timeline.
+func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
+	var r := _rate()
+	var src: AWEffect = clip.chain.effects[0] if (clip.chain and not clip.chain.effects.is_empty()) else null
+	var rates := _rates_for(clip, r)
+	var gain_db := clip.chain.value_at(src, "gain_db", 0.0) if src else 0.0
+	var pan := clip.chain.value_at(src, "pan", 0.0) if src else 0.0
+	return {
+		"source": _sources.get_id(clip.source_path) if clip.source_path != "" else -1,
+		"start_frame": start_frame,
+		"offset": clip.source_offset_sec * r,
+		"length": clip.length_sec * r,
+		"fade_in": clip.fade_in_sec * r,
+		"fade_out": clip.fade_out_sec * r,
+		"gain": db_to_linear(gain_db),
+		"pan": pan,
+		"rates": rates,
+		"rate_step": RATE_STEP,
+	}
+
+
+func _rates_for(clip: AWClip, r: float) -> PackedFloat32Array:
+	var rev := clip.chain.revision if clip.chain else 0
+	var cached: Array = _rate_cache.get(clip, [])
+	var has_curve := false
+	if clip.chain and not clip.chain.effects.is_empty():
+		var c := clip.chain.get_curve(clip.chain.effects[0].id, "pitch_semitones")
+		has_curve = c != null and clip.chain.get_keys(c).size() >= 2
+	if has_curve and cached.size() == 3 and cached[0] == rev and is_equal_approx(cached[1], clip.length_sec):
+		return cached[2]
+	var table := AWClipWarp.rate_table(clip, clip.length_sec, RATE_STEP / r)
+	if has_curve:
+		_rate_cache[clip] = [rev, clip.length_sec, table]
+	return table
