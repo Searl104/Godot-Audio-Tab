@@ -36,6 +36,7 @@ func _ready() -> void:
 	doc.playhead_changed.connect(queue_redraw)
 	doc.transport_changed.connect(queue_redraw)
 	doc.project_changed.connect(func(_s: bool) -> void: queue_redraw())
+	doc.export_settings_changed.connect(queue_redraw)
 
 
 func _top() -> float:
@@ -147,6 +148,10 @@ func _draw() -> void:
 		draw_string(font, Vector2(x + 3, top + fs + 2), AWTimeView.format_time(i * major, major),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(c_text, 0.8))
 		i += 1
+
+	var end_sec := doc.export_end_sec()
+	if end_sec > 0.0:
+		AWTheme.draw_export_end(self, view.time_to_x(from_project.call(end_sec)), top, size.y, true)
 
 	var px: float = view.time_to_x(from_project.call(doc.playhead_sec))
 	draw_line(Vector2(px, top), Vector2(px, size.y), c_acc, 2.0)

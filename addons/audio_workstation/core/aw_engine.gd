@@ -293,24 +293,35 @@ func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
 	var fx := _clip_effects(clip, step_sec)
 	if not fx.is_empty():
 		voice["effects"] = fx
-		voice["tail_frames"] = int(_tail_sec() * r)
+		voice["tail_frames"] = int(_tail_sec() * r) if chain_rings(ch) else 0
 	return voice
 
 
 ## Effects the native engine can run so far: card name -> [type id, parameter keys in the
-## order the engine expects]. Cards of other types are skipped until they are ported.
+## order the engine expects, whether it rings on after its input stops (needs a tail)]. Cards of other types are skipped until they are ported.
 const NATIVE_EFFECTS := {
-	"Low Pass": [1, ["cutoff_hz", "resonance"]],
-	"High Pass": [2, ["cutoff_hz", "resonance"]],
-	"Band Pass": [3, ["cutoff_hz", "resonance"]],
-	"EQ": [4, ["band_db/32_hz", "band_db/100_hz", "band_db/320_hz", "band_db/1000_hz", "band_db/3200_hz", "band_db/10000_hz"]],
-	"Amplify": [5, ["volume_db"]],
+	"Low Pass": [1, ["cutoff_hz", "resonance"], true],
+	"High Pass": [2, ["cutoff_hz", "resonance"], true],
+	"Band Pass": [3, ["cutoff_hz", "resonance"], true],
+	"EQ": [4, ["band_db/32_hz", "band_db/100_hz", "band_db/320_hz", "band_db/1000_hz", "band_db/3200_hz", "band_db/10000_hz"], true],
+	"Amplify": [5, ["volume_db"], false],
 }
 
 
 ## How long effects ring on after the last clip (the Export tail setting), in seconds.
 func _tail_sec() -> float:
 	return _project.export_tail_sec if _project != null else 0.0
+
+
+## True when a chain has a card that keeps sounding after the clip ends (so it gets a tail).
+static func chain_rings(chain: AWChain) -> bool:
+	if chain == null:
+		return false
+	for i in range(1, chain.effects.size()):
+		var e: AWEffect = chain.effects[i]
+		if not e.bypass and NATIVE_EFFECTS.has(e.effect_type) and NATIVE_EFFECTS[e.effect_type][2]:
+			return true
+	return false
 
 
 ## A clip's effect chain after its Clip card. Parameter tables are over elapsed timeline time
@@ -391,7 +402,7 @@ func _master_plan() -> Dictionary:
 		fx.append({"type": info[0], "params": tables, "step": RATE_STEP})
 	if not fx.is_empty():
 		plan["effects"] = fx
-		plan["tail_frames"] = int(_tail_sec() * r)
+		plan["tail_frames"] = int(_tail_sec() * r) if chain_rings(mc) else 0
 	return plan
 
 

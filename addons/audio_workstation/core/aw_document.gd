@@ -142,9 +142,22 @@ func export_will_overwrite() -> bool:
 	return t != "" and FileAccess.file_exists(t)
 
 
-## Length of the exported file: the sound plus the tail.
+## Where the exported sound ends: the last clip's end (pitch included), plus the tail for
+## chains that ring on. Matches the engine's plan end.
+func export_end_sec() -> float:
+	var tail := project.export_tail_sec
+	var end := 0.0
+	for c in project.clips:
+		if c.muted:
+			continue
+		end = maxf(end, c.start_sec + c.play_length() + (tail if AWEngine.chain_rings(c.chain) else 0.0))
+	if AWEngine.chain_rings(project.master_chain):
+		end += tail
+	return end
+
+
 func export_length_sec() -> float:
-	return project.content_end_sec() + project.export_tail_sec
+	return export_end_sec()
 
 
 func export_size_bytes() -> int:

@@ -1216,7 +1216,24 @@ static func run(screen: AWMainScreen) -> void:
 	d.set_export_bit_depth(16)
 	var len16 := d.export_size_bytes()
 	check(len32 - 44 == 2 * (len16 - 44), "export: 32-bit float file is twice the size of 16-bit")
-	check(absf(d.export_length_sec() - (ep.content_end_sec() + 2.5)) < 0.0001, "export: length is sound + tail")
+	var no_tail := d.export_end_sec()
+	var last := 0.0
+	for ec in ep.clips:
+		last = maxf(last, ec.start_sec + ec.play_length())
+	check(absf(no_tail - last) < 0.0001, "export end: last clip end with no ringing effects (%.3f s)" % no_tail)
+	var ring := AWEffect.create("Low Pass", ep.clips[0].chain.new_effect_id())
+	ep.clips[0].chain.effects.append(ring)
+	var with_tail := d.export_end_sec()
+	check(absf(with_tail - maxf(last, ep.clips[0].start_sec + ep.clips[0].play_length() + 2.5)) < 0.0001, "export end: a ringing card adds the tail to its own clip (%.3f s)" % with_tail)
+	d.set_export_tail(5.0)
+	check(d.export_end_sec() > with_tail, "export end follows the tail setting")
+	d.set_export_tail(2.5)
+	if screen.engine.core != null:
+		screen.engine.render_preview_range(0.0, 0.01)
+		var plan_end := float(screen.engine.core.call("get_plan_end")) / AudioServer.get_mix_rate()
+		check(absf(plan_end - d.export_end_sec()) < 0.001, "export end marker equals the engine's plan end (%.4f vs %.4f s)" % [d.export_end_sec(), plan_end])
+	ep.clips[0].chain.effects.erase(ring)
+	check(absf(d.export_end_sec() - no_tail) < 0.0001, "export end: removing the card removes the tail")
 	var tmp := "user://aw_selftest_overwrite.wav"
 	d.set_export_path(tmp)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))

@@ -43,6 +43,19 @@ static func button(ctx: Control, label: String, icon_name: StringName, tip: Stri
 	return b
 
 
+const EXPORT_END := Color("#e8834a")
+
+
+## The "sound ends here" marker: a vertical line, optionally with a small flag at the top.
+static func draw_export_end(ctrl: Control, x: float, top: float, bottom: float, flag := false) -> void:
+	if x < -2.0 or x > ctrl.size.x + 2.0:
+		return
+	var xx := roundf(x) + 0.5
+	ctrl.draw_line(Vector2(xx, top), Vector2(xx, bottom), Color(EXPORT_END, 0.9), 1.5)
+	if flag:
+		ctrl.draw_colored_polygon(PackedVector2Array([Vector2(xx - 7, top), Vector2(xx + 1, top), Vector2(xx + 1, top + 9)]), EXPORT_END)
+
+
 static func dim_label(label_text: String, alpha := 0.55) -> Label:
 	var l := Label.new()
 	l.text = label_text

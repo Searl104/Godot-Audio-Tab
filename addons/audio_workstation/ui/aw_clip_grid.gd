@@ -58,6 +58,7 @@ func _ready() -> void:
 	resized.connect(func() -> void: view.set_view_width(size.x))
 	view.changed.connect(queue_redraw)
 	doc.project_changed.connect(func(_s: bool) -> void: _update_height(); queue_redraw())
+	doc.export_settings_changed.connect(queue_redraw)
 	doc.selection_changed.connect(queue_redraw)
 	doc.chain_target_changed.connect(queue_redraw)
 	doc.playhead_changed.connect(queue_redraw)
@@ -410,6 +411,12 @@ func _draw() -> void:
 	if _drag == Drag.MARQUEE:
 		draw_rect(_marquee_rect, Color(c_acc, 0.12))
 		draw_rect(_marquee_rect, Color(c_acc, 0.8), false, 1.0)
+
+	var end_sec := doc.export_end_sec()
+	if end_sec > 0.0:
+		var ex := view.time_to_x(end_sec)
+		draw_rect(Rect2(ex, 0, maxf(size.x - ex, 0.0), size.y), Color(0, 0, 0, 0.18))
+		AWTheme.draw_export_end(self, ex, 0.0, size.y)
 
 	var px := view.time_to_x(doc.playhead_sec)
 	draw_line(Vector2(px, 0), Vector2(px, size.y), c_acc, 2.0)
