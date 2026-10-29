@@ -108,9 +108,9 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
     ui/aw_curve_axis.gd             value axis + tick generation (linear / log / fader / semitones)
     ui/*                            toolbar, clip grid, curve graph + dot column, effect cards, main screen
 
-## Native engine (milestones 1 to 3)
+## Native engine (milestones 1 to 4)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
-`● Engine 0.3.1`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
+`● Engine 0.4.0`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
 than the plugin: rebuild it) and everything except sound still works. Build steps: `BUILDING.md`.
 
 **Dry playback (milestone 2).** Play, Stop, seek, loop and double-click audition now make sound.
@@ -120,7 +120,7 @@ than the plugin: rebuild it) and everything except sound still works. Build step
   Pan, pitch as a playback-rate table) and an `AudioStreamPlayer` plays the core through `AWPreviewStream`.
   The playhead is the real playback position; the sound stops by itself at its end (or loops).
 - Waveforms in the clip grid are real peaks of the source file (clips with no audio keep the placeholder).
-- Not yet: effects (milestone 4), export/bake (5), save/open (6). Clips without an audio file stay silent but still move the playhead.
+- Not yet: export/bake (5), save/open (6). Clips without an audio file stay silent but still move the playhead.
 - The decoder lag of Godot's resampler (about 2 source frames) is removed, so a source sample lands on
   the exact frame the timing model says.
 - **Automation (milestone 3).** The Gain, Pan and Pitch curves of a clip (including their LFOs) and the
@@ -134,6 +134,18 @@ than the plugin: rebuild it) and everything except sound still works. Build step
   warp. Eight layered 20 s clips with 24 curves, all with 20 Hz LFOs: plan rebuild 61 ms (it was 8.9 s in GDScript);
   an LFO edit re-samples one curve in about 7 ms.
   Edits while playing are heard within 50 ms.
+- **Effects (milestone 4, in progress).** Effect cards now run in the native engine, in chain order after the
+  Clip card (per clip) and after Output (master). Done so far: Low Pass, High Pass, Band Pass, EQ (6 bands) and
+  Amplify. The other cards (Distortion, Delay, Reverb, Compressor, Limiter, Chorus, Phaser, Stereo Enhance) are
+  skipped for now, so they don't sound yet. The DSP is our own (RBJ biquads), built to fit the engine rather than
+  matching Godot's effects.
+  - Parameters come from the same curve tables as Gain/Pan, updated every 32 frames; a curve or LFO on a cutoff
+    sweeps the filter. Clip chains read their curves on the clip's own clock; the master chain on project time.
+  - Tails: a chain keeps ringing after its clip ends for the Export tail length (Export dock, default 2.5 s), and
+    the sound's end includes it. Bypassed cards are left out.
+  - Filter memory carries across audio blocks and is cleared on a seek or loop wrap, so the first moments after a
+    jump start from silence (a short pre-roll is possible later).
+  - Resonance maps to Q: 0.35 at 0, 0.707 (flat) at 0.5, about 14 at 1.
 - Interpolation is 4-point cubic; pitching up does not anti-alias yet.
 - Alt+wheel over the clip grid changes the row height (default 48 px), so waveforms can be made larger.
 

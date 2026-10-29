@@ -16,6 +16,8 @@
 #include <mutex>
 #include <vector>
 
+#include "aw_effects.h"
+
 #include <godot_cpp/classes/animation.hpp>
 #include <godot_cpp/classes/audio_frame.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
@@ -23,6 +25,7 @@
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/packed_float64_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -55,6 +58,11 @@ public:
 		int64_t step = 64;
 		std::vector<double> cum;
 		double play_frames = 0.0; // length on the timeline (length warped to project time)
+		// Effect chain after Gain/Pan (bypassed cards are left out). Parameter tables are over
+		// elapsed project frames since the clip started. The chain keeps ringing for `tail_frames`
+		// after the clip ends.
+		std::vector<aw::EffectSpec> effects;
+		int64_t tail_frames = 0;
 
 		void prepare();
 		double warp(double s) const; // clip time -> elapsed project frames
@@ -68,6 +76,21 @@ public:
 		// i * master_step; one entry means constant.
 		std::vector<float> master;
 		int64_t master_step = 64;
+		// Master effect chain after the Output volume; tables over project frames.
+		std::vector<aw::EffectSpec> master_effects;
+		int64_t master_tail = 0;
+	};
+
+	// Effect objects and their memory for one plan. Owned by whoever renders (the audio thread
+	// for the transport, a local for offline renders), never shared.
+	struct FxRuntime {
+		std::shared_ptr<const Plan> plan;
+		std::vector<std::vector<std::unique_ptr<aw::Effect>>> voice;
+		std::vector<std::unique_ptr<aw::Effect>> master;
+		std::vector<float> scratch;
+		int64_t next = -1; // the frame the next block should start at, or -1
+		void bind(const std::shared_ptr<const Plan> &p_plan, double p_rate);
+		void reset();
 	};
 
 private:
@@ -82,6 +105,7 @@ private:
 	std::shared_ptr<const Plan> plan;
 	std::vector<std::shared_ptr<const Plan>> retired; // freed on the main thread only
 
+	FxRuntime fx; // audio thread only
 	std::atomic<bool> playing{ false };
 	std::atomic<int64_t> position{ 0 };
 	std::atomic<bool> loop_enabled{ false };
@@ -89,8 +113,10 @@ private:
 	std::atomic<int64_t> loop_end{ 0 };
 
 	std::shared_ptr<const Plan> current_plan();
-	static void render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved);
-	static void apply_master(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved);
+	static void render_voice_dry(const Voice &p_voice, int64_t p_from, int64_t p_j0, int64_t p_j1, float *r_out, int64_t p_origin);
+	static void render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved, FxRuntime *p_fx);
+	static void apply_master_gain(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved);
+	static void apply_master(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved, FxRuntime *p_fx);
 	void mix_transport(float *r_interleaved, int64_t p_frames);
 	PackedFloat32Array sample_curve_impl(const Ref<Animation> &p_anim, const Dictionary &p_spec, const double *p_times, double p_start, double p_step, int64_t p_count, int64_t p_unit) const;
 
@@ -133,8 +159,13 @@ public:
 	// (frames between table entries). Static "gain"/"pan" numbers are accepted in place of
 	// the tables. master: optional Dictionary {"gains": PackedFloat32Array, "step": int}, the
 	// Output volume over project time. Frames are at the core's sample rate.
-	// Returns the plan's last frame (content end).
+	// Effects: a voice may carry "effects": Array of {type, params: Array of PackedFloat32Array
+	// tables, step} and "tail_frames"; master takes the same as "effects" / "tail_frames".
+	// Types: 1 low pass, 2 high pass, 3 band pass, 4 EQ6, 5 amplify.
+	// Returns the plan's last frame (content end, tails included).
 	int64_t set_plan(const Array &p_voices, const Dictionary &p_master = Dictionary());
+	// The effect type ids this build can run (see above).
+	PackedInt32Array get_effect_types() const;
 	int64_t get_plan_end() const;
 
 	// --- Transport ---------------------------------------------------------------
