@@ -36,6 +36,7 @@ func _ready() -> void:
 	doc.playhead_changed.connect(queue_redraw)
 	doc.transport_changed.connect(queue_redraw)
 	doc.project_changed.connect(func(_s: bool) -> void: queue_redraw())
+	doc.export_settings_changed.connect(queue_redraw)
 
 
 func _top() -> float:
@@ -61,7 +62,12 @@ func _gui_input(event: InputEvent) -> void:
 
 func _press(pos: Vector2) -> void:
 	var p := doc.project
-	if show_loop and pos.y < LOOP_H:
+	var ex := view.time_to_x(from_project.call(doc.export_end_sec()))
+	if pos.y >= _top() and absf(pos.x - ex) <= HANDLE and doc.export_end_sec() > 0.0:
+		# The export end marker: drag to place it (this switches it from automatic to manual).
+		_orig = {"export_end_sec": p.export_end_sec}
+		_mode = "export_end"
+	elif show_loop and pos.y < LOOP_H:
 		var xs := view.time_to_x(p.loop_start_sec)
 		var xe := view.time_to_x(p.loop_end_sec)
 		_orig = {"loop_start_sec": p.loop_start_sec, "loop_end_sec": p.loop_end_sec, "loop_enabled": p.loop_enabled}
@@ -84,6 +90,8 @@ func _motion(pos: Vector2) -> void:
 	var p := doc.project
 	var t := maxf(0.0, doc.snap(view.x_to_time(pos.x)))
 	match _mode:
+		"export_end":
+			doc.preview_set(p, {"export_end_sec": clampf(to_project.call(t), 0.0, AWProject.MAX_END_SEC)})
 		"seek":
 			doc.seek(to_project.call(doc.snap(view.x_to_time(pos.x))))
 		"loop_start":
@@ -100,7 +108,9 @@ func _motion(pos: Vector2) -> void:
 
 
 func _release() -> void:
-	if _mode.begins_with("loop_"):
+	if _mode == "export_end":
+		doc.commit_drags([[doc.project, _orig]], "Set Export End")
+	elif _mode.begins_with("loop_"):
 		doc.commit_drags([[doc.project, _orig]], "Edit Loop Region")
 	_mode = ""
 
@@ -147,6 +157,10 @@ func _draw() -> void:
 		draw_string(font, Vector2(x + 3, top + fs + 2), AWTimeView.format_time(i * major, major),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(c_text, 0.8))
 		i += 1
+
+	var end_sec := doc.export_end_sec()
+	if end_sec > 0.0:
+		AWTheme.draw_export_end(self, view.time_to_x(from_project.call(end_sec)), top, size.y, true, doc.project.export_end_is_auto())
 
 	var px: float = view.time_to_x(from_project.call(doc.playhead_sec))
 	draw_line(Vector2(px, top), Vector2(px, size.y), c_acc, 2.0)

@@ -79,8 +79,6 @@ func _init(p_undo_redo: EditorUndoRedoManager, p_engine: AWEngine) -> void:
 		for c in project.clips:
 			c.invalidate_warp() # a static Pitch change alters timing too
 		engine.project_edited(structural))
-	# The tail length changes how long effects ring, so the plan has to follow.
-	export_settings_changed.connect(func() -> void: engine.project_edited(false))
 
 
 # --- Project / file stubs -----------------------------------------------------
@@ -119,9 +117,10 @@ func set_export_bit_depth(bits: int) -> void:
 	export_settings_changed.emit()
 
 
-func set_export_tail(sec: float) -> void:
-	project.export_tail_sec = clampf(sec, 0.0, 5.0)
-	export_settings_changed.emit()
+## Places the export end marker (undoable). Negative = back to automatic.
+func set_export_end(sec: float) -> void:
+	var v := -1.0 if sec < 0.0 else clampf(sec, 0.0, AWProject.MAX_END_SEC)
+	set_props(project, {"export_end_sec": v}, "Set Export End")
 
 
 func set_export_path(path: String) -> void:
@@ -142,9 +141,13 @@ func export_will_overwrite() -> bool:
 	return t != "" and FileAccess.file_exists(t)
 
 
-## Length of the exported file: the sound plus the tail.
+## Where the exported sound ends (the marker). Matches the engine's plan end.
+func export_end_sec() -> float:
+	return project.export_end_resolved()
+
+
 func export_length_sec() -> float:
-	return project.content_end_sec() + project.export_tail_sec
+	return export_end_sec()
 
 
 func export_size_bytes() -> int:

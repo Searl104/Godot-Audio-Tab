@@ -162,10 +162,13 @@ public:
 	// Effects: a voice may carry "effects": Array of {type, params: Array of PackedFloat32Array
 	// tables, step} and "tail_frames"; master takes the same as "effects" / "tail_frames".
 	// Types: 1 low pass, 2 high pass, 3 band pass, 4 EQ6, 5 amplify.
+	// master["end_frame"], when given, sets the plan's last frame (the export marker).
 	// Returns the plan's last frame (content end, tails included).
 	int64_t set_plan(const Array &p_voices, const Dictionary &p_master = Dictionary());
 	// The effect type ids this build can run (see above).
 	PackedInt32Array get_effect_types() const;
+	// Bumped when the plugin needs new behaviour from the engine (older libraries show as out of date).
+	int64_t get_api_level() const;
 	int64_t get_plan_end() const;
 
 	// --- Transport ---------------------------------------------------------------
