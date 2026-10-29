@@ -6,6 +6,7 @@
 #include <godot_cpp/godot.hpp>
 
 #include "aw_core.h"
+#include "aw_preview_stream.h"
 
 using namespace godot;
 
@@ -14,6 +15,8 @@ void initialize_aw_engine(ModuleInitializationLevel p_level) {
 		return;
 	}
 	GDREGISTER_CLASS(AWCore);
+	GDREGISTER_CLASS(AWPreviewStream);
+	GDREGISTER_CLASS(AWPreviewPlayback);
 }
 
 void uninitialize_aw_engine(ModuleInitializationLevel p_level) {

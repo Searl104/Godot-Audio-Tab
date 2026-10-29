@@ -415,7 +415,9 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	# Columns are mapped through the clip's warp, so pitched-down audio is drawn stretched.
 	var w := c.warp()
 	var key := c.source_path if c.source_path != "" else c.name
-	var peaks := doc.engine.get_waveform_peaks(key, 512)
+	var real := doc.engine.get_peaks(c.source_path, PEAKS_PER_SEC) if c.source_path != "" else PackedFloat32Array()
+	var has_real := not real.is_empty()
+	var peaks := real if has_real else doc.engine.get_waveform_peaks(key, 512)
 	var wave_top := r.position.y + 14.0
 	var wave_h := r.size.y - 15.0
 	var mid := wave_top + wave_h * 0.5
@@ -426,7 +428,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	while x < x_end:
 		var local := w.unwarp((x - r.position.x) / view.pixels_per_sec)
 		var src := local + c.source_offset_sec
-		var peak := peaks[clampi(int(src * PEAKS_PER_SEC), 0, peaks.size() - 1)] if src * PEAKS_PER_SEC < peaks.size() else 0.05
+		var peak := peaks[clampi(int(src * PEAKS_PER_SEC), 0, peaks.size() - 1)] if src * PEAKS_PER_SEC < peaks.size() else (0.0 if has_real else 0.05)
 		var g := 1.0
 		if c.fade_in_sec > 0.0 and local < c.fade_in_sec:
 			g = local / c.fade_in_sec

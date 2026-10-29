@@ -63,7 +63,9 @@ func _ready() -> void:
 	chain_panel.custom_minimum_size.y = 220
 	vsplit.add_child(chain_panel)
 
-	_status = AWTheme.dim_label("Audio Workstation: interface preview (no audio engine attached yet)", 0.6)
+	engine.attach(self)
+	_status = AWTheme.dim_label(("Audio Workstation: engine %s, dry playback" % engine.core.call("get_version"))
+		if engine.is_available() else "Audio Workstation: engine not built, so there is no sound (see BUILDING.md)", 0.6)
 	add_child(_status)
 	doc.message.connect(func(t: String) -> void: _status.text = t)
 
@@ -88,6 +90,7 @@ func _make_reserved_column() -> Control:
 
 
 func _process(delta: float) -> void:
+	engine.process(delta)
 	if is_visible_in_tree():
 		doc.tick_preview(delta)
 

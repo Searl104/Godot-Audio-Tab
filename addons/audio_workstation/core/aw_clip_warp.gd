@@ -51,6 +51,27 @@ static func build(clip: AWClip) -> AWClipWarp:
 	return w
 
 
+## Playback rate over the clip's audio time, for the native core. Entry i is the rate at
+## audio time i * step_sec. A single entry means a constant rate. The table covers 0..length_sec
+## (plus one entry), matching what build() integrates, so both give the same timing.
+static func rate_table(clip: AWClip, length_sec: float, step_sec: float) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	var ch := clip.chain
+	var src: AWEffect = ch.effects[0] if (ch and not ch.effects.is_empty()) else null
+	if src == null:
+		out.append(1.0)
+		return out
+	var curve := ch.get_curve(src.id, "pitch_semitones")
+	if curve == null or ch.get_keys(curve).size() < 2:
+		out.append(rate_for(ch.value_at(src, "pitch_semitones", 0.0)))
+		return out
+	var n := int(ceilf(length_sec / step_sec)) + 2
+	out.resize(n)
+	for i in n:
+		out[i] = rate_for(ch.sample(curve, i * step_sec))
+	return out
+
+
 static func rate_for(semitones: float) -> float:
 	return pow(2.0, semitones / 12.0)
 

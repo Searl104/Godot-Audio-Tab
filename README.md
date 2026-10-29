@@ -1,4 +1,4 @@
-# Audio Workstation for Godot 4.7+ (developed against 4.8 beta) (interface phase, v0.7: native engine scaffold)
+# Audio Workstation for Godot 4.7+ (developed against 4.8 beta) (interface phase, v0.8: dry playback)
 
 An **Audio** main-screen tab for designing sound effects: layer clips on a free grid,
 give each clip (and the master) an effect chain, and shape any parameter with Bezier
@@ -108,18 +108,28 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
     ui/aw_curve_axis.gd             value axis + tick generation (linear / log / fader / semitones)
     ui/*                            toolbar, clip grid, curve graph + dot column, effect cards, main screen
 
-## Native engine (milestone 1)
+## Native engine (milestones 1 and 2)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
-`● Engine 0.1.0`; without it, `○ Engine not built` and everything else still works.
-`AWCore` currently only reports its build info, holds the sample rate and renders silence or a test tone
-(proves the build, load and call path on each platform). Build steps: `BUILDING.md`. CI builds Linux,
-Windows and macOS (`.github/workflows/build-engine.yml`). Mixing, effects and baking arrive in milestones 2 to 6
-(see `claude/audio-engine-plan.md` in the project).
+`● Engine 0.2.0`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
+than the plugin: rebuild it) and everything except sound still works. Build steps: `BUILDING.md`.
+
+**Dry playback (milestone 2).** Play, Stop, seek, loop and double-click audition now make sound.
+- `AWSourceCache` decodes files with Godot's own decoders (WAV, Ogg, MP3, imported resources, or raw files
+  by path) and hands stereo frames at the audio mix rate to the core.
+- `AWEngine` builds a plan of clip voices from the project (start, offset, length, fades, static Gain and
+  Pan, pitch as a playback-rate table) and an `AudioStreamPlayer` plays the core through `AWPreviewStream`.
+  The playhead is the real playback position; the sound stops by itself at its end (or loops).
+- Waveforms in the clip grid are real peaks of the source file (clips with no audio keep the placeholder).
+- Not yet: curve automation of Gain/Pan/Pitch beyond the pitch rate table (milestone 3), effects (4),
+  export/bake (5), save/open (6). Clips without an audio file stay silent but still move the playhead.
+- The decoder lag of Godot's resampler (about 2 source frames) is removed, so a source sample lands on
+  the exact frame the timing model says.
+- Interpolation is 4-point cubic; pitching up does not anti-alias yet.
 
 ## Placeholders (search for TODO(logic))
-- `AWEngine`: playback, seek, loop, audition, `render_wav` and `render_audio_stream` are stubs.
-- Waveforms are a fake pattern (`AWEngine.get_waveform_peaks`).
-- `AWDocument.tick_preview` is a fake clock that moves the playhead.
+- `AWEngine`: `render_wav` and `render_audio_stream` are stubs (milestone 5).
+- Without the native engine, waveforms are a fake pattern (`AWEngine.get_waveform_peaks`) and
+  `AWDocument.tick_preview` is a fallback clock that moves the playhead.
 - Save, Open and both exports only post a status message.
 
 ## Verified

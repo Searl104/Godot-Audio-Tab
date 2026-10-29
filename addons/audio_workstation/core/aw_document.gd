@@ -66,6 +66,11 @@ func _init(p_undo_redo: EditorUndoRedoManager, p_engine: AWEngine) -> void:
 	engine.position_changed.connect(func(s: float) -> void:
 		playhead_sec = s
 		playhead_changed.emit())
+	# The engine can stop on its own (end of the sound), so follow its state.
+	engine.playback_state_changed.connect(func(p: bool) -> void:
+		if p != playing:
+			playing = p
+			transport_changed.emit())
 	timeline_view.content_end = func() -> float: return project.content_end_sec() + 1.0
 	curve_view.content_end = func() -> float: return curve_domain_end_view() + 0.5
 	project_changed.connect(func(structural: bool) -> void:
@@ -241,10 +246,10 @@ func toggle_loop() -> void:
 	set_props(project, {"loop_enabled": not project.loop_enabled}, "Toggle Loop")
 
 
-## PLACEHOLDER clock so the playhead moves in the UI. TODO(logic): remove; the engine
-## drives the position through AWEngine.position_changed.
+## Fallback clock so the playhead still moves when the native engine isn't built. With the
+## engine, the position comes from AWEngine.position_changed instead.
 func tick_preview(delta: float) -> void:
-	if not playing:
+	if not playing or engine.is_available():
 		return
 	playhead_sec += delta
 	var end := project.loop_end_sec if project.loop_enabled else project.content_end_sec()
