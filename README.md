@@ -180,3 +180,12 @@ than the plugin: rebuild it) and everything except sound still works. Build step
 - Undo and Redo are toolbar buttons. Ctrl+Z from this tab is not wired or tested.
 - Projects save as `.tres`/`.res`. A custom `.sfx`-style extension needs a ResourceFormatSaver/Loader.
 - The reserved column is a placeholder.
+
+## Effect panels and the control kit (v0.11)
+
+Effects can have a custom detail panel. It opens in the **Audio Effect** dock (bottom by default; double-click a card's header or use ⋮ > Open Panel). Low Pass and EQ have panels so far; every other effect keeps its generic parameter rows.
+
+- `ui/kit/aw_binding.gd`: `AWParamBinding` is the only thing a control uses to edit a parameter (undo, live preview, curve dot state, right-click menu, one undo step for multi-parameter drags).
+- `ui/kit/`: `AWKnob`, `AWFader`, `AWResponsePlot` (log-frequency plot with draggable handles). Gestures: drag, Shift = fine, wheel, double-click = reset, right-click = curve options. A driven parameter shows a yellow dotted ring and a click selects its curve.
+- `ui/kit/aw_panel_registry.gd`: effect type to panel. To add one, subclass `AWEffectPanel` (`ui/panels/`), register it there.
+- `core/aw_filter_response.gd`: the drawn response mirrors the engine's biquads; the self-test compares it with the engine's measured output.

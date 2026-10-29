@@ -21,6 +21,8 @@ signal message(text: String)
 signal lfo_panel_changed
 ## Export bit depth, tail or file name changed (not a sound edit, so no plan rebuild).
 signal export_settings_changed
+## The effect shown in the detail panel dock changed (or was closed).
+signal detail_changed
 
 enum ChainTab { MASTER, CLIP }
 enum CurveTime { CLIP, PROJECT }
@@ -738,6 +740,19 @@ func move_effect(chain: AWChain, e: AWEffect, new_index: int) -> void:
 	if old == target:
 		return
 	_do_undo("Reorder Effect", _apply_move_effect.bind(chain, e, target), _apply_move_effect.bind(chain, e, old))
+
+
+var detail_chain: AWChain
+var detail_effect: AWEffect
+
+
+## Shows an effect's custom panel in the Audio Effect dock (null closes it).
+func open_detail(chain: AWChain, e: AWEffect) -> void:
+	if detail_effect == e and detail_chain == chain:
+		return
+	detail_chain = chain
+	detail_effect = e
+	detail_changed.emit()
 
 
 func reset_effect(chain: AWChain, e: AWEffect) -> void:

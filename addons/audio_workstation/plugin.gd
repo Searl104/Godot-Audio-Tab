@@ -6,6 +6,7 @@ const MainScreen := preload("res://addons/audio_workstation/ui/aw_main_screen.gd
 
 var _main_screen: MainScreen
 var _export_dock: EditorDock
+var _detail_dock: EditorDock
 
 
 func _enter_tree() -> void:
@@ -21,10 +22,24 @@ func _enter_tree() -> void:
 	_export_dock.custom_minimum_size = Vector2(260, 0)
 	_export_dock.add_child(_main_screen.export_panel)
 	add_dock(_export_dock)
+	# A custom effect panel (Low Pass, EQ ...) opens in its own dock, by default at the bottom.
+	_detail_dock = EditorDock.new()
+	_detail_dock.title = "Audio Effect"
+	_detail_dock.layout_key = "audio_workstation_effect"
+	_detail_dock.default_slot = EditorDock.DOCK_SLOT_BOTTOM
+	_detail_dock.add_child(_main_screen.detail_panel)
+	add_dock(_detail_dock)
+	_main_screen.doc.detail_changed.connect(func() -> void:
+		if _main_screen.doc.detail_effect and _detail_dock:
+			_detail_dock.make_visible())
 	_make_visible(false)
 
 
 func _exit_tree() -> void:
+	if _detail_dock:
+		remove_dock(_detail_dock)
+		_detail_dock.queue_free()
+		_detail_dock = null
 	if _export_dock:
 		remove_dock(_export_dock)
 		_export_dock.queue_free()

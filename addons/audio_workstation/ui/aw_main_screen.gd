@@ -15,6 +15,7 @@ var timeline: AWTimelinePane
 var curves: AWCurvePane
 var chain_panel: AWChainPanel
 var export_panel: AWExportPanel
+var detail_panel: AWEffectDetail
 
 var _status: Label
 var _dialog: FileDialog
@@ -60,6 +61,8 @@ func _ready() -> void:
 	export_panel = AWExportPanel.new()
 	export_panel.setup(doc)
 	export_panel.browse_requested.connect(func() -> void: _on_request("export_browse"))
+	detail_panel = AWEffectDetail.new()
+	detail_panel.setup(doc)
 	vsplit.add_child(top)
 
 	chain_panel = AWChainPanel.new()

@@ -734,6 +734,160 @@ static func sampler_tests(_screen: AWMainScreen) -> void:
 	check(AWSampler.calls == calls1 + 1, "key edit re-samples only that curve, not the clip's other curves (%d call)" % [AWSampler.calls - calls1])
 
 
+static func _measured_db(core: Object, hz: float, effects: Array) -> float:
+	return 20.0 * log(maxf(_through(core, hz, effects), 1e-9) / 0.5) / log(10.0)
+
+
+## Screenshot with the Audio Effect dock showing the panel.
+static func _panel_shot(tree: SceneTree, _d: AWDocument, _ch: AWChain, _e: AWEffect, name: String) -> void:
+	await frames(tree, 3)
+	await shot(tree, name)
+
+
+static func panel_tests(screen: AWMainScreen) -> void:
+	var tree := screen.get_tree()
+	var d := screen.doc
+	var ch := d.project.clips[3].chain
+	var sr := AudioServer.get_mix_rate()
+
+	# The drawn response is the engine's response.
+	check(absf(AWFilterResponse.lowpass_db(1000.0, 1000.0, 0.5, sr) + 3.01) < 0.05, "response: low pass is -3 dB at the cutoff")
+	check(AWFilterResponse.lowpass_db(10000.0, 1000.0, 0.5, sr) < -35.0, "response: 12 dB/oct, 10x the cutoff is below -35 dB")
+	check(absf(AWFilterResponse.q_to_resonance(AWFilterResponse.resonance_to_q(0.8)) - 0.8) < 0.001, "response: resonance <-> Q round trip")
+	var gains := PackedFloat32Array([0, 0, 0, 6, 0, 0])
+	check(absf(AWFilterResponse.eq_db(1000.0, gains, sr) - 6.0) < 0.01, "response: EQ +6 dB reads +6 dB at its band")
+	var e := AWEngine.new()
+	e.set_project(AWProject.new())
+	if e.core != null:
+		var core: Object = e.core
+		core.call("set_sample_rate", float(sr))
+		var worst := 0.0
+		for hz: float in [300.0, 800.0, 1500.0, 3000.0]:
+			var want := AWFilterResponse.lowpass_db(hz, 1000.0, 0.8, sr)
+			worst = maxf(worst, absf(_measured_db(core, hz, [_fx(1, [1000.0, 0.8])]) - want))
+		check(worst < 0.5, "response vs engine: low pass within %.2f dB" % worst)
+		var g2 := [3.0, -4.0, 5.0, 8.0, -6.0, 2.0]
+		var g2p := PackedFloat32Array(g2)
+		worst = 0.0
+		for hz: float in [60.0, 200.0, 640.0, 2000.0, 6000.0]:
+			worst = maxf(worst, absf(_measured_db(core, hz, [_fx(4, g2)]) - AWFilterResponse.eq_db(hz, g2p, sr)))
+		check(worst < 0.5, "response vs engine: EQ within %.2f dB" % worst)
+
+	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and not AWPanelRegistry.has_panel("Reverb"), "registry: panels for Low Pass and EQ only")
+	check(AWPanelRegistry.create("Reverb") == null, "registry: no panel falls back to the generic rows")
+
+	# --- Low Pass ---
+	var undo_base := 0
+	var lp := d.add_effect(ch, "Low Pass")
+	undo_base += 1
+	await frames(tree, 4)
+	var card: AWEffectCard = screen.chain_panel._cards.back()
+	check(card.effect == lp and card._thumb != null and card._thumb.response.size() == 96, "Low Pass card has a response thumbnail")
+	check(card.rows.size() == 2, "the card keeps its generic rows too")
+	d.open_detail(ch, lp)
+	await frames(tree, 2)
+	if OS.get_environment("AW_SHOTS") != "":
+		d.set_param(lp, "resonance", 0.72)
+		await _panel_shot(tree, d, ch, lp, "aw_panel_lowpass.png")
+		d.undo()
+	var host := screen.detail_panel
+	var lpp := host.panel as AWLowPassPanel
+	check(lpp != null and lpp.effect == lp and host._title.text == "Low Pass", "detail dock shows the Low Pass panel")
+	lpp.plot.size = Vector2(420, 260)
+	lpp.refresh()
+	check(lpp.plot.handles.size() == 1 and absf(lpp.plot.handles[0].f - 2000.0) < 0.5, "handle sits at the 2 kHz cutoff")
+	var h0: Dictionary = lpp.plot.handles[0]
+	var from := Vector2(lpp.plot.x_of(h0.f), lpp.plot.y_of(h0.db))
+	var to := Vector2(lpp.plot.x_of(4000.0), lpp.plot.y_of(12.0))
+	drag(lpp.plot, from, to)
+	check(absf(lp.get_param("cutoff_hz") - 4000.0) < 120.0, "dragging the handle sets the cutoff (%.0f Hz)" % lp.get_param("cutoff_hz"))
+	check(lp.get_param("resonance") > 0.7, "dragging the handle up raises resonance (%.2f)" % lp.get_param("resonance"))
+	d.undo()
+	check(lp.get_param("cutoff_hz") == 2000.0 and lp.get_param("resonance") == 0.5, "one undo restores cutoff and resonance together")
+	var k := lpp.cutoff_knob
+	k.size = k.custom_minimum_size
+	var c0 := lp.get_param("cutoff_hz")
+	click(k, Vector2(40, 40))
+	move(k, Vector2(40, -20))
+	click(k, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	var up := lp.get_param("cutoff_hz")
+	check(up > c0 * 2.0, "knob drag up raises the cutoff on a log scale (%.0f Hz)" % up)
+	d.undo()
+	click(k, Vector2(40, 40))
+	move(k, Vector2(40, -20), true)
+	click(k, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	var fine := lp.get_param("cutoff_hz")
+	check(fine > c0 and fine < up, "Shift drags finely (%.0f Hz vs %.0f Hz)" % [fine, up])
+	d.undo()
+	d.set_param(lp, "cutoff_hz", 6000.0)
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, true)
+	check(lp.get_param("cutoff_hz") == 2000.0, "double-click resets to the default")
+	d.undo(); d.undo()
+	check(lp.get_param("cutoff_hz") == 2000.0, "undo walks back through the knob edits")
+
+	# A curve takes over the knob; the other axis of the handle still works.
+	var cc := d.make_curve(ch, lp, "cutoff_hz")
+	await frames(tree, 2)
+	lpp.refresh()
+	check(k.binding.has_curve(), "cutoff knob knows it is driven by a curve")
+	var before := lp.get_param("cutoff_hz")
+	click(k, Vector2(40, 40))
+	move(k, Vector2(40, -20))
+	click(k, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	check(lp.get_param("cutoff_hz") == before and d.active_curve == cc, "dragging a driven knob selects its curve instead of editing")
+	var hd: Dictionary = lpp.plot.handles[0]
+	check(hd.driven, "the handle shows it is driven")
+	var r0 := lp.get_param("resonance")
+	drag(lpp.plot, Vector2(lpp.plot.x_of(hd.f), lpp.plot.y_of(hd.db)), Vector2(lpp.plot.x_of(hd.f), lpp.plot.y_of(hd.db - 10.0)))
+	check(lp.get_param("cutoff_hz") == before and lp.get_param("resonance") != r0, "driven cutoff stays put while resonance is dragged")
+	d.undo()
+	d.remove_curve(ch, cc)
+	k.binding.on_menu(1)
+	check(k.binding.has_curve(), "menu > Make Curve works from a kit control")
+	d.undo()
+	d.remove_effect(ch, lp)
+	await frames(tree, 2)
+	check(d.detail_effect == null and host.panel == null, "removing the effect closes its panel")
+
+	# --- EQ ---
+	var eq := d.add_effect(ch, "EQ")
+	await frames(tree, 4)
+	d.open_detail(ch, eq)
+	await frames(tree, 2)
+	if OS.get_environment("AW_SHOTS") != "":
+		await _panel_shot(tree, d, ch, eq, "aw_panel_eq.png")
+	var ep := host.panel as AWEQPanel
+	check(ep != null and ep.faders.size() == 6 and ep.plot.handles.size() == 6, "EQ panel has six faders and six handles")
+	ep.plot.size = Vector2(500, 200)
+	ep.refresh()
+	var hp := Vector2(ep.plot.x_of(1000.0), ep.plot.y_of(0.0))
+	drag(ep.plot, hp, Vector2(hp.x + 80.0, ep.plot.y_of(9.0)))
+	var g3 := eq.get_param("band_db/1000_hz")
+	check(absf(g3 - 9.0) < 0.6 and ep.selected == 3, "dragging a band handle sets only its gain (%.1f dB)" % g3)
+	check(eq.get_param("band_db/320_hz") == 0.0, "other bands are untouched")
+	check(absf(ep.plot.response[ep.plot.response.size() - 1] - AWFilterResponse.eq_db(20000.0, ep._gains(), sr)) < 0.01, "plot shows the live response")
+	d.undo()
+	check(eq.get_param("band_db/1000_hz") == 0.0, "undo restores the band")
+	var f1 := ep.faders[1]
+	f1.size = Vector2(40, 110)
+	var y0 := f1._y_of(0.0)
+	click(f1, Vector2(20, y0))
+	move(f1, Vector2(20, y0 - 20))
+	click(f1, Vector2(20, y0 - 20), MOUSE_BUTTON_LEFT, false)
+	check(eq.get_param("band_db/100_hz") > 4.0 and ep.selected == 1, "fader drag raises its band and selects it (%.1f dB)" % eq.get_param("band_db/100_hz"))
+	click(f1, Vector2(20, y0), MOUSE_BUTTON_LEFT, true, true)
+	check(eq.get_param("band_db/100_hz") == 0.0, "double-click resets a fader")
+	var ec := d.make_curve(ch, eq, "band_db/320_hz")
+	await frames(tree, 2)
+	ep.refresh()
+	check(ep.faders[2].binding.has_curve() and ep.plot.handles[2].driven, "a band with a curve is shown as driven")
+	d.undo()
+	d.remove_effect(ch, eq)
+	await frames(tree, 2)
+	check(not ch.effects.has(eq), "panel tests leave the chain as they found it")
+	d.open_detail(null, null)
+
+
 static func get_process_delta(tree: SceneTree) -> float:
 	return maxf(1.0 / 60.0, get_delta_guess(tree))
 
@@ -1140,6 +1294,8 @@ static func run(screen: AWMainScreen) -> void:
 	check(lp_card.effect == lp and lp_card.rows[0]._slider.exp_edit, "cutoff slider is logarithmic")
 	d.undo(); d.undo(); d.undo(); d.undo()
 	check(not ch.effects.has(lp), "undo back to before Low Pass")
+	print("--- control kit and effect panels ---")
+	await panel_tests(screen)
 	if shots:
 		var lp2 := d.add_effect(ch, "Low Pass")
 		var c2v := d.make_curve(ch, lp2, "cutoff_hz")

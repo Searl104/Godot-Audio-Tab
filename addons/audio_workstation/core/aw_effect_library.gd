@@ -73,7 +73,7 @@ const EFFECTS := {
 		},
 	},
 	"Low Pass": {
-		"godot_class": "AudioEffectLowPassFilter",
+		"godot_class": "AudioEffectLowPassFilter", "color": "#4f9edb",
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 2000.0, 1.0, "Hz", "Cutoff"],
 			"resonance": [0.0, 1.0, 0.5, 0.01, "", "Resonance"],
@@ -94,7 +94,7 @@ const EFFECTS := {
 		},
 	},
 	"EQ": {
-		"godot_class": "AudioEffectEQ6",
+		"godot_class": "AudioEffectEQ6", "color": "#5ec26a",
 		"params": {
 			"band_db/32_hz": [-60.0, 24.0, 0.0, 0.1, "dB", "32 Hz"],
 			"band_db/100_hz": [-60.0, 24.0, 0.0, 0.1, "dB", "100 Hz"],
@@ -206,5 +206,7 @@ static func format_value(effect: String, param: String, value: float) -> String:
 static func effect_color(effect: String) -> Color:
 	if is_fixed(effect):
 		return Color("#9aa4b2")
+	if EFFECTS.has(effect) and EFFECTS[effect].has("color"):
+		return Color(EFFECTS[effect]["color"])
 	var idx := EFFECTS.keys().find(effect)
 	return Color.from_hsv(fmod(float(maxi(idx, 0)) * 0.13, 1.0), 0.45, 0.85)
