@@ -1,4 +1,4 @@
-# Audio Workstation for Godot 4.7+ (interface phase, v0.7: native engine scaffold)
+# Audio Workstation for Godot 4.7+ (developed against 4.8 beta) (interface phase, v0.7: native engine scaffold)
 
 An **Audio** main-screen tab for designing sound effects: layer clips on a free grid,
 give each clip (and the master) an effect chain, and shape any parameter with Bezier

@@ -1,7 +1,9 @@
 # Building the audio engine
 
 The Audio Workstation's native engine is a GDExtension in `extension/`. It's built with
-godot-cpp 10.0.0-stable against the Godot 4.7 API. The plugin works without it (editing,
+godot-cpp 10.0.0-stable against the Godot 4.7 API. godot-cpp 10.0.0 has no 4.8 API file yet, and a 4.7-API extension
+loads on later Godot versions, so one build serves 4.7 and 4.8. It has been loaded and called on
+Godot 4.8 beta 2 (`compatibility_minimum` stays 4.7). The plugin works without it (editing,
 undo, curves), but playback and export need it. The toolbar shows **Engine x.y.z** when it's
 loaded, or **Engine not built** when it isn't.
 
