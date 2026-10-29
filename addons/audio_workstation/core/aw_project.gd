@@ -18,6 +18,14 @@ const CLIP_COLORS := [
 @export var clips: Array[AWClip] = []
 @export var master_chain: AWChain
 
+@export_group("Export")
+## 16 or 32 (32 = float).
+@export_enum("16-bit:16", "32-bit float:32") var export_bit_depth: int = 16
+## Silence kept after the last clip so effect tails can ring out.
+@export_range(0.0, 5.0, 0.1) var export_tail_sec: float = 2.5
+## Relative to res:// (or an absolute path).
+@export var export_path: String = "assets/sfx/jump.wav"
+
 
 func content_end_sec() -> float:
 	var end := length_sec

@@ -14,6 +14,7 @@ var engine: AWEngine
 var timeline: AWTimelinePane
 var curves: AWCurvePane
 var chain_panel: AWChainPanel
+var export_panel: AWExportPanel
 
 var _status: Label
 var _dialog: FileDialog
@@ -56,6 +57,10 @@ func _ready() -> void:
 	hsplit.add_child(timeline)
 	hsplit.add_child(curves)
 	top.add_child(hsplit)
+	export_panel = AWExportPanel.new()
+	export_panel.setup(doc)
+	export_panel.browse_requested.connect(func() -> void: _on_request("export_browse"))
+	top.add_child(export_panel)
 	vsplit.add_child(top)
 
 	chain_panel = AWChainPanel.new()
@@ -163,6 +168,10 @@ func _on_request(action: String) -> void:
 			_dialog.title = "Export WAV"
 			_dialog.access = FileDialog.ACCESS_FILESYSTEM
 			_dialog.add_filter("*.wav", "WAV")
+		"export_browse":
+			_dialog.title = "Export To"
+			_dialog.access = FileDialog.ACCESS_RESOURCES
+			_dialog.add_filter("*.wav", "WAV")
 		"export_stream":
 			_dialog.title = "Export as AudioStream"
 			_dialog.add_filter("*.tres, *.res", "AudioStreamWAV resource")
@@ -176,4 +185,5 @@ func _on_dialog_path(path: String) -> void:
 			doc.project_path = path
 			doc.save_project(path)
 		"export_wav": doc.export_wav(path)
+		"export_browse": doc.set_export_path(path.trim_prefix("res://"))
 		"export_stream": doc.export_audio_stream(path)

@@ -81,11 +81,6 @@ func _ready() -> void:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(spacer)
 	add_child(_engine_chip())
-	var export := Button.new()
-	export.text = "Export WAV"
-	export.focus_mode = Control.FOCUS_NONE
-	export.pressed.connect(func() -> void: request.emit("export_wav"))
-	add_child(export)
 
 	doc.transport_changed.connect(_sync)
 	doc.project_changed.connect(func(_s: bool) -> void: _sync())

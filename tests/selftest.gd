@@ -1022,6 +1022,36 @@ static func run(screen: AWMainScreen) -> void:
 	(shape_btns[1] as Button).pressed.emit()
 	check(lf.shape == AWLfo.Shape.TRIANGLE, "shape button picks Triangle")
 	d.undo()
+
+	# --- Export group (UI state only; the render itself is milestone 5) ---
+	var ep: AWProject = d.project
+	check(ep.export_bit_depth == 16 and is_equal_approx(ep.export_tail_sec, 2.5) and ep.export_path == "assets/sfx/jump.wav", "export: defaults 16-bit, 2.5 s tail, assets/sfx/jump.wav")
+	check(d.export_target() == "res://assets/sfx/jump.wav", "export: relative names live under res://")
+	d.set_export_tail(9.0)
+	check(is_equal_approx(ep.export_tail_sec, 5.0), "export: tail clamps to 5 s")
+	d.set_export_tail(2.5)
+	d.set_export_bit_depth(32)
+	var len32 := d.export_size_bytes()
+	d.set_export_bit_depth(16)
+	var len16 := d.export_size_bytes()
+	check(len32 - 44 == 2 * (len16 - 44), "export: 32-bit float file is twice the size of 16-bit")
+	check(absf(d.export_length_sec() - (ep.content_end_sec() + 2.5)) < 0.0001, "export: length is sound + tail")
+	var tmp := "user://aw_selftest_overwrite.wav"
+	d.set_export_path(tmp)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
+	check(not d.export_will_overwrite(), "export: a new file name does not warn")
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	f.store_8(0)
+	f.close()
+	check(d.export_will_overwrite(), "export: an existing file warns")
+	d.set_export_path(tmp)
+	var xpanel: AWExportPanel = screen.export_panel
+	check(xpanel != null and xpanel._warn.visible and xpanel._path.has_theme_stylebox_override("normal"), "export: overwrite shows the red warning and red field")
+	d.set_export_path("assets/sfx/does_not_exist_%d.wav" % 12345)
+	check(not xpanel._warn.visible and not xpanel._path.has_theme_stylebox_override("normal"), "export: field returns to normal")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
+	d.set_export_path("assets/sfx/jump.wav")
+
 	if shots:
 		d.seek(1.1)
 		await shot(tree, "aw_lfo_panel.png")
