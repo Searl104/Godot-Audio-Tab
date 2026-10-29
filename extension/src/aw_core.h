@@ -43,8 +43,10 @@ public:
 		double length = 0.0; // clip (audio) time covered by the clip
 		double fade_in = 0.0; // clip time
 		double fade_out = 0.0;
-		float gain = 1.0f;
-		float pan = 0.0f; // -1 left .. +1 right (balance)
+		// Gain (linear) and pan (-1 left .. +1 right, balance) over clip time, same layout as
+		// `rates`: entry i is the value at clip time i * step; one entry means constant.
+		std::vector<float> gains;
+		std::vector<float> pans;
 		// Playback rate table over clip time: rates[i] is the rate at clip time i * step.
 		// One entry means constant rate. cum[i] = elapsed project frames at clip time i * step.
 		std::vector<float> rates;
@@ -60,6 +62,10 @@ public:
 	struct Plan {
 		std::vector<Voice> voices;
 		int64_t end_frame = 0;
+		// Master (Output) volume over project time: entry i is the linear gain at frame
+		// i * master_step; one entry means constant.
+		std::vector<float> master;
+		int64_t master_step = 64;
 	};
 
 private:
@@ -82,6 +88,7 @@ private:
 
 	std::shared_ptr<const Plan> current_plan();
 	static void render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved);
+	static void apply_master(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved);
 	void mix_transport(float *r_interleaved, int64_t p_frames);
 
 protected:
@@ -106,10 +113,13 @@ public:
 	void clear_sources();
 
 	// --- Plan --------------------------------------------------------------------
-	// Array of Dictionaries: source, start_frame, offset, length, fade_in, fade_out, gain,
-	// pan, rates (PackedFloat32Array), rate_step. Frames are at the core's sample rate.
+	// voices: Array of Dictionaries with source, start_frame, offset, length, fade_in,
+	// fade_out, rates, gains, pans (PackedFloat32Array tables over clip time) and rate_step
+	// (frames between table entries). Static "gain"/"pan" numbers are accepted in place of
+	// the tables. master: optional Dictionary {"gains": PackedFloat32Array, "step": int}, the
+	// Output volume over project time. Frames are at the core's sample rate.
 	// Returns the plan's last frame (content end).
-	int64_t set_plan(const Array &p_voices);
+	int64_t set_plan(const Array &p_voices, const Dictionary &p_master = Dictionary());
 	int64_t get_plan_end() const;
 
 	// --- Transport ---------------------------------------------------------------

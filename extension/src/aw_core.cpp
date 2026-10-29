@@ -26,7 +26,7 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_source_frames", "id"), &AWCore::get_source_frames);
 	ClassDB::bind_method(D_METHOD("get_peaks", "id", "per_second"), &AWCore::get_peaks);
 	ClassDB::bind_method(D_METHOD("clear_sources"), &AWCore::clear_sources);
-	ClassDB::bind_method(D_METHOD("set_plan", "voices"), &AWCore::set_plan);
+	ClassDB::bind_method(D_METHOD("set_plan", "voices", "master"), &AWCore::set_plan, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("get_plan_end"), &AWCore::get_plan_end);
 	ClassDB::bind_method(D_METHOD("play", "from_frame"), &AWCore::play);
 	ClassDB::bind_method(D_METHOD("stop"), &AWCore::stop);
@@ -89,6 +89,12 @@ void AWCore::Voice::prepare() {
 	}
 	for (float &r : rates) {
 		r = CLAMP(r, 0.01f, 100.0f);
+	}
+	if (gains.empty()) {
+		gains.push_back(1.0f);
+	}
+	if (pans.empty()) {
+		pans.push_back(0.0f);
 	}
 	step = std::max<int64_t>(step, 1);
 	cum.clear();
@@ -155,6 +161,21 @@ static inline float aw_hermite(const AWCore::Source &src, double x, int ch) {
 	return ((c3 * t + c2) * t + c1) * t + y1;
 }
 
+// Linear lookup in a table whose entry i belongs to position i * step (positions in frames).
+static inline float aw_table(const std::vector<float> &t, double pos, int64_t step) {
+	if (t.size() == 1 || pos <= 0.0) {
+		return t[0];
+	}
+	const double x = pos / (double)step;
+	const size_t last = t.size() - 1;
+	if (x >= (double)last) {
+		return t[last];
+	}
+	const size_t i = (size_t)x;
+	const float f = (float)(x - (double)i);
+	return t[i] + (t[i + 1] - t[i]) * f;
+}
+
 // Adds every voice that overlaps [from, from + frames) into the interleaved buffer.
 void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_out) {
 	for (const Voice &v : p_plan.voices) {
@@ -166,8 +187,6 @@ void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames,
 		if (j0 >= j1) {
 			continue;
 		}
-		const float gl = v.pan > 0.0f ? 1.0f - v.pan : 1.0f;
-		const float gr = v.pan < 0.0f ? 1.0f + v.pan : 1.0f;
 		const Source &src = *v.source;
 		// Cursor into the rate table, advanced monotonically across the block.
 		size_t cur = 0;
@@ -204,7 +223,10 @@ void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames,
 			if (x < -1.0 || x > (double)src.frames) {
 				continue;
 			}
-			float g = v.gain;
+			float g = aw_table(v.gains, s, v.step);
+			const float pan = aw_table(v.pans, s, v.step);
+			const float gl = pan > 0.0f ? 1.0f - pan : 1.0f;
+			const float gr = pan < 0.0f ? 1.0f + pan : 1.0f;
 			if (v.fade_in > 0.0 && s < v.fade_in) {
 				g *= (float)(s / v.fade_in);
 			}
@@ -214,6 +236,23 @@ void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames,
 			r_out[j * 2] += aw_hermite(src, x, 0) * g * gl;
 			r_out[j * 2 + 1] += aw_hermite(src, x, 1) * g * gr;
 		}
+	}
+}
+
+void AWCore::apply_master(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_out) {
+	if (p_plan.master.size() == 1) {
+		const float g = p_plan.master[0];
+		if (g != 1.0f) {
+			for (int64_t j = 0; j < p_frames * 2; j++) {
+				r_out[j] *= g;
+			}
+		}
+		return;
+	}
+	for (int64_t j = 0; j < p_frames; j++) {
+		const float g = aw_table(p_plan.master, (double)(p_from + j), p_plan.master_step);
+		r_out[j * 2] *= g;
+		r_out[j * 2 + 1] *= g;
 	}
 }
 
@@ -268,8 +307,17 @@ void AWCore::clear_sources() {
 
 // --- Plan -----------------------------------------------------------------------
 
-int64_t AWCore::set_plan(const Array &p_voices) {
+int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 	auto np = std::make_shared<Plan>();
+	{
+		const PackedFloat32Array mg = p_master.get("gains", PackedFloat32Array());
+		if (!mg.is_empty()) {
+			np->master.assign(mg.ptr(), mg.ptr() + mg.size());
+			np->master_step = std::max<int64_t>(1, (int64_t)p_master.get("step", 64));
+		} else {
+			np->master.push_back(1.0f);
+		}
+	}
 	for (int i = 0; i < p_voices.size(); i++) {
 		const Dictionary d = p_voices[i];
 		Voice v;
@@ -282,8 +330,21 @@ int64_t AWCore::set_plan(const Array &p_voices) {
 		v.length = d.get("length", 0.0);
 		v.fade_in = d.get("fade_in", 0.0);
 		v.fade_out = d.get("fade_out", 0.0);
-		v.gain = d.get("gain", 1.0);
-		v.pan = CLAMP((float)(double)d.get("pan", 0.0), -1.0f, 1.0f);
+		const PackedFloat32Array gains = d.get("gains", PackedFloat32Array());
+		if (gains.is_empty()) {
+			v.gains.push_back((float)(double)d.get("gain", 1.0));
+		} else {
+			v.gains.assign(gains.ptr(), gains.ptr() + gains.size());
+		}
+		const PackedFloat32Array pans = d.get("pans", PackedFloat32Array());
+		if (pans.is_empty()) {
+			v.pans.push_back((float)(double)d.get("pan", 0.0));
+		} else {
+			v.pans.assign(pans.ptr(), pans.ptr() + pans.size());
+		}
+		for (float &p : v.pans) {
+			p = CLAMP(p, -1.0f, 1.0f);
+		}
 		const PackedFloat32Array rates = d.get("rates", PackedFloat32Array());
 		v.rates.assign(rates.ptr(), rates.ptr() + rates.size());
 		v.step = d.get("rate_step", 64);
@@ -369,6 +430,7 @@ void AWCore::mix_transport(float *r_out, int64_t p_frames) {
 			limit = std::min(limit, pl->end_frame - pos);
 		}
 		render_voices(*pl, pos, limit, r_out + done * 2);
+		apply_master(*pl, pos, limit, r_out + done * 2);
 		pos += limit;
 		done += limit;
 		if (loop && pos >= loop_end.load()) {
@@ -403,6 +465,7 @@ PackedVector2Array AWCore::render_range(int64_t p_from_frame, int64_t p_frames) 
 	const auto pl = current_plan();
 	if (pl) {
 		render_voices(*pl, p_from_frame, p_frames, buf.data());
+		apply_master(*pl, p_from_frame, p_frames, buf.data());
 	}
 	Vector2 *w = out.ptrw();
 	for (int64_t i = 0; i < p_frames; i++) {
