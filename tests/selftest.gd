@@ -782,8 +782,8 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	undo_base += 1
 	await frames(tree, 4)
 	var card: AWEffectCard = screen.chain_panel._cards.back()
-	check(card.effect == lp and card._thumb != null and card._thumb.response.size() == 96, "Low Pass card has a response thumbnail")
-	check(card.rows.size() == 2, "the card keeps its generic rows too")
+	check(card.effect == lp and card.panel is AWLowPassPanel and card.panel.compact and card.panel.plot.mini, "Low Pass card uses the compact panel")
+	check(card.rows.is_empty() and card.panel.cutoff_knob != null and card.panel.plot.response.size() > 0, "compact card: plot and knobs, no generic rows")
 	d.open_detail(ch, lp)
 	await frames(tree, 2)
 	if OS.get_environment("AW_SHOTS") != "":
@@ -852,12 +852,16 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	# --- EQ ---
 	var eq := d.add_effect(ch, "EQ")
 	await frames(tree, 4)
+	var eq_card: AWEffectCard = screen.chain_panel._cards.back()
+	check(eq_card.panel is AWEQPanel and eq_card.panel.knobs.size() == 6 and eq_card.rows.is_empty(), "EQ card is compact: preview plus six knobs")
 	d.open_detail(ch, eq)
 	await frames(tree, 2)
 	if OS.get_environment("AW_SHOTS") != "":
+		(screen.chain_panel._cards_box.get_parent() as ScrollContainer).scroll_horizontal = 5000
 		await _panel_shot(tree, d, ch, eq, "aw_panel_eq.png")
 	var ep := host.panel as AWEQPanel
-	check(ep != null and ep.faders.size() == 6 and ep.plot.handles.size() == 6, "EQ panel has six faders and six handles")
+	check(ep != null and ep.knobs.size() == 6 and ep.plot.handles.size() == 6, "EQ panel has six knobs and six handles")
+	check(ep.knobs[0].bipolar and ep.knobs[0].view_min == -18.0, "EQ knobs are bipolar over -18..+18 dB")
 	ep.plot.size = Vector2(500, 200)
 	ep.refresh()
 	var hp := Vector2(ep.plot.x_of(1000.0), ep.plot.y_of(0.0))
@@ -868,19 +872,19 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	check(absf(ep.plot.response[ep.plot.response.size() - 1] - AWFilterResponse.eq_db(20000.0, ep._gains(), sr)) < 0.01, "plot shows the live response")
 	d.undo()
 	check(eq.get_param("band_db/1000_hz") == 0.0, "undo restores the band")
-	var f1 := ep.faders[1]
-	f1.size = Vector2(40, 110)
-	var y0 := f1._y_of(0.0)
-	click(f1, Vector2(20, y0))
-	move(f1, Vector2(20, y0 - 20))
-	click(f1, Vector2(20, y0 - 20), MOUSE_BUTTON_LEFT, false)
-	check(eq.get_param("band_db/100_hz") > 4.0 and ep.selected == 1, "fader drag raises its band and selects it (%.1f dB)" % eq.get_param("band_db/100_hz"))
-	click(f1, Vector2(20, y0), MOUSE_BUTTON_LEFT, true, true)
-	check(eq.get_param("band_db/100_hz") == 0.0, "double-click resets a fader")
+	var k1 := ep.knobs[1]
+	k1.size = k1.custom_minimum_size
+	click(k1, Vector2(40, 40))
+	move(k1, Vector2(40, -20))
+	click(k1, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	var kg := eq.get_param("band_db/100_hz")
+	check(kg > 4.0 and kg <= 18.0 and ep.selected == 1, "knob drag raises its band and selects it (%.1f dB)" % kg)
+	click(k1, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, true)
+	check(eq.get_param("band_db/100_hz") == 0.0, "double-click resets a band knob")
 	var ec := d.make_curve(ch, eq, "band_db/320_hz")
 	await frames(tree, 2)
 	ep.refresh()
-	check(ep.faders[2].binding.has_curve() and ep.plot.handles[2].driven, "a band with a curve is shown as driven")
+	check(ep.knobs[2].binding.has_curve() and ep.plot.handles[2].driven, "a band with a curve is shown as driven")
 	d.undo()
 	d.remove_effect(ch, eq)
 	await frames(tree, 2)
@@ -1119,7 +1123,21 @@ static func run(screen: AWMainScreen) -> void:
 	check(ch.get_keys(wet).size() == nkeys, "undo insert")
 	var chorus: AWCurve = ch.curves[3]
 	var ck := ch.get_keys(chorus).size()
-	var on_line := Vector2(g.local_to_x(1.5), g.val_to_y(chorus, ch.sample_norm(chorus, 1.5)))
+	# Pick the time where the chorus line is furthest from the other curves, so the test
+	# doesn't depend on how tall the graph happens to be.
+	var best_t := 1.5
+	var best_gap := -1.0
+	for ti in range(3, 25):
+		var tt := ti * 0.1
+		var yc := g.val_to_y(chorus, ch.sample_norm(chorus, tt))
+		var gap := INF
+		for oc: AWCurve in ch.curves:
+			if oc != chorus:
+				gap = minf(gap, absf(g.val_to_y(oc, ch.sample_norm(oc, tt)) - yc))
+		if gap > best_gap:
+			best_gap = gap
+			best_t = tt
+	var on_line := Vector2(g.local_to_x(best_t), g.val_to_y(chorus, ch.sample_norm(chorus, best_t)))
 	click(g, on_line, MOUSE_BUTTON_LEFT, true, true)
 	click(g, on_line, MOUSE_BUTTON_LEFT, false)
 	check(ch.get_keys(chorus).size() == ck + 1 and d.active_curve == chorus, "double-click on another curve's line inserts there")
@@ -1291,7 +1309,7 @@ static func run(screen: AWMainScreen) -> void:
 	d.remove_curve(ch, lpc)
 	await frames(tree, 4)
 	var lp_card: AWEffectCard = screen.chain_panel._cards.back()
-	check(lp_card.effect == lp and lp_card.rows[0]._slider.exp_edit, "cutoff slider is logarithmic")
+	check(lp_card.effect == lp and lp_card.panel.cutoff_knob.binding.scale == AWCurve.Scale.LOG, "cutoff knob is logarithmic")
 	d.undo(); d.undo(); d.undo(); d.undo()
 	check(not ch.effects.has(lp), "undo back to before Low Pass")
 	print("--- control kit and effect panels ---")

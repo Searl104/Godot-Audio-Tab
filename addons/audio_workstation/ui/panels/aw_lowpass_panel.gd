@@ -4,7 +4,6 @@ extends AWEffectPanel
 ## Low Pass detail panel: live response plot with a draggable cutoff/resonance handle,
 ## two knobs and Q / peak / slope readouts. Also used for High Pass (same parameters).
 
-var plot: AWResponsePlot
 var cutoff_knob: AWKnob
 var res_knob: AWKnob
 var _cutoff: AWParamBinding
@@ -16,16 +15,28 @@ var _group: Array = []
 func build() -> void:
 	_cutoff = bind("cutoff_hz")
 	_res = bind("resonance")
+	plot = AWResponsePlot.new()
+	plot.accent = accent()
+	plot.db_min = -36.0
+	plot.db_max = 24.0 if not compact else 18.0
+	plot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if compact:
+		plot.mini = true
+		plot.custom_minimum_size.y = 44
+		plot.mouse_filter = Control.MOUSE_FILTER_PASS
+		add_child(plot)
+		var krow := HBoxContainer.new()
+		krow.alignment = BoxContainer.ALIGNMENT_CENTER
+		add_child(krow)
+		cutoff_knob = _knob(_cutoff, 44)
+		res_knob = _knob(_res, 44)
+		krow.add_child(cutoff_knob)
+		krow.add_child(res_knob)
+		return
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	row.add_theme_constant_override("separation", 14)
 	add_child(row)
-
-	plot = AWResponsePlot.new()
-	plot.accent = accent()
-	plot.db_min = -36.0
-	plot.db_max = 24.0
-	plot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	plot.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	plot.custom_minimum_size = Vector2(320, 200)
 	plot.handle_pressed.connect(_on_press)
@@ -37,11 +48,9 @@ func build() -> void:
 	side.custom_minimum_size.x = 150
 	side.add_theme_constant_override("separation", 6)
 	row.add_child(side)
-	cutoff_knob = AWKnob.new()
-	cutoff_knob.setup(_cutoff, accent(), 72)
+	cutoff_knob = _knob(_cutoff, 72)
+	res_knob = _knob(_res, 72)
 	side.add_child(cutoff_knob)
-	res_knob = AWKnob.new()
-	res_knob.setup(_res, accent(), 72)
 	side.add_child(res_knob)
 	for k in ["Q", "Peak", "Slope"]:
 		var r := HBoxContainer.new()
@@ -54,6 +63,12 @@ func build() -> void:
 		side.add_child(r)
 
 
+func _knob(b: AWParamBinding, d: float) -> AWKnob:
+	var k := AWKnob.new()
+	k.setup(b, accent(), d)
+	return k
+
+
 func _sr() -> float:
 	return AudioServer.get_mix_rate()
 
@@ -64,12 +79,14 @@ func refresh() -> void:
 	var sr := _sr()
 	plot.response = AWFilterResponse.sample_log(func(f: float) -> float: return AWFilterResponse.lowpass_db(f, fc, res, sr), 220)
 	var peak := AWFilterResponse.lowpass_db(fc, fc, res, sr)
-	plot.handles = [{"f": fc, "db": peak, "driven": _cutoff.has_curve() or _res.has_curve()}]
-	var c := _cutoff.curve()
-	plot.sweep = _curve_range(c)
-	plot.queue_redraw()
 	cutoff_knob.refresh()
 	res_knob.refresh()
+	if compact:
+		plot.queue_redraw()
+		return
+	plot.handles = [{"f": fc, "db": peak, "driven": _cutoff.has_curve() or _res.has_curve()}]
+	plot.sweep = _curve_range(_cutoff.curve())
+	plot.queue_redraw()
 	_readouts["Q"].text = "%.2f" % AWFilterResponse.resonance_to_q(res)
 	_readouts["Peak"].text = "%+.1f dB" % peak
 	_readouts["Slope"].text = "12 dB / oct"

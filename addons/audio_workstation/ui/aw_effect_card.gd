@@ -15,7 +15,7 @@ var rows: Array[AWParamRow] = []
 var _bypass: CheckButton
 var _style := StyleBoxFlat.new()
 var _body: VBoxContainer
-var _thumb: AWResponsePlot
+var panel: AWEffectPanel
 
 
 func setup(p_doc: AWDocument, p_chain: AWChain, p_effect: AWEffect) -> void:
@@ -73,19 +73,13 @@ func _ready() -> void:
 	col.add_child(header)
 	col.add_child(HSeparator.new())
 
-	if AWPanelRegistry.has_panel(effect.effect_type):
-		_thumb = AWResponsePlot.new()
-		_thumb.mini = true
-		_thumb.accent = AWEffectLibrary.effect_color(effect.effect_type)
-		_thumb.db_min = -36.0 if effect.effect_type == "Low Pass" else -18.0
-		_thumb.db_max = 18.0
-		_thumb.custom_minimum_size.y = 44
-		_thumb.mouse_filter = Control.MOUSE_FILTER_PASS
-		_thumb.tooltip_text = "Double-click to open the panel"
-		col.add_child(_thumb)
 	_body = VBoxContainer.new()
 	_body.add_theme_constant_override("separation", 2)
-	for key: String in AWEffectLibrary.param_schema(effect.effect_type):
+	panel = AWPanelRegistry.create(effect.effect_type)
+	if panel:
+		panel.setup(doc, chain, effect, true)
+		_body.add_child(panel)
+	for key: String in ([] if panel else AWEffectLibrary.param_schema(effect.effect_type).keys()):
 		var row := AWParamRow.new()
 		row.setup(doc, chain, effect, key)
 		rows.append(row)
@@ -100,9 +94,8 @@ func refresh() -> void:
 	_body.modulate = Color(1, 1, 1, 0.45 if effect.bypass else 1.0)
 	for r in rows:
 		r.refresh()
-	if _thumb:
-		_thumb.response = AWPanelRegistry.response(doc, chain, effect, 96)
-		_thumb.queue_redraw()
+	if panel:
+		panel.refresh()
 
 
 func _on_menu(id: int) -> void:
@@ -118,7 +111,7 @@ func _on_menu(id: int) -> void:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.double_click \
 			and event.button_index == MOUSE_BUTTON_LEFT and AWPanelRegistry.has_panel(effect.effect_type):
-		if event.position.y < 34.0 or (_thumb and Rect2(_thumb.global_position - global_position, _thumb.size).has_point(event.position)):
+		if event.position.y < 34.0 or (panel and Rect2(panel.plot.global_position - global_position, panel.plot.size).has_point(event.position)):
 			doc.open_detail(chain, effect)
 			accept_event()
 

@@ -8,9 +8,14 @@ extends VBoxContainer
 var doc: AWDocument
 var chain: AWChain
 var effect: AWEffect
+## Compact layout for the chain card (small plot and knobs); the dock gets the full one.
+var compact := false
+## The response plot (full or mini); the card uses it as the double-click target.
+var plot: AWResponsePlot
 
 
-func setup(p_doc: AWDocument, p_chain: AWChain, p_effect: AWEffect) -> void:
+func setup(p_doc: AWDocument, p_chain: AWChain, p_effect: AWEffect, p_compact := false) -> void:
+	compact = p_compact
 	doc = p_doc
 	chain = p_chain
 	effect = p_effect

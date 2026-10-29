@@ -67,7 +67,7 @@ func _ready() -> void:
 
 	chain_panel = AWChainPanel.new()
 	chain_panel.setup(doc)
-	chain_panel.custom_minimum_size.y = 220
+	chain_panel.custom_minimum_size.y = 322
 	vsplit.add_child(chain_panel)
 
 	engine.attach(self)
