@@ -19,6 +19,8 @@ signal transport_changed
 signal message(text: String)
 ## The LFO panel opened, closed, or switched curve.
 signal lfo_panel_changed
+## Export bit depth, tail or file name changed (not a sound edit, so no plan rebuild).
+signal export_settings_changed
 
 enum ChainTab { MASTER, CLIP }
 enum CurveTime { CLIP, PROJECT }
@@ -108,6 +110,52 @@ func save_project(path: String) -> void:
 
 func load_project(path: String) -> void:
 	message.emit("Open isn't implemented yet (interface phase): %s" % path) # TODO(logic): ResourceLoader
+
+
+func set_export_bit_depth(bits: int) -> void:
+	project.export_bit_depth = bits
+	export_settings_changed.emit()
+
+
+func set_export_tail(sec: float) -> void:
+	project.export_tail_sec = clampf(sec, 0.0, 5.0)
+	export_settings_changed.emit()
+
+
+func set_export_path(path: String) -> void:
+	project.export_path = path.strip_edges()
+	export_settings_changed.emit()
+
+
+## The export file as a loadable path: relative names live under res://.
+func export_target() -> String:
+	var p := project.export_path.strip_edges().replace("\\", "/")
+	if p == "" or p.begins_with("res://") or p.begins_with("user://") or p.is_absolute_path():
+		return p
+	return "res://" + p.lstrip("/")
+
+
+func export_will_overwrite() -> bool:
+	var t := export_target()
+	return t != "" and FileAccess.file_exists(t)
+
+
+## Length of the exported file: the sound plus the tail.
+func export_length_sec() -> float:
+	return project.content_end_sec() + project.export_tail_sec
+
+
+func export_size_bytes() -> int:
+	var bytes_per_sample := project.export_bit_depth / 8
+	return int(ceil(export_length_sec() * AudioServer.get_mix_rate())) * 2 * bytes_per_sample + 44
+
+
+func export_now() -> void:
+	var t := export_target()
+	if t == "":
+		message.emit("Enter a file name to export to.")
+		return
+	export_wav(t)
 
 
 func export_wav(path: String) -> void:
