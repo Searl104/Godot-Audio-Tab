@@ -21,10 +21,42 @@ const CLIP_COLORS := [
 @export_group("Export")
 ## 16 or 32 (32 = float).
 @export_enum("16-bit:16", "32-bit float:32") var export_bit_depth: int = 16
-## Silence kept after the last clip so effect tails can ring out.
-@export_range(0.0, 5.0, 0.1) var export_tail_sec: float = 2.5
+## Where the exported sound ends (seconds): the marker on the timeline. The part after the last
+## clip is the tail, where effects ring out. Negative = automatic (see export_end_resolved).
+@export var export_end_sec: float = -1.0
 ## Relative to res:// (or an absolute path).
 @export var export_path: String = "assets/sfx/jump.wav"
+
+
+const AUTO_TAIL_SEC := 2.5
+const MAX_END_SEC := 600.0
+
+
+## End of the last unmuted clip, pitch included.
+func last_clip_end_sec() -> float:
+	var end := 0.0
+	for c in clips:
+		if not c.muted:
+			end = maxf(end, c.start_sec + c.play_length())
+	return end
+
+
+func export_end_is_auto() -> bool:
+	return export_end_sec < 0.0
+
+
+## The export end in use. A manual marker is used as it is. Automatic: the last clip's end, plus
+## AUTO_TAIL_SEC when a chain has a card that rings on (and again for the master chain).
+func export_end_resolved() -> float:
+	if export_end_sec >= 0.0:
+		return minf(export_end_sec, MAX_END_SEC)
+	var end := 0.0
+	for c in clips:
+		if not c.muted:
+			end = maxf(end, c.start_sec + c.play_length() + (AUTO_TAIL_SEC if AWEngine.chain_rings(c.chain) else 0.0))
+	if AWEngine.chain_rings(master_chain):
+		end += AUTO_TAIL_SEC
+	return end
 
 
 func content_end_sec() -> float:
