@@ -3,16 +3,61 @@ class_name AWEngine
 extends RefCounted
 ## The boundary between the UI and the audio engine.
 ##
-## Interface phase: every method is a stub. The UI only talks to the engine through
-## this class, so the logic phase can implement it in GDScript or replace it with a
-## GDExtension class exposing the same methods and signals.
+## The per-sample work happens in the native core (C++ GDExtension class `AWCore`, built
+## from extension/). It is looked up by name through ClassDB, never referenced as a type,
+## so the plugin still loads when the library hasn't been built: the UI then shows
+## "Engine not built" and the stubs below keep everything else working.
+##
+## Milestone 1: the core is detected and reachable (version, build info, test render).
+## Playback, automation and baking arrive in later milestones (see TODO(logic)).
 
 signal playback_state_changed(playing: bool)
 ## Emitted by the engine while playing; the UI follows it.
 signal position_changed(seconds: float)
 signal render_finished(path: String, error: int)
 
+const CORE_CLASS := &"AWCore"
+
 var _peak_cache := {}
+## The native core instance, or null when the library isn't loaded.
+var core: Object = null
+
+
+func _init() -> void:
+	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
+		core = ClassDB.instantiate(CORE_CLASS)
+		core.call("set_sample_rate", AudioServer.get_mix_rate())
+
+
+func is_available() -> bool:
+	return core != null
+
+
+## Version and build details of the native core ({} when it isn't available).
+func get_info() -> Dictionary:
+	return core.call("get_build_info") if core else {}
+
+
+func status_text() -> String:
+	return "Engine %s" % core.call("get_version") if core else "Engine not built"
+
+
+func status_tooltip() -> String:
+	if core == null:
+		return "The native audio engine (GDExtension) isn't loaded.\nBuild it from the extension/ folder (see BUILDING.md), then restart the editor.\nEditing works without it; playback and export need it."
+	var i := get_info()
+	return "Native audio engine loaded\nversion %s · godot-cpp %s · API %s · %s\n%s\nbuilt %s\nrender rate %d Hz" % [
+		i.get("version"), i.get("godot_cpp"), i.get("api"), i.get("target"), i.get("compiler"), i.get("built"), int(core.call("get_sample_rate"))]
+
+
+## Renders `frames` stereo frames from the core (a test tone if `tone_hz` > 0).
+## Used by the self-test to prove the path end to end. Returns [] without the core.
+func render_test(frames: int, tone_hz := 0.0, gain_db := -12.0) -> PackedVector2Array:
+	if core == null:
+		return PackedVector2Array()
+	core.call("reset")
+	core.call("set_test_tone", tone_hz, gain_db)
+	return core.call("render", frames)
 
 
 ## Timing contract for the logic phase:

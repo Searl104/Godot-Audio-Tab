@@ -1,4 +1,4 @@
-# Audio Workstation for Godot 4.7+ (interface phase, v0.6)
+# Audio Workstation for Godot 4.7+ (interface phase, v0.7: native engine scaffold)
 
 An **Audio** main-screen tab for designing sound effects: layer clips on a free grid,
 give each clip (and the master) an effect chain, and shape any parameter with Bezier
@@ -100,11 +100,21 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
     core/aw_curve.gd, aw_curve_math.gd        curve metadata (colour, On/Dim/Off, handle modes, scale),
                                               handle and scale maths
     core/aw_document.gd             selection, view state, and every undoable edit
-    core/aw_engine.gd               ENGINE BOUNDARY: stubs and signals (GDScript now, can become a GDExtension)
+    core/aw_engine.gd               ENGINE BOUNDARY: finds the native AWCore class, falls back to stubs
+    extension/                      C++ GDExtension source (godot-cpp 10.0.0-stable, SCons); see BUILDING.md
+    bin/ (after build)              libawengine.<platform>... + aw_engine.gdextension next to plugin.cfg
     core/aw_time_view.gd            zoom/scroll for one time axis
     ui/aw_lfo_panel.gd              the docked LFO panel
     ui/aw_curve_axis.gd             value axis + tick generation (linear / log / fader / semitones)
     ui/*                            toolbar, clip grid, curve graph + dot column, effect cards, main screen
+
+## Native engine (milestone 1)
+The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
+`● Engine 0.1.0`; without it, `○ Engine not built` and everything else still works.
+`AWCore` currently only reports its build info, holds the sample rate and renders silence or a test tone
+(proves the build, load and call path on each platform). Build steps: `BUILDING.md`. CI builds Linux,
+Windows and macOS (`.github/workflows/build-engine.yml`). Mixing, effects and baking arrive in milestones 2 to 6
+(see `claude/audio-engine-plan.md` in the project).
 
 ## Placeholders (search for TODO(logic))
 - `AWEngine`: playback, seek, loop, audition, `render_wav` and `render_audio_stream` are stubs.

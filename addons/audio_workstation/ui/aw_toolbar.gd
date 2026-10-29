@@ -80,6 +80,7 @@ func _ready() -> void:
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(spacer)
+	add_child(_engine_chip())
 	var export := Button.new()
 	export.text = "Export WAV"
 	export.focus_mode = Control.FOCUS_NONE
@@ -91,6 +92,19 @@ func _ready() -> void:
 	doc.playhead_changed.connect(func() -> void: _clock.text = doc.format_clock(doc.playhead_sec))
 	_sync()
 	_clock.text = doc.format_clock(doc.playhead_sec)
+
+
+## Small status chip: is the native audio engine loaded?
+func _engine_chip() -> Control:
+	var chip := Label.new()
+	chip.name = "EngineStatus"
+	var ok := doc.engine.is_available()
+	chip.text = ("● " if ok else "○ ") + doc.engine.status_text()
+	chip.tooltip_text = doc.engine.status_tooltip()
+	chip.mouse_filter = Control.MOUSE_FILTER_PASS
+	chip.add_theme_font_size_override("font_size", get_theme_default_font_size() - 2)
+	chip.add_theme_color_override("font_color", Color("#7fd18b") if ok else Color(1, 1, 1, 0.5))
+	return chip
 
 
 func _menu(title: String, items: Array) -> MenuButton:

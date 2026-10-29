@@ -2,3 +2,14 @@
 *.translation
 export_presets.cfg
 .mono/
+
+# Native engine: build outputs (CI builds these; see BUILDING.md)
+extension/godot-cpp/
+addons/audio_workstation/bin/
+addons/audio_workstation/aw_engine.gdextension
+.sconsign.dblite
+*.obj
+*.o
+*.os
+*.lib
+*.exp

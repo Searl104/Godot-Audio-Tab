@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+# Builds the Audio Workstation engine (GDExtension) into addons/audio_workstation/bin/.
+#
+#   scons                              # Linux/Windows/macOS debug build for the editor
+#   scons target=template_release      # release build (used by exported games)
+#   scons platform=windows             # cross-compile (MinGW) or build on Windows (MSVC)
+#
+# godot-cpp is pinned to 10.0.0-stable and compiled against the Godot 4.7 API.
+
+import os
+
+GODOT_CPP_TAG = "10.0.0-stable"
+if not os.path.isfile("godot-cpp/SConstruct"):
+    raise SystemExit(
+        "godot-cpp is missing. Run:\n"
+        "  git clone --depth 1 --branch %s https://github.com/godotengine/godot-cpp.git extension/godot-cpp" % GODOT_CPP_TAG
+    )
+
+env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
+
+env.Append(CPPPATH=["src/"])
+env.Append(CPPDEFINES=[("AW_ENGINE_VERSION", '\\"0.1.0\\"'), ("AW_GODOT_CPP", '\\"%s\\"' % GODOT_CPP_TAG)])
+sources = Glob("src/*.cpp")
+
+ADDON = "../addons/audio_workstation/"
+BIN = ADDON + "bin/"
+
+if env["platform"] == "macos":
+    library = env.SharedLibrary(
+        BIN + "libawengine.macos.{0}.framework/libawengine.macos.{0}".format(env["target"]),
+        source=sources,
+    )
+else:
+    library = env.SharedLibrary(BIN + "libawengine{}{}".format(env["suffix"], env["SHLIBSUFFIX"]), source=sources)
+
+# The .gdextension file is only installed by a build, so an unbuilt checkout never asks
+# Godot to load a library that isn't there (the plugin then shows "Engine not built").
+manifest = env.Command(ADDON + "aw_engine.gdextension", "aw_engine.gdextension", Copy("$TARGET", "$SOURCE"))
+
+env.NoCache(library)
+Default(library, manifest)
