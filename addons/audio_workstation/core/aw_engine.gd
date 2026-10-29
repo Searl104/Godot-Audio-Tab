@@ -288,8 +288,8 @@ func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
 		"rates": _rates(clip, src, step_sec),
 	}
 	if src:
-		voice["gains"] = _table(ch, src, "gain_db", clip.length_sec, step_sec, _db_to_gain)
-		voice["pans"] = _table(ch, src, "pan", clip.length_sec, step_sec, _identity)
+		voice["gains"] = _table(ch, src, "gain_db", clip.length_sec, step_sec, AWSampler.GAIN)
+		voice["pans"] = _table(ch, src, "pan", clip.length_sec, step_sec, AWSampler.VALUE)
 	return voice
 
 
@@ -300,7 +300,7 @@ func _rates(clip: AWClip, src: AWEffect, step_sec: float) -> PackedFloat32Array:
 	if src != null:
 		var c := ch.get_curve(src.id, "pitch_semitones")
 		if c != null and ch.get_keys(c).size() >= 2:
-			return _table(ch, src, "pitch_semitones", clip.length_sec, step_sec, AWClipWarp.rate_for)
+			return _table(ch, src, "pitch_semitones", clip.length_sec, step_sec, AWSampler.RATE)
 	return AWClipWarp.rate_table(clip, clip.length_sec, step_sec)
 
 
@@ -311,43 +311,43 @@ func _master_plan() -> Dictionary:
 	var out: AWEffect = _project.master_chain.effects[0]
 	var r := _rate()
 	return {
-		"gains": _table(_project.master_chain, out, "volume_db", _project.content_end_sec(), RATE_STEP / r, _db_to_gain),
+		"gains": _table(_project.master_chain, out, "volume_db", _project.content_end_sec(), RATE_STEP / r, AWSampler.GAIN),
 		"step": RATE_STEP,
 	}
 
 
-static func _db_to_gain(db: float) -> float:
-	return 0.0 if db <= -59.9 else db_to_linear(db)
-
-
-static func _identity(v: float) -> float:
-	return v
-
-
 ## Samples a parameter every `step_sec` over 0..length_sec (curve value, LFO included) and
-## converts each value for the engine. Without a curve: one entry, the static value.
-## Tables are cached per curve and rebuilt only when its keys, LFO or the length change.
-func _table(chain: AWChain, effect: AWEffect, param: String, length_sec: float, step_sec: float, convert: Callable) -> PackedFloat32Array:
+## converts each value for the engine (an AWSampler unit). Without a curve: one entry, the
+## static value. Tables are cached per curve and rebuilt only when that curve's keys, LFO,
+## scale or the length change.
+func _table(chain: AWChain, effect: AWEffect, param: String, length_sec: float, step_sec: float, unit: int) -> PackedFloat32Array:
 	var curve := chain.get_curve(effect.id, param)
 	var out := PackedFloat32Array()
 	if curve == null or chain.get_keys(curve).is_empty():
-		out.append(convert.call(effect.get_param(param)))
+		out.append(_static_value(effect.get_param(param), unit))
 		return out
-	var sig := _curve_signature(chain, curve, length_sec, step_sec)
+	var sig := _curve_signature(chain, curve, length_sec, step_sec, unit)
 	var hit: Array = _table_cache.get(curve, [])
 	if hit.size() == 2 and hit[0] == sig:
 		return hit[1]
-	var n := int(ceilf(length_sec / step_sec)) + 2
-	out.resize(n)
-	for i in n:
-		out[i] = convert.call(chain.sample(curve, i * step_sec))
+	out = AWSampler.values(chain, curve, 0.0, step_sec, int(ceilf(length_sec / step_sec)) + 2, unit)
 	_table_cache[curve] = [sig, out]
 	return out
 
 
-static func _curve_signature(chain: AWChain, curve: AWCurve, length_sec: float, step_sec: float) -> Array:
+static func _static_value(v: float, unit: int) -> float:
+	match unit:
+		AWSampler.GAIN:
+			return 0.0 if v <= -59.9 else db_to_linear(v)
+		AWSampler.RATE:
+			return AWClipWarp.rate_for(v)
+	return v
+
+
+## Identifies what a curve's table depends on, so unchanged curves are not re-sampled.
+static func _curve_signature(chain: AWChain, curve: AWCurve, length_sec: float, step_sec: float, unit: int) -> Array:
 	var l := curve.lfo
 	var lfo: Array = []
 	if l != null and l.enabled:
 		lfo = [l.shape, l.max_value, l.min_value, l.freq_hz, l.fade_in_sec, l.fade_out_sec, l.start_sec, l.end_sec, l.random_seed]
-	return [chain.revision, curve.scale, snappedf(length_sec, 0.0001), step_sec, lfo]
+	return [hash(chain.get_keys(curve)), curve.scale, chain.curve_range(curve), snappedf(length_sec, 0.0001), step_sec, unit, lfo]

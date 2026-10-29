@@ -16,11 +16,13 @@
 #include <mutex>
 #include <vector>
 
+#include <godot_cpp/classes/animation.hpp>
 #include <godot_cpp/classes/audio_frame.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
+#include <godot_cpp/variant/packed_float64_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -90,6 +92,7 @@ private:
 	static void render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved);
 	static void apply_master(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_interleaved);
 	void mix_transport(float *r_interleaved, int64_t p_frames);
+	PackedFloat32Array sample_curve_impl(const Ref<Animation> &p_anim, const Dictionary &p_spec, const double *p_times, double p_start, double p_step, int64_t p_count, int64_t p_unit) const;
 
 protected:
 	static void _bind_methods();
@@ -111,6 +114,18 @@ public:
 	// Peak amplitude (0..1) per bucket, `per_second` buckets per second of source audio.
 	PackedFloat32Array get_peaks(int64_t p_id, double p_per_second) const;
 	void clear_sources();
+
+	// --- Curve sampling ----------------------------------------------------------
+	// Evaluates an automation curve at start + i * step for i in [0, count): the drawn Bezier
+	// track plus its optional LFO, converted exactly like AWChain.sample_norm()/sample().
+	// spec: track (index in the Animation, -1 = none), scale (AWCurve.Scale), lo/hi (parameter
+	// range), static_norm (height used when the track has no keys), lfo (Dictionary with
+	// shape, min, max, freq, fade_in, fade_out, start, end, seed; empty = none).
+	// unit: 0 parameter value, 1 curve height 0..1, 2 linear gain from dB (<= -59.9 dB is
+	// silence), 3 playback rate from semitones, 4 curve height without the LFO.
+	PackedFloat32Array sample_curve(const Ref<Animation> &p_anim, const Dictionary &p_spec, double p_start, double p_step, int64_t p_count, int64_t p_unit) const;
+	// Same, at arbitrary curve times (e.g. graph pixels when the view is in project time).
+	PackedFloat32Array sample_curve_at(const Ref<Animation> &p_anim, const Dictionary &p_spec, const PackedFloat64Array &p_times, int64_t p_unit) const;
 
 	// --- Plan --------------------------------------------------------------------
 	// voices: Array of Dictionaries with source, start_frame, offset, length, fade_in,

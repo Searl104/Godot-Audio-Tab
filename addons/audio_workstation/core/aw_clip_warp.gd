@@ -35,11 +35,12 @@ static func build(clip: AWClip) -> AWClipWarp:
 	w._s_max = maxf(keys.back().t, w._s_min + STEP)
 	var n := int(ceilf((w._s_max - w._s_min) / STEP)) + 1
 	w._cum.resize(n)
-	var prev_inv := 1.0 / rate_for(ch.sample(curve, w._s_min))
+	var rates := AWSampler.values(ch, curve, w._s_min, STEP, n, AWSampler.RATE)
+	var prev_inv := 1.0 / rates[0]
 	w._rate_lo = 1.0 / prev_inv
 	w._cum[0] = 0.0
 	for i in range(1, n):
-		var inv := 1.0 / rate_for(ch.sample(curve, w._s_min + i * STEP))
+		var inv := 1.0 / rates[i]
 		w._cum[i] = w._cum[i - 1] + (prev_inv + inv) * 0.5 * STEP
 		prev_inv = inv
 	w._rate_hi = 1.0 / prev_inv
@@ -65,11 +66,24 @@ static func rate_table(clip: AWClip, length_sec: float, step_sec: float) -> Pack
 	if curve == null or ch.get_keys(curve).size() < 2:
 		out.append(rate_for(ch.value_at(src, "pitch_semitones", 0.0)))
 		return out
-	var n := int(ceilf(length_sec / step_sec)) + 2
-	out.resize(n)
-	for i in n:
-		out[i] = rate_for(ch.sample(curve, i * step_sec))
-	return out
+	return AWSampler.values(ch, curve, 0.0, step_sec, int(ceilf(length_sec / step_sec)) + 2, AWSampler.RATE)
+
+
+## What the warp depends on besides the clip's length: the Pitch curve's keys, scale and LFO,
+## and the static Pitch value. Used to skip rebuilding an unchanged warp.
+static func signature(clip: AWClip) -> Array:
+	var ch := clip.chain
+	var src: AWEffect = ch.effects[0] if (ch and not ch.effects.is_empty()) else null
+	if src == null:
+		return []
+	var curve := ch.get_curve(src.id, "pitch_semitones")
+	if curve == null:
+		return [src.get_param("pitch_semitones")]
+	var l := curve.lfo
+	var lfo: Array = []
+	if l != null and l.enabled:
+		lfo = [l.shape, l.max_value, l.min_value, l.freq_hz, l.fade_in_sec, l.fade_out_sec, l.start_sec, l.end_sec, l.random_seed]
+	return [hash(ch.get_keys(curve)), curve.scale, src.get_param("pitch_semitones"), lfo]
 
 
 static func rate_for(semitones: float) -> float:

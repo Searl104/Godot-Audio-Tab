@@ -26,6 +26,8 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_source_frames", "id"), &AWCore::get_source_frames);
 	ClassDB::bind_method(D_METHOD("get_peaks", "id", "per_second"), &AWCore::get_peaks);
 	ClassDB::bind_method(D_METHOD("clear_sources"), &AWCore::clear_sources);
+	ClassDB::bind_method(D_METHOD("sample_curve", "animation", "spec", "start", "step", "count", "unit"), &AWCore::sample_curve);
+	ClassDB::bind_method(D_METHOD("sample_curve_at", "animation", "spec", "times", "unit"), &AWCore::sample_curve_at);
 	ClassDB::bind_method(D_METHOD("set_plan", "voices", "master"), &AWCore::set_plan, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("get_plan_end"), &AWCore::get_plan_end);
 	ClassDB::bind_method(D_METHOD("play", "from_frame"), &AWCore::play);
@@ -303,6 +305,179 @@ PackedFloat32Array AWCore::get_peaks(int64_t p_id, double p_per_second) const {
 void AWCore::clear_sources() {
 	// Voices keep their own shared_ptr to the source, so a running plan stays valid.
 	sources.clear();
+}
+
+// --- Curve sampling -------------------------------------------------------------
+// A port of AWCurveMath.to_norm/from_norm, AWLfo.wave/envelope and AWChain.base_norm/
+// sample_norm. The GDScript versions stay the reference (the self-test compares them).
+
+static const double AW_FADER_EXP = 0.25;
+
+static inline double aw_db_to_linear(double db) {
+	return std::pow(10.0, db / 20.0);
+}
+
+static inline double aw_clamp01(double x) {
+	return x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x);
+}
+
+static double aw_to_norm(int scale, double v, double lo, double hi) {
+	if (scale == 1) { // LOG
+		if (lo > 0.0 && hi > lo) {
+			return aw_clamp01(std::log(std::max(v, lo) / lo) / std::log(hi / lo));
+		}
+	} else if (scale == 2) { // FADER
+		const double f0 = std::pow(aw_db_to_linear(lo), AW_FADER_EXP);
+		const double f1 = std::pow(aw_db_to_linear(hi), AW_FADER_EXP);
+		return aw_clamp01((std::pow(aw_db_to_linear(v), AW_FADER_EXP) - f0) / (f1 - f0));
+	}
+	return hi > lo ? aw_clamp01((v - lo) / (hi - lo)) : 0.0;
+}
+
+static double aw_from_norm(int scale, double n, double lo, double hi) {
+	n = aw_clamp01(n);
+	if (scale == 1) {
+		if (lo > 0.0 && hi > lo) {
+			return lo * std::pow(hi / lo, n);
+		}
+	} else if (scale == 2) {
+		const double f0 = std::pow(aw_db_to_linear(lo), AW_FADER_EXP);
+		const double f1 = std::pow(aw_db_to_linear(hi), AW_FADER_EXP);
+		const double lin = std::pow(f0 + n * (f1 - f0), 1.0 / AW_FADER_EXP);
+		const double db = lin <= 0.0 ? -INFINITY : 20.0 * std::log10(lin);
+		return CLAMP(db, lo, hi);
+	}
+	return lo + n * (hi - lo);
+}
+
+PackedFloat32Array AWCore::sample_curve(const Ref<Animation> &p_anim, const Dictionary &p_spec, double p_start, double p_step, int64_t p_count, int64_t p_unit) const {
+	return sample_curve_impl(p_anim, p_spec, nullptr, p_start, p_step, p_count, p_unit);
+}
+
+PackedFloat32Array AWCore::sample_curve_at(const Ref<Animation> &p_anim, const Dictionary &p_spec, const PackedFloat64Array &p_times, int64_t p_unit) const {
+	return sample_curve_impl(p_anim, p_spec, p_times.ptr(), 0.0, 0.0, p_times.size(), p_unit);
+}
+
+PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const Dictionary &p_spec, const double *p_times, double p_start, double p_step, int64_t p_count, int64_t p_unit) const {
+	PackedFloat32Array out;
+	if (p_count <= 0) {
+		return out;
+	}
+	out.resize(p_count);
+	float *w = out.ptrw();
+
+	const int track = p_spec.get("track", -1);
+	const int scale = p_spec.get("scale", 0);
+	const double lo = p_spec.get("lo", 0.0);
+	const double hi = p_spec.get("hi", 1.0);
+	const double static_norm = p_spec.get("static_norm", 0.0);
+	const Dictionary lfo = p_spec.get("lfo", Dictionary());
+
+	int key_count = 0;
+	double first_t = 0.0, last_t = 0.0, first_v = 0.0, last_v = 0.0;
+	if (p_anim.is_valid() && track >= 0 && track < p_anim->get_track_count()) {
+		key_count = p_anim->track_get_key_count(track);
+		if (key_count > 0) {
+			first_t = p_anim->track_get_key_time(track, 0);
+			last_t = p_anim->track_get_key_time(track, key_count - 1);
+			first_v = p_anim->bezier_track_get_key_value(track, 0);
+			last_v = p_anim->bezier_track_get_key_value(track, key_count - 1);
+		}
+	}
+
+	const bool has_lfo = !lfo.is_empty();
+	int shape = 0;
+	double lmin = 0, lmax = 0, freq = 1, fade_in = 0, fade_out = 0, lstart = 0, lend = 1, seed = 1;
+	double lo_n = 0, hi_n = 0, f_in = 0, f_out = 0, span = 0;
+	if (has_lfo) {
+		shape = lfo.get("shape", 0);
+		lmin = lfo.get("min", 0.0);
+		lmax = lfo.get("max", 1.0);
+		freq = lfo.get("freq", 4.0);
+		fade_in = lfo.get("fade_in", 0.0);
+		fade_out = lfo.get("fade_out", 0.0);
+		lstart = lfo.get("start", 0.0);
+		lend = lfo.get("end", 1.0);
+		seed = (double)(int64_t)lfo.get("seed", 1);
+		lo_n = aw_to_norm(scale, std::min(lmin, lmax), lo, hi);
+		hi_n = aw_to_norm(scale, std::max(lmin, lmax), lo, hi);
+		span = std::max(lend - lstart, 0.0);
+		f_in = CLAMP(fade_in, 0.0, span);
+		f_out = CLAMP(fade_out, 0.0, span - f_in);
+	}
+
+	for (int64_t i = 0; i < p_count; i++) {
+		const double t = p_times ? p_times[i] : p_start + (double)i * p_step;
+		double b;
+		if (key_count == 0) {
+			b = static_norm;
+		} else if (t <= first_t) {
+			b = first_v;
+		} else if (t >= last_t) {
+			b = last_v;
+		} else {
+			b = aw_clamp01(p_anim->bezier_track_interpolate(track, t));
+		}
+		double n = b;
+		if (has_lfo && p_unit != 4) {
+			double e = 0.0;
+			if (!(t < lstart || t > lend || span <= 0.0)) {
+				e = 1.0;
+				if (f_in > 0.0) {
+					e = std::min(e, (t - lstart) / f_in);
+				}
+				if (f_out > 0.0) {
+					e = std::min(e, (lend - t) / f_out);
+				}
+				e = aw_clamp01(e);
+			}
+			if (e > 0.0) {
+				const double p = (t - lstart) * freq;
+				const double fl = std::floor(p);
+				const double ph = p - fl;
+				double wv;
+				switch (shape) {
+					case 1:
+						wv = 1.0 - std::fabs(ph * 2.0 - 1.0);
+						break;
+					case 2:
+						wv = ph < 0.5 ? 1.0 : 0.0;
+						break;
+					case 3:
+						wv = ph;
+						break;
+					case 4: {
+						const double r = std::sin(fl * 12.9898 + seed * 78.233) * 43758.5453;
+						wv = r - std::floor(r);
+						break;
+					}
+					default:
+						wv = 0.5 + 0.5 * std::sin(6.283185307179586 * p);
+				}
+				const double target = lo_n + (hi_n - lo_n) * wv;
+				n = aw_clamp01(b + (target - b) * e);
+			}
+		}
+		double v;
+		switch (p_unit) {
+			case 1:
+			case 4:
+				v = n;
+				break;
+			case 2: {
+				const double db = aw_from_norm(scale, n, lo, hi);
+				v = db <= -59.9 ? 0.0 : aw_db_to_linear(db);
+				break;
+			}
+			case 3:
+				v = std::pow(2.0, aw_from_norm(scale, n, lo, hi) / 12.0);
+				break;
+			default:
+				v = aw_from_norm(scale, n, lo, hi);
+		}
+		w[i] = (float)v;
+	}
+	return out;
 }
 
 // --- Plan -----------------------------------------------------------------------

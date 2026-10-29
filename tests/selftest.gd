@@ -400,6 +400,151 @@ static func automation_tests(_screen: AWMainScreen) -> void:
 	check(first_ms < 250.0 and cached_ms < 25.0, "demo plan rebuild: %.1f ms first (decode + curve tables), %.1f ms cached" % [first_ms, cached_ms])
 
 
+static func sampler_tests(_screen: AWMainScreen) -> void:
+	var K := AWProject._k
+	var LIN := AWCurve.HandleMode.LINEAR
+	var BAL := AWCurve.HandleMode.BALANCED
+	var native := AWSampler.native()
+	check(native != null, "native curve sampler available")
+	if native == null:
+		return
+
+	# 1. Native sampling equals the GDScript reference for every scale, LFO shape and unit.
+	var ch := AWChain.create(AWEffectLibrary.CLIP_SOURCE)
+	var lp := AWEffect.create("Low Pass", ch.new_effect_id())
+	var rv := AWEffect.create("Reverb", ch.new_effect_id())
+	ch.effects.append_array([lp, rv])
+	var src := ch.effects[0]
+	AWProject._curve(ch, src.id, "gain_db", Color.WHITE, [K.call(0.0, -20.0, BAL), K.call(1.0, 3.0, BAL), K.call(3.0, -45.0, BAL)]) # FADER
+	AWProject._curve(ch, lp.id, "cutoff_hz", Color.WHITE, [K.call(0.0, 200.0, BAL), K.call(2.0, 9000.0, BAL), K.call(3.0, 400.0, BAL)]) # LOG
+	AWProject._curve(ch, rv.id, "wet", Color.WHITE, [K.call(0.5, 0.2, LIN), K.call(2.5, 0.9, LIN)]) # LINEAR, starts after t=0
+	AWProject._curve(ch, src.id, "pitch_semitones", Color.WHITE, [K.call(0.0, 0.0, LIN), K.call(3.0, -7.0, LIN)])
+	var worst := 0.0
+	var cases := 0
+	for curve in ch.curves:
+		var lfo_options: Array = [null]
+		for shape in 5:
+			var l := AWLfo.new()
+			l.shape = shape
+			l.freq_hz = [0.7, 3.0, 11.0, 20.0, 5.0][shape]
+			l.start_sec = 0.4
+			l.end_sec = 2.7
+			l.fade_in_sec = 0.3
+			l.fade_out_sec = 0.6
+			l.random_seed = shape * 7 + 1
+			var r := ch.curve_range(curve)
+			l.min_value = lerpf(r.x, r.y, 0.15)
+			l.max_value = lerpf(r.x, r.y, 0.85)
+			lfo_options.append(l)
+		for l in lfo_options:
+			curve.lfo = l
+			for unit in [AWSampler.VALUE, AWSampler.NORM, AWSampler.BASE_NORM]:
+				var got := AWSampler.values(ch, curve, -0.2, 0.0137, 260, unit)
+				for i in got.size():
+					var want := AWSampler._one(ch, curve, -0.2 + i * 0.0137, unit)
+					var tol := 1e-5 * maxf(1.0, absf(want))
+					worst = maxf(worst, absf(got[i] - want) / maxf(1.0, absf(want)))
+					if absf(got[i] - want) > tol * 5.0:
+						check(false, "native != reference: %s unit %d lfo %s t=%.3f got %f want %f" % [curve.param, unit, str(l.shape) if l else "none", -0.2 + i * 0.0137, got[i], want])
+						return
+				cases += 1
+	check(true, "native sampler equals the GDScript reference: %d curve/LFO/unit combinations, worst relative error %.8f" % [cases, worst])
+	# Gain / rate units, and sampling at arbitrary times.
+	var gcurve := ch.get_curve(src.id, "gain_db")
+	gcurve.lfo = null
+	var gg := AWSampler.values(ch, gcurve, 0.0, 0.01, 300, AWSampler.GAIN)
+	var gok := true
+	for i in gg.size():
+		var db := ch.sample(gcurve, i * 0.01)
+		gok = gok and absf(gg[i] - (0.0 if db <= -59.9 else db_to_linear(db))) < 1e-5
+	check(gok, "gain unit: dB converted to linear (silence at the bottom of the range)")
+	var times := PackedFloat64Array([0.0, 0.3, 1.1, 2.9, 5.0, -1.0])
+	var at := AWSampler.values_at(ch, gcurve, times, AWSampler.VALUE)
+	var aok := true
+	for i in times.size():
+		aok = aok and absf(at[i] - ch.sample(gcurve, times[i])) < 1e-4
+	check(aok, "sampling at arbitrary times (also before the first and after the last key)")
+
+	# 2. Pitch warp: an LFO edit alone changes the timing (no key edit); the cache must notice.
+	var clip := AWClip.create("w", 0.0, 3.0, 0, Color.RED)
+	AWProject._curve(clip.chain, clip.chain.effects[0].id, "pitch_semitones", Color.WHITE, [K.call(0.0, 0.0, LIN), K.call(3.0, 0.0, LIN)])
+	var pcurve := clip.chain.get_curve(clip.chain.effects[0].id, "pitch_semitones")
+	var len0 := clip.play_length()
+	var lf := AWLfo.new()
+	lf.min_value = -12.0
+	lf.max_value = 0.0
+	lf.freq_hz = 2.0
+	lf.fade_in_sec = 0.0
+	lf.fade_out_sec = 0.0
+	lf.start_sec = 0.0
+	lf.end_sec = 3.0
+	pcurve.lfo = lf
+	clip.invalidate_warp()
+	var len1 := clip.play_length()
+	lf.min_value = -24.0
+	clip.invalidate_warp()
+	var len2 := clip.play_length()
+	var calls0 := AWSampler.calls
+	clip.invalidate_warp()
+	var len3 := clip.play_length()
+	check(absf(len0 - 3.0) < 0.001 and len1 > len0 + 0.2 and len2 > len1 + 0.1 and len3 == len2 and AWSampler.calls == calls0,
+		"pitch LFO changes the clip length with no key edit (%.3f -> %.3f -> %.3f s); an unchanged warp is not rebuilt" % [len0, len1, len2])
+
+	# 3. Plan rebuild cost: 8 layered 20 s clips, 3 curves each, all with a 20 Hz LFO.
+	var e := AWEngine.new()
+	var proj := AWProject.new()
+	proj.master_chain = AWChain.create(AWEffectLibrary.MASTER_OUTPUT)
+	var clips: Array[AWClip] = []
+	for r in 8:
+		var c := AWClip.create("c%d" % r, 0.0, 20.0, r, Color.RED)
+		var s0 := c.chain.effects[0]
+		AWProject._curve(c.chain, s0.id, "pitch_semitones", Color.WHITE, [K.call(0.0, 0.0, LIN), K.call(20.0, 0.0, LIN)])
+		AWProject._curve(c.chain, s0.id, "gain_db", Color.WHITE, [K.call(0.0, -6.0, LIN), K.call(20.0, -6.0, LIN)])
+		AWProject._curve(c.chain, s0.id, "pan", Color.WHITE, [K.call(0.0, 0.0, LIN), K.call(20.0, 0.0, LIN)])
+		for curve in c.chain.curves:
+			var l2 := AWLfo.new()
+			l2.freq_hz = 20.0
+			l2.fade_in_sec = 0.0
+			l2.fade_out_sec = 0.0
+			l2.start_sec = 0.0
+			l2.end_sec = 20.0
+			var rg := c.chain.curve_range(curve)
+			l2.min_value = lerpf(rg.x, rg.y, 0.4)
+			l2.max_value = lerpf(rg.x, rg.y, 0.6)
+			curve.lfo = l2
+		clips.append(c)
+	proj.clips.assign(clips)
+	e.set_project(proj)
+	var t0 := Time.get_ticks_usec()
+	for c in clips:
+		c.play_length()
+	var warp_ms := (Time.get_ticks_usec() - t0) / 1000.0
+	t0 = Time.get_ticks_usec()
+	e._rebuild_plan()
+	var full_ms := (Time.get_ticks_usec() - t0) / 1000.0
+	check(full_ms < 400.0 and warp_ms < 400.0, "8 clips x 20 s x 3 curves with 20 Hz LFOs: warps %.0f ms, full plan %.0f ms (was seconds in GDScript)" % [warp_ms, full_ms])
+
+	# 4. Editing one curve re-samples only that curve.
+	var edit_curve := clips[3].chain.curves[1]
+	var calls1 := AWSampler.calls
+	t0 = Time.get_ticks_usec()
+	e._rebuild_plan()
+	var idle_ms := (Time.get_ticks_usec() - t0) / 1000.0
+	check(AWSampler.calls == calls1, "unchanged project: no curve is re-sampled (%.1f ms)" % idle_ms)
+	edit_curve.lfo.freq_hz = 17.0
+	calls1 = AWSampler.calls
+	t0 = Time.get_ticks_usec()
+	e._rebuild_plan()
+	var edit_ms := (Time.get_ticks_usec() - t0) / 1000.0
+	check(AWSampler.calls == calls1 + 1 and edit_ms < 60.0, "LFO frequency edit re-samples only that curve: %d sampling call, %.1f ms" % [AWSampler.calls - calls1, edit_ms])
+	var ek := clips[5].chain.get_keys(clips[5].chain.curves[2])
+	ek[0]["v"] = 0.9
+	calls1 = AWSampler.calls
+	clips[5].chain.set_keys(clips[5].chain.curves[2], ek)
+	e._rebuild_plan()
+	check(AWSampler.calls == calls1 + 1, "key edit re-samples only that curve, not the clip's other curves (%d call)" % [AWSampler.calls - calls1])
+
+
 static func get_process_delta(tree: SceneTree) -> float:
 	return maxf(1.0 / 60.0, get_delta_guess(tree))
 
@@ -431,8 +576,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.3.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.3.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.3.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.3.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -471,6 +616,8 @@ static func run(screen: AWMainScreen) -> void:
 		await dry_playback_tests(screen)
 		print("--- automation ---")
 		automation_tests(screen)
+		print("--- sampler ---")
+		sampler_tests(screen)
 
 	print("--- model ---")
 	check(d.focus_clip == c4 and d.active_chain() == ch, "starts on Clip 4's chain")

@@ -31,20 +31,33 @@ extends Resource
 
 var _warp: AWClipWarp = null
 var _warp_rev := -1
+var _warp_sig: Array = []
+var _warp_stale := true
 
 
-## The cached clip-time <-> project-time mapping (rebuilt when the chain's keys change).
+## The cached clip-time <-> project-time mapping. It is rebuilt only when what it depends on
+## (the Pitch curve's keys and LFO, or the static Pitch) actually changed.
 func warp() -> AWClipWarp:
 	var rev := chain.revision if chain else 0
-	if _warp == null or _warp_rev != rev:
+	if _warp == null:
 		_warp = AWClipWarp.build(self)
 		_warp_rev = rev
+		_warp_sig = AWClipWarp.signature(self)
+		_warp_stale = false
+	elif _warp_stale or _warp_rev != rev:
+		var sig := AWClipWarp.signature(self)
+		if sig != _warp_sig:
+			_warp = AWClipWarp.build(self)
+			_warp_sig = sig
+		_warp_rev = rev
+		_warp_stale = false
 	return _warp
 
 
-## Forces a rebuild (e.g. after the static Pitch value changes).
+## Marks the warp for a check on next use (e.g. after any edit; a static Pitch change or an
+## LFO edit doesn't move the chain's key revision).
 func invalidate_warp() -> void:
-	_warp = null
+	_warp_stale = true
 
 
 ## How long the clip lasts on the timeline.
