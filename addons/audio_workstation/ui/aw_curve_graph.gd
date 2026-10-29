@@ -599,15 +599,26 @@ func _draw_value_grid(ch: AWChain, c_text: Color) -> void:
 		draw_line(Vector2(0, y), Vector2(size.x, y), Color(c_text, 0.08 if i % 4 == 0 else 0.04))
 
 
-func _draw_samples(fn: Callable, c: AWCurve, xs: float, xe: float, col: Color, width: float, step := 2.0) -> void:
-	var pts := PackedVector2Array()
+## Draws a curve as a polyline, one point every `step` pixels. The heights come from one
+## native call (AWSampler), not a GDScript call per pixel.
+func _draw_samples(c: AWCurve, unit: int, xs: float, xe: float, col: Color, width: float, step := 2.0) -> void:
+	var px := PackedFloat32Array()
+	var times := PackedFloat64Array()
 	var x := xs
 	while x < xe:
-		pts.append(Vector2(x, val_to_y(c, fn.call(x_to_local(x)))))
+		px.append(x)
+		times.append(x_to_local(x))
 		x += step
-	pts.append(Vector2(xe, val_to_y(c, fn.call(x_to_local(xe)))))
-	if pts.size() >= 2:
-		draw_polyline(pts, col, width, true)
+	px.append(xe)
+	times.append(x_to_local(xe))
+	if px.size() < 2:
+		return
+	var vals := AWSampler.values_at(chain(), c, times, unit)
+	var pts := PackedVector2Array()
+	pts.resize(px.size())
+	for i in px.size():
+		pts[i] = Vector2(px[i], val_to_y(c, vals[i]))
+	draw_polyline(pts, col, width, true)
 
 
 ## While the LFO panel is open: Max/Min lines across the LFO's span and a "depth" strip
@@ -661,9 +672,9 @@ func _draw_curve(ch: AWChain, c: AWCurve, x0: float, x1: float, c_text: Color) -
 	var has_lfo := ch.has_active_lfo(c)
 	if has_lfo:
 		# The drawn curve (its keys) stays visible as a faint guide under the LFO result.
-		_draw_samples(func(t: float) -> float: return ch.base_norm(c, t), c, xs, xe, Color(col, col.a * 0.4), 1.25)
+		_draw_samples(c, AWSampler.BASE_NORM, xs, xe, Color(col, col.a * 0.4), 1.25)
 	var step := 1.0 if has_lfo else 2.0
-	_draw_samples(func(t: float) -> float: return ch.sample_norm(c, t), c, xs, xe, col, width, step)
+	_draw_samples(c, AWSampler.NORM, xs, xe, col, width, step)
 	if not editable:
 		return
 	var keys := ch.get_keys(c)

@@ -189,6 +189,28 @@ func base_norm(curve: AWCurve, local_time: float) -> float:
 	return clampf(automation.bezier_track_interpolate(t, local_time), 0.0, 1.0)
 
 
+## Everything the native sampler (AWCore.sample_curve) needs to evaluate a curve exactly like
+## sample() / sample_norm() do.
+func native_spec(curve: AWCurve) -> Dictionary:
+	var r := curve_range(curve)
+	var e := effect_of(curve)
+	var spec := {
+		"track": _track(curve),
+		"scale": curve.scale,
+		"lo": r.x,
+		"hi": r.y,
+		"static_norm": to_norm(curve, e.get_param(curve.param)) if e else 0.0,
+	}
+	var l := curve.lfo
+	if l != null and l.enabled:
+		spec["lfo"] = {
+			"shape": l.shape, "min": l.min_value, "max": l.max_value, "freq": l.freq_hz,
+			"fade_in": l.fade_in_sec, "fade_out": l.fade_out_sec,
+			"start": l.start_sec, "end": l.end_sec, "seed": l.random_seed,
+		}
+	return spec
+
+
 ## Changes how a curve is scaled while keeping every key at the same parameter value.
 ## Handles are re-derived (smoothed) because their shape doesn't carry across scales.
 ## (For the future per-curve scale toggle.)

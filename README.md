@@ -1,4 +1,4 @@
-# Audio Workstation for Godot 4.7+ (developed against 4.8 beta) (interface phase, v0.8: dry playback)
+# Audio Workstation for Godot 4.7+ (developed against 4.8 beta) (interface phase, v0.9.1: automation)
 
 An **Audio** main-screen tab for designing sound effects: layer clips on a free grid,
 give each clip (and the master) an effect chain, and shape any parameter with Bezier
@@ -108,9 +108,9 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
     ui/aw_curve_axis.gd             value axis + tick generation (linear / log / fader / semitones)
     ui/*                            toolbar, clip grid, curve graph + dot column, effect cards, main screen
 
-## Native engine (milestones 1 and 2)
+## Native engine (milestones 1 to 3)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
-`● Engine 0.2.0`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
+`● Engine 0.3.1`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
 than the plugin: rebuild it) and everything except sound still works. Build steps: `BUILDING.md`.
 
 **Dry playback (milestone 2).** Play, Stop, seek, loop and double-click audition now make sound.
@@ -120,10 +120,20 @@ than the plugin: rebuild it) and everything except sound still works. Build step
   Pan, pitch as a playback-rate table) and an `AudioStreamPlayer` plays the core through `AWPreviewStream`.
   The playhead is the real playback position; the sound stops by itself at its end (or loops).
 - Waveforms in the clip grid are real peaks of the source file (clips with no audio keep the placeholder).
-- Not yet: curve automation of Gain/Pan/Pitch beyond the pitch rate table (milestone 3), effects (4),
-  export/bake (5), save/open (6). Clips without an audio file stay silent but still move the playhead.
+- Not yet: effects (milestone 4), export/bake (5), save/open (6). Clips without an audio file stay silent but still move the playhead.
 - The decoder lag of Godot's resampler (about 2 source frames) is removed, so a source sample lands on
   the exact frame the timing model says.
+- **Automation (milestone 3).** The Gain, Pan and Pitch curves of a clip (including their LFOs) and the
+  Output volume curve are audible. Each is sampled every 64 frames (about 1.5 ms) into a table; the mixer
+  interpolates it per sample. Clip curves run on the clip's own clock, so they slow down with Pitch; the Output
+  curve runs on project time. Square LFO edges become 1.5 ms ramps (no clicks). A value at the bottom of a dB
+  range (-60 dB) is true silence. Tables are cached per curve and rebuilt only when its keys, LFO or the clip
+  length change, so dragging a key or an LFO slider re-samples just that curve.
+  Sampling is native (`AWCore.sample_curve`, a C++ port of `AWChain.sample`; the self-test compares it with the
+  GDScript version on every scale, LFO shape and unit). It also draws the curve graph and builds the pitch
+  warp. Eight layered 20 s clips with 24 curves, all with 20 Hz LFOs: plan rebuild 61 ms (it was 8.9 s in GDScript);
+  an LFO edit re-samples one curve in about 7 ms.
+  Edits while playing are heard within 50 ms.
 - Interpolation is 4-point cubic; pitching up does not anti-alias yet.
 - Alt+wheel over the clip grid changes the row height (default 48 px), so waveforms can be made larger.
 

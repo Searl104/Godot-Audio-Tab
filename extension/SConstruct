@@ -22,7 +22,7 @@ env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
 # godot-cpp command lines (changing them would rebuild all of godot-cpp, minutes of work).
 aw_env = env.Clone()
 aw_env.Append(CPPPATH=["src/"])
-aw_env.Append(CPPDEFINES=[("AW_ENGINE_VERSION", '\\"0.2.0\\"'), ("AW_GODOT_CPP", '\\"%s\\"' % GODOT_CPP_TAG)])
+aw_env.Append(CPPDEFINES=[("AW_ENGINE_VERSION", '\\"0.3.1\\"'), ("AW_GODOT_CPP", '\\"%s\\"' % GODOT_CPP_TAG)])
 sources = Glob("src/*.cpp")
 
 ADDON = "../addons/audio_workstation/"
