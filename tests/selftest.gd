@@ -316,6 +316,15 @@ static func run(screen: AWMainScreen) -> void:
 		var ms := (Time.get_ticks_usec() - t0) / 1000.0
 		check(ms < 500.0, "10 s of audio rendered in %.1f ms (%.0fx real time)" % [ms, 10000.0 / maxf(ms, 0.001)])
 
+	print("--- row height ---")
+	for g in screen.find_children("*", "AWClipGrid", true, false):
+		var h0: float = g.row_h
+		g.set_row_height(h0 * 2.0)
+		check(is_equal_approx(g.row_h, h0 * 2.0) and g.custom_minimum_size.y >= g.row_h * 6.0, "Alt+wheel row height: %.0f -> %.0f px" % [h0, g.row_h])
+		g.set_row_height(10000.0)
+		check(g.row_h == AWClipGrid.ROW_H_MAX, "row height is capped at %.0f" % AWClipGrid.ROW_H_MAX)
+		g.set_row_height(h0)
+
 	if expect != "0":
 		print("--- dry playback ---")
 		await dry_playback_tests(screen)
@@ -409,7 +418,7 @@ static func run(screen: AWMainScreen) -> void:
 	var start0 := c2.start_sec
 	var row0 := c2.row
 	var dx := 0.4 * grid.view.pixels_per_sec
-	drag(grid, r.get_center(), r.get_center() + Vector2(dx, AWClipGrid.ROW_H * 2))
+	drag(grid, r.get_center(), r.get_center() + Vector2(dx, grid.row_h * 2))
 	check(is_equal_approx(c2.start_sec, start0 + 0.4) and c2.row == row0 + 2, "drag clip: +0.4 s, +2 rows (got %.3f, row %d)" % [c2.start_sec, c2.row])
 	d.undo()
 	check(is_equal_approx(c2.start_sec, start0) and c2.row == row0, "one undo restores the drag")
@@ -439,8 +448,8 @@ static func run(screen: AWMainScreen) -> void:
 	check(is_equal_approx(p.clips[0].start_sec, s1 + 0.1) and is_equal_approx(p.clips[1].start_sec, s2 + 0.1), "multi-selection moves together")
 	d.undo()
 	check(is_equal_approx(p.clips[0].start_sec, s1) and is_equal_approx(p.clips[1].start_sec, s2), "undo multi-move")
-	click(grid, Vector2(grid.view.time_to_x(2.5), AWClipGrid.ROW_H * 5.5))
-	click(grid, Vector2(grid.view.time_to_x(2.5), AWClipGrid.ROW_H * 5.5), MOUSE_BUTTON_LEFT, false)
+	click(grid, Vector2(grid.view.time_to_x(2.5), grid.row_h * 5.5))
+	click(grid, Vector2(grid.view.time_to_x(2.5), grid.row_h * 5.5), MOUSE_BUTTON_LEFT, false)
 	check(d.selection.is_empty() and is_equal_approx(d.playhead_sec, 2.5), "click empty: deselect + seek")
 
 	print("--- UI: curve graph ---")

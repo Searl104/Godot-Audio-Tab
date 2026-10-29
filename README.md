@@ -125,6 +125,7 @@ than the plugin: rebuild it) and everything except sound still works. Build step
 - The decoder lag of Godot's resampler (about 2 source frames) is removed, so a source sample lands on
   the exact frame the timing model says.
 - Interpolation is 4-point cubic; pitching up does not anti-alias yet.
+- Alt+wheel over the clip grid changes the row height (default 48 px), so waveforms can be made larger.
 
 ## Placeholders (search for TODO(logic))
 - `AWEngine`: `render_wav` and `render_audio_stream` are stubs (milestone 5).
