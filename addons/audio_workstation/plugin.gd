@@ -5,6 +5,7 @@ extends EditorPlugin
 const MainScreen := preload("res://addons/audio_workstation/ui/aw_main_screen.gd")
 
 var _main_screen: MainScreen
+var _export_dock: EditorDock
 
 
 func _enter_tree() -> void:
@@ -12,10 +13,22 @@ func _enter_tree() -> void:
 	_main_screen.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_main_screen.setup(self)
 	EditorInterface.get_editor_main_screen().add_child(_main_screen)
+	# The Export group lives in a real editor dock the user can move, float or close.
+	_export_dock = EditorDock.new()
+	_export_dock.title = "Audio Export"
+	_export_dock.layout_key = "audio_workstation_export"
+	_export_dock.default_slot = EditorDock.DOCK_SLOT_RIGHT_UL
+	_export_dock.custom_minimum_size = Vector2(260, 0)
+	_export_dock.add_child(_main_screen.export_panel)
+	add_dock(_export_dock)
 	_make_visible(false)
 
 
 func _exit_tree() -> void:
+	if _export_dock:
+		remove_dock(_export_dock)
+		_export_dock.queue_free()
+		_export_dock = null
 	if _main_screen:
 		_main_screen.queue_free()
 		_main_screen = null

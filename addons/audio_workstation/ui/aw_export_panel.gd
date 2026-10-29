@@ -69,6 +69,7 @@ func _ready() -> void:
 	box.add_child(_row("Tail", tail_box))
 	var hint := AWTheme.dim_label("Silence added after the last clip so delays and reverbs can ring out.", 0.6)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.custom_minimum_size.x = 200 # wrapping labels need a width or they report a huge height
 	box.add_child(hint)
 
 	var file_box := HBoxContainer.new()
@@ -92,6 +93,7 @@ func _ready() -> void:
 	_warn.text = "File exists. Exporting will overwrite it."
 	_warn.add_theme_color_override("font_color", RED_TEXT)
 	_warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_warn.custom_minimum_size.x = 200
 	box.add_child(_warn)
 
 	box.add_child(HSeparator.new())
