@@ -14,6 +14,7 @@ var engine: AWEngine
 var timeline: AWTimelinePane
 var curves: AWCurvePane
 var chain_panel: AWChainPanel
+var side_panel: AWSidePanel
 var export_panel: AWExportPanel
 
 var _status: Label
@@ -60,7 +61,9 @@ func _ready() -> void:
 	export_panel = AWExportPanel.new()
 	export_panel.setup(doc)
 	export_panel.browse_requested.connect(func() -> void: _on_request("export_browse"))
-	top.add_child(export_panel)
+	side_panel = AWSidePanel.new()
+	top.add_child(side_panel)
+	side_panel.add_tab(export_panel)
 	vsplit.add_child(top)
 
 	chain_panel = AWChainPanel.new()

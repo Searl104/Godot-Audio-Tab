@@ -1,7 +1,7 @@
 @tool
 class_name AWExportPanel
-extends PanelContainer
-## Right-hand "Export" group: format, bit depth, sample rate (read-only), tail,
+extends MarginContainer
+## The "Export" tab of the side panel: format, bit depth, sample rate (read-only), tail,
 ## output file name (red when it would overwrite a file) and the Export button.
 
 signal browse_requested
@@ -26,16 +26,12 @@ func setup(p_doc: AWDocument) -> void:
 
 
 func _ready() -> void:
-	custom_minimum_size.x = 280
+	name = "Export"
+	for side in ["left", "right", "top", "bottom"]:
+		add_theme_constant_override("margin_" + side, 8)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 8)
 	add_child(box)
-
-	var title := Label.new()
-	title.text = "Export"
-	title.add_theme_font_size_override("font_size", get_theme_default_font_size() + 2)
-	box.add_child(title)
-	box.add_child(HSeparator.new())
 
 	var fmt := OptionButton.new()
 	fmt.add_item("WAV")
