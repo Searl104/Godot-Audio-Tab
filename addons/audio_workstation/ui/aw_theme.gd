@@ -47,13 +47,18 @@ const EXPORT_END := Color("#e8834a")
 
 
 ## The "sound ends here" marker: a vertical line, optionally with a small flag at the top.
-static func draw_export_end(ctrl: Control, x: float, top: float, bottom: float, flag := false) -> void:
+## Dashed and fainter while the marker is automatic (following the clips); solid once placed.
+static func draw_export_end(ctrl: Control, x: float, top: float, bottom: float, flag := false, auto := false) -> void:
 	if x < -2.0 or x > ctrl.size.x + 2.0:
 		return
 	var xx := roundf(x) + 0.5
-	ctrl.draw_line(Vector2(xx, top), Vector2(xx, bottom), Color(EXPORT_END, 0.9), 1.5)
+	if auto:
+		ctrl.draw_dashed_line(Vector2(xx, top), Vector2(xx, bottom), Color(EXPORT_END, 0.7), 1.5, 5.0)
+	else:
+		ctrl.draw_line(Vector2(xx, top), Vector2(xx, bottom), Color(EXPORT_END, 0.95), 2.0)
 	if flag:
-		ctrl.draw_colored_polygon(PackedVector2Array([Vector2(xx - 7, top), Vector2(xx + 1, top), Vector2(xx + 1, top + 9)]), EXPORT_END)
+		var col := Color(EXPORT_END, 0.7) if auto else EXPORT_END
+		ctrl.draw_colored_polygon(PackedVector2Array([Vector2(xx - 7, top), Vector2(xx + 7, top), Vector2(xx + 7, top + 6), Vector2(xx, top + 12), Vector2(xx - 7, top + 6)]), col)
 
 
 static func dim_label(label_text: String, alpha := 0.55) -> Label:

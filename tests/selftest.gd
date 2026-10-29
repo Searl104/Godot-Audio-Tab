@@ -405,7 +405,7 @@ static func effects_tests(screen: AWMainScreen) -> void:
 		return Vector2i(v, v))
 	var proj := AWProject.new()
 	proj.master_chain = AWChain.create(AWEffectLibrary.MASTER_OUTPUT)
-	proj.export_tail_sec = 0.5
+	proj.export_end_sec = 1.5 # the marker: 1 s clip + 0.5 s tail
 	var ge := AWEngine.new()
 	ge.set_project(proj)
 	var clip := AWClip.create("fx", 0.0, 1.0, 0, Color.RED)
@@ -420,11 +420,20 @@ static func effects_tests(screen: AWMainScreen) -> void:
 	ge.project_edited(true)
 	var wet := ge.render_preview_range(0.0, 1.0)
 	check(d_peak > 0.45 and _peak(wet, int(0.3 * sr), int(0.9 * sr)) < 0.01, "Low Pass card at 500 Hz removes a 5 kHz tone (dry %.2f, wet %.4f)" % [d_peak, _peak(wet, int(0.3 * sr), int(0.9 * sr))])
-	check(int(ge.core.call("get_plan_end")) == sr + int(0.5 * sr), "the Export tail setting lengthens the plan (%d frames)" % int(ge.core.call("get_plan_end")))
+	check(int(ge.core.call("get_plan_end")) == int(round(1.5 * sr)), "the export marker sets the plan end (%d frames)" % int(ge.core.call("get_plan_end")))
 	card.bypass = true
 	ge.project_edited(true)
-	check(_peak(ge.render_preview_range(0.0, 1.0), int(0.3 * sr), int(0.9 * sr)) > 0.45 and int(ge.core.call("get_plan_end")) == sr, "bypassed card: signal passes, no tail")
+	check(_peak(ge.render_preview_range(0.0, 1.0), int(0.3 * sr), int(0.9 * sr)) > 0.45 and int(ge.core.call("get_plan_end")) == int(round(1.5 * sr)), "bypassed card: signal passes, the marker still decides the end")
+	proj.export_end_sec = -1.0
+	ge.project_edited(true)
+	ge.render_preview_range(0.0, 0.01)
+	check(int(ge.core.call("get_plan_end")) == sr, "automatic end with only a bypassed card: no tail (%d)" % int(ge.core.call("get_plan_end")))
 	card.bypass = false
+	ge.project_edited(true)
+	ge.render_preview_range(0.0, 0.01)
+	check(int(ge.core.call("get_plan_end")) == int(round((1.0 + AWProject.AUTO_TAIL_SEC) * sr)), "automatic end with a ringing card adds the automatic tail (%d)" % int(ge.core.call("get_plan_end")))
+	proj.export_end_sec = 1.5
+	ge.project_edited(true)
 	var rev := AWEffect.create("Reverb", clip.chain.new_effect_id())
 	clip.chain.effects.append(rev)
 	ge.project_edited(true)
@@ -756,8 +765,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.4.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.4.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.4.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.4.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -1206,34 +1215,52 @@ static func run(screen: AWMainScreen) -> void:
 
 	# --- Export group (UI state only; the render itself is milestone 5) ---
 	var ep: AWProject = d.project
-	check(ep.export_bit_depth == 16 and is_equal_approx(ep.export_tail_sec, 2.5) and ep.export_path == "assets/sfx/jump.wav", "export: defaults 16-bit, 2.5 s tail, assets/sfx/jump.wav")
+	check(ep.export_bit_depth == 16 and ep.export_end_is_auto() and ep.export_path == "assets/sfx/jump.wav", "export: defaults 16-bit, automatic end, assets/sfx/jump.wav")
 	check(d.export_target() == "res://assets/sfx/jump.wav", "export: relative names live under res://")
-	d.set_export_tail(9.0)
-	check(is_equal_approx(ep.export_tail_sec, 5.0), "export: tail clamps to 5 s")
-	d.set_export_tail(2.5)
+	d.set_export_end(99999.0)
+	check(is_equal_approx(ep.export_end_sec, AWProject.MAX_END_SEC), "export end: clamps to %.0f s" % AWProject.MAX_END_SEC)
+	d.set_export_end(-5.0)
+	check(ep.export_end_is_auto(), "export end: a negative value means automatic")
 	d.set_export_bit_depth(32)
 	var len32 := d.export_size_bytes()
 	d.set_export_bit_depth(16)
 	var len16 := d.export_size_bytes()
 	check(len32 - 44 == 2 * (len16 - 44), "export: 32-bit float file is twice the size of 16-bit")
 	var no_tail := d.export_end_sec()
-	var last := 0.0
-	for ec in ep.clips:
-		last = maxf(last, ec.start_sec + ec.play_length())
-	check(absf(no_tail - last) < 0.0001, "export end: last clip end with no ringing effects (%.3f s)" % no_tail)
+	var last := ep.last_clip_end_sec()
+	check(absf(no_tail - last) < 0.0001, "export end (auto): last clip end with no ringing effects (%.3f s)" % no_tail)
 	var ring := AWEffect.create("Low Pass", ep.clips[0].chain.new_effect_id())
 	ep.clips[0].chain.effects.append(ring)
 	var with_tail := d.export_end_sec()
-	check(absf(with_tail - maxf(last, ep.clips[0].start_sec + ep.clips[0].play_length() + 2.5)) < 0.0001, "export end: a ringing card adds the tail to its own clip (%.3f s)" % with_tail)
-	d.set_export_tail(5.0)
-	check(d.export_end_sec() > with_tail, "export end follows the tail setting")
-	d.set_export_tail(2.5)
+	check(absf(with_tail - maxf(last, ep.clips[0].start_sec + ep.clips[0].play_length() + AWProject.AUTO_TAIL_SEC)) < 0.0001, "export end (auto): a ringing card adds the automatic tail (%.3f s)" % with_tail)
+	d.set_export_end(5.0)
+	check(is_equal_approx(d.export_end_sec(), 5.0) and not ep.export_end_is_auto(), "export end: a placed marker is used as it is")
 	if screen.engine.core != null:
 		screen.engine.render_preview_range(0.0, 0.01)
 		var plan_end := float(screen.engine.core.call("get_plan_end")) / AudioServer.get_mix_rate()
-		check(absf(plan_end - d.export_end_sec()) < 0.001, "export end marker equals the engine's plan end (%.4f vs %.4f s)" % [d.export_end_sec(), plan_end])
+		check(absf(plan_end - 5.0) < 0.001, "export end: the engine's plan ends at the marker (%.4f s)" % plan_end)
+		d.set_export_end(1.0)
+		screen.engine.render_preview_range(0.0, 0.01)
+		plan_end = float(screen.engine.core.call("get_plan_end")) / AudioServer.get_mix_rate()
+		check(absf(plan_end - 1.0) < 0.001, "export end: a marker before the last clip cuts the sound short (%.4f s)" % plan_end)
+	d.undo()
+	check(is_equal_approx(ep.export_end_sec, 5.0), "export end: undo restores the previous marker")
+	var xp: AWExportPanel = screen.export_panel
+	check(absf(xp._end.value - 5.0) < 0.001 and not xp._auto.button_pressed, "export dock: End field shows the marker, Auto is off")
+	xp._auto.button_pressed = true
+	check(ep.export_end_is_auto() and xp._auto.button_pressed, "export dock: Auto puts the marker back on the clips")
+	xp._end.value = 7.25
+	check(is_equal_approx(ep.export_end_sec, 7.25), "export dock: typing a time places the marker")
+	d.set_export_end(1.0)
+	var ruler: AWTimeRuler = screen.timeline._ruler
+	var ry := ruler.size.y - 6.0
+	drag(ruler, Vector2(d.timeline_view.time_to_x(1.0), ry), Vector2(d.timeline_view.time_to_x(1.4), ry))
+	check(absf(ep.export_end_sec - 1.4) < 0.06 and not ep.export_end_is_auto(), "ruler: dragging the end flag moves the marker (%.3f s)" % ep.export_end_sec)
+	d.undo()
+	check(is_equal_approx(ep.export_end_sec, 1.0), "ruler: the drag is one undo step")
+	d.set_export_end(-1.0)
 	ep.clips[0].chain.effects.erase(ring)
-	check(absf(d.export_end_sec() - no_tail) < 0.0001, "export end: removing the card removes the tail")
+	check(absf(d.export_end_sec() - no_tail) < 0.0001, "export end (auto): removing the card removes the tail")
 	var tmp := "user://aw_selftest_overwrite.wav"
 	d.set_export_path(tmp)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))

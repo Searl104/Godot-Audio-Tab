@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_effect_types"):
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 2:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -290,10 +290,12 @@ func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
 	if src:
 		voice["gains"] = _table(ch, src, "gain_db", clip.length_sec, step_sec, AWSampler.GAIN)
 		voice["pans"] = _table(ch, src, "pan", clip.length_sec, step_sec, AWSampler.VALUE)
-	var fx := _clip_effects(clip, step_sec)
+	# Past its own end a ringing chain keeps going until the export marker.
+	var tail_sec := maxf(0.0, _end_sec() - (clip.start_sec + clip.play_length())) if chain_rings(ch) else 0.0
+	var fx := _clip_effects(clip, step_sec, tail_sec)
 	if not fx.is_empty():
 		voice["effects"] = fx
-		voice["tail_frames"] = int(_tail_sec() * r) if chain_rings(ch) else 0
+		voice["tail_frames"] = int(tail_sec * r)
 	return voice
 
 
@@ -308,9 +310,9 @@ const NATIVE_EFFECTS := {
 }
 
 
-## How long effects ring on after the last clip (the Export tail setting), in seconds.
-func _tail_sec() -> float:
-	return _project.export_tail_sec if _project != null else 0.0
+## Where the sound ends (the export marker), in seconds.
+func _end_sec() -> float:
+	return _project.export_end_resolved() if _project != null else 0.0
 
 
 ## True when a chain has a card that keeps sounding after the clip ends (so it gets a tail).
@@ -326,12 +328,12 @@ static func chain_rings(chain: AWChain) -> bool:
 
 ## A clip's effect chain after its Clip card. Parameter tables are over elapsed timeline time
 ## since the clip started (they stretch with Pitch, and run on through the tail).
-func _clip_effects(clip: AWClip, step_sec: float) -> Array:
+func _clip_effects(clip: AWClip, step_sec: float, tail_sec: float) -> Array:
 	var ch := clip.chain
 	var out: Array = []
 	if ch == null or ch.effects.size() < 2:
 		return out
-	var n := int(ceilf((clip.play_length() + _tail_sec()) / step_sec)) + 2
+	var n := int(ceilf((clip.play_length() + tail_sec) / step_sec)) + 2
 	var warp := clip.warp()
 	var wsig := AWClipWarp.signature(clip)
 	for i in range(1, ch.effects.size()):
@@ -379,8 +381,10 @@ func _rates(clip: AWClip, src: AWEffect, step_sec: float) -> PackedFloat32Array:
 
 ## The Output card's volume over project time, for the core's master gain.
 func _master_plan() -> Dictionary:
-	if _project == null or _project.master_chain == null or _project.master_chain.effects.is_empty():
+	if _project == null:
 		return {}
+	if _project.master_chain == null or _project.master_chain.effects.is_empty():
+		return {"end_frame": int(round(_end_sec() * _rate()))}
 	var mc := _project.master_chain
 	var out: AWEffect = mc.effects[0]
 	var r := _rate()
@@ -390,7 +394,7 @@ func _master_plan() -> Dictionary:
 		"step": RATE_STEP,
 	}
 	var fx: Array = []
-	var length_sec := _project.content_end_sec() + _tail_sec()
+	var length_sec := maxf(_project.content_end_sec(), _end_sec())
 	for i in range(1, mc.effects.size()):
 		var e: AWEffect = mc.effects[i]
 		if e.bypass or not NATIVE_EFFECTS.has(e.effect_type):
@@ -402,7 +406,8 @@ func _master_plan() -> Dictionary:
 		fx.append({"type": info[0], "params": tables, "step": RATE_STEP})
 	if not fx.is_empty():
 		plan["effects"] = fx
-		plan["tail_frames"] = int(_tail_sec() * r) if chain_rings(mc) else 0
+	# The sound ends at the export marker, whatever the clips and tails add up to.
+	plan["end_frame"] = int(round(_end_sec() * r))
 	return plan
 
 

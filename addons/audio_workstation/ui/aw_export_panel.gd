@@ -1,7 +1,7 @@
 @tool
 class_name AWExportPanel
 extends MarginContainer
-## The "Export" tab of the side panel: format, bit depth, sample rate (read-only), tail,
+## The Export dock: format, bit depth, sample rate (read-only), the End time (the timeline marker),
 ## output file name (red when it would overwrite a file) and the Export button.
 
 signal browse_requested
@@ -13,8 +13,8 @@ var doc: AWDocument
 
 var _depth_16: Button
 var _depth_32: Button
-var _tail: HSlider
-var _tail_label: Label
+var _end: SpinBox
+var _auto: Button
 var _path: LineEdit
 var _warn: Label
 var _info: Label
@@ -52,22 +52,29 @@ func _ready() -> void:
 	var rate := AWTheme.dim_label("%d Hz, project mix rate" % int(AudioServer.get_mix_rate()), 0.7)
 	box.add_child(_row("Sample rate", rate))
 
-	var tail_box := HBoxContainer.new()
-	_tail = HSlider.new()
-	_tail.min_value = 0.0
-	_tail.max_value = 5.0
-	_tail.step = 0.1
-	_tail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_tail.value_changed.connect(func(v: float) -> void:
+	var end_box := HBoxContainer.new()
+	_end = SpinBox.new()
+	_end.min_value = 0.0
+	_end.max_value = AWProject.MAX_END_SEC
+	_end.step = 0.01
+	_end.suffix = "s"
+	_end.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_end.tooltip_text = "Where the exported sound ends. Same as the orange marker on the timeline."
+	_end.value_changed.connect(func(v: float) -> void:
 		if not _updating:
-			doc.set_export_tail(v))
-	_tail_label = Label.new()
-	_tail_label.custom_minimum_size.x = 44
-	_tail_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	tail_box.add_child(_tail)
-	tail_box.add_child(_tail_label)
-	box.add_child(_row("Tail", tail_box))
-	var hint := AWTheme.dim_label("Silence added after the last clip so delays and reverbs can ring out.", 0.6)
+			doc.set_export_end(v))
+	_auto = Button.new()
+	_auto.text = "Auto"
+	_auto.toggle_mode = true
+	_auto.focus_mode = Control.FOCUS_NONE
+	_auto.tooltip_text = "Follow the clips: the last clip's end, plus a tail when an effect rings on."
+	_auto.toggled.connect(func(on: bool) -> void:
+		if not _updating:
+			doc.set_export_end(-1.0 if on else doc.export_end_sec()))
+	end_box.add_child(_end)
+	end_box.add_child(_auto)
+	box.add_child(_row("End", end_box))
+	var hint := AWTheme.dim_label("Drag the orange marker on the timeline, or type a time. Everything after the last clip is the tail, where delays and reverbs ring out.", 0.6)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.custom_minimum_size.x = 200 # wrapping labels need a width or they report a huge height
 	box.add_child(hint)
@@ -146,8 +153,8 @@ func _sync() -> void:
 	var p := doc.project
 	_depth_16.button_pressed = p.export_bit_depth == 16
 	_depth_32.button_pressed = p.export_bit_depth == 32
-	_tail.value = p.export_tail_sec
-	_tail_label.text = "%.1f s" % p.export_tail_sec
+	_end.value = doc.export_end_sec()
+	_auto.button_pressed = p.export_end_is_auto()
 	if _path.text != p.export_path:
 		_path.text = p.export_path
 	var over := doc.export_will_overwrite()
@@ -166,7 +173,8 @@ func _sync() -> void:
 	else:
 		_path.remove_theme_stylebox_override("normal")
 		_path.remove_theme_color_override("font_color")
-	_info.text = "Length %.1f s\nAbout %s" % [doc.export_length_sec(), _size_text(doc.export_size_bytes())]
+	var tail := maxf(0.0, doc.export_end_sec() - p.last_clip_end_sec())
+	_info.text = "Length %.2f s, tail %.2f s\nAbout %s" % [doc.export_end_sec(), tail, _size_text(doc.export_size_bytes())]
 	_updating = false
 
 

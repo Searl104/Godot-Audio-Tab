@@ -110,7 +110,7 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
 
 ## Native engine (milestones 1 to 4)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
-`● Engine 0.4.0`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
+`● Engine 0.4.1`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
 than the plugin: rebuild it) and everything except sound still works. Build steps: `BUILDING.md`.
 
 **Dry playback (milestone 2).** Play, Stop, seek, loop and double-click audition now make sound.
@@ -141,8 +141,11 @@ than the plugin: rebuild it) and everything except sound still works. Build step
   matching Godot's effects.
   - Parameters come from the same curve tables as Gain/Pan, updated every 32 frames; a curve or LFO on a cutoff
     sweeps the filter. Clip chains read their curves on the clip's own clock; the master chain on project time.
-  - Tails: a chain keeps ringing after its clip ends for the Export tail length (Export dock, default 2.5 s), and
-    the sound's end includes it. Bypassed cards are left out.
+  - Tails and the end marker: the orange **end marker** on the timeline sets where the exported sound ends, so one
+    marker sets both the length and the tail. Drag its flag on a ruler, or type a time in the Export dock's End
+    field. Chains that ring on (filters, EQ) keep sounding after their clip until the marker; a marker before the
+    last clip cuts the sound short. **Auto** (the default, dashed marker) puts it at the last clip's end, plus 2.5 s
+    when a ringing card is in a chain. Bypassed cards are left out.
   - Filter memory carries across audio blocks and is cleared on a seek or loop wrap, so the first moments after a
     jump start from silence (a short pre-roll is possible later).
   - Resonance maps to Q: 0.35 at 0, 0.707 (flat) at 0.5, about 14 at 1.

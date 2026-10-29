@@ -31,6 +31,7 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_plan", "voices", "master"), &AWCore::set_plan, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("get_plan_end"), &AWCore::get_plan_end);
 	ClassDB::bind_method(D_METHOD("get_effect_types"), &AWCore::get_effect_types);
+	ClassDB::bind_method(D_METHOD("get_api_level"), &AWCore::get_api_level);
 	ClassDB::bind_method(D_METHOD("play", "from_frame"), &AWCore::play);
 	ClassDB::bind_method(D_METHOD("stop"), &AWCore::stop);
 	ClassDB::bind_method(D_METHOD("seek", "frame"), &AWCore::seek);
@@ -630,7 +631,12 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 		np->end_frame = std::max(np->end_frame, v.start + (int64_t)std::ceil(v.play_frames) + v.tail_frames);
 		np->voices.push_back(std::move(v));
 	}
-	np->end_frame += np->master_tail;
+	if (p_master.has("end_frame")) {
+		// The export marker decides where the sound ends, however the clips and tails add up.
+		np->end_frame = std::max<int64_t>(0, (int64_t)p_master["end_frame"]);
+	} else {
+		np->end_frame += np->master_tail;
+	}
 	{
 		std::lock_guard<std::mutex> lock(plan_mutex);
 		retired.push_back(plan);
@@ -641,6 +647,10 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 		retired.erase(retired.begin());
 	}
 	return np->end_frame;
+}
+
+int64_t AWCore::get_api_level() const {
+	return 2; // 2: set_plan's master dictionary takes end_frame
 }
 
 PackedInt32Array AWCore::get_effect_types() const {

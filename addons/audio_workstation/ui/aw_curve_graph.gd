@@ -566,7 +566,7 @@ func _draw() -> void:
 
 	var end_sec := doc.export_end_sec()
 	if end_sec > 0.0:
-		AWTheme.draw_export_end(self, view.time_to_x(doc.project_to_view(end_sec)), 0.0, size.y)
+		AWTheme.draw_export_end(self, view.time_to_x(doc.project_to_view(end_sec)), 0.0, size.y, false, doc.project.export_end_is_auto())
 
 	var px := view.time_to_x(doc.project_to_view(doc.playhead_sec))
 	draw_line(Vector2(px, 0), Vector2(px, size.y), c_acc, 2.0)
