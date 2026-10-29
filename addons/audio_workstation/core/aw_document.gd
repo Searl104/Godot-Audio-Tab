@@ -79,6 +79,8 @@ func _init(p_undo_redo: EditorUndoRedoManager, p_engine: AWEngine) -> void:
 		for c in project.clips:
 			c.invalidate_warp() # a static Pitch change alters timing too
 		engine.project_edited(structural))
+	# The tail length changes how long effects ring, so the plan has to follow.
+	export_settings_changed.connect(func() -> void: engine.project_edited(false))
 
 
 # --- Project / file stubs -----------------------------------------------------

@@ -38,8 +38,8 @@ var outdated_version := ""
 func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
-		# A library built for an older plugin version lacks the playback methods: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source"):
+		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_effect_types"):
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -290,7 +290,69 @@ func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
 	if src:
 		voice["gains"] = _table(ch, src, "gain_db", clip.length_sec, step_sec, AWSampler.GAIN)
 		voice["pans"] = _table(ch, src, "pan", clip.length_sec, step_sec, AWSampler.VALUE)
+	var fx := _clip_effects(clip, step_sec)
+	if not fx.is_empty():
+		voice["effects"] = fx
+		voice["tail_frames"] = int(_tail_sec() * r)
 	return voice
+
+
+## Effects the native engine can run so far: card name -> [type id, parameter keys in the
+## order the engine expects]. Cards of other types are skipped until they are ported.
+const NATIVE_EFFECTS := {
+	"Low Pass": [1, ["cutoff_hz", "resonance"]],
+	"High Pass": [2, ["cutoff_hz", "resonance"]],
+	"Band Pass": [3, ["cutoff_hz", "resonance"]],
+	"EQ": [4, ["band_db/32_hz", "band_db/100_hz", "band_db/320_hz", "band_db/1000_hz", "band_db/3200_hz", "band_db/10000_hz"]],
+	"Amplify": [5, ["volume_db"]],
+}
+
+
+## How long effects ring on after the last clip (the Export tail setting), in seconds.
+func _tail_sec() -> float:
+	return _project.export_tail_sec if _project != null else 0.0
+
+
+## A clip's effect chain after its Clip card. Parameter tables are over elapsed timeline time
+## since the clip started (they stretch with Pitch, and run on through the tail).
+func _clip_effects(clip: AWClip, step_sec: float) -> Array:
+	var ch := clip.chain
+	var out: Array = []
+	if ch == null or ch.effects.size() < 2:
+		return out
+	var n := int(ceilf((clip.play_length() + _tail_sec()) / step_sec)) + 2
+	var warp := clip.warp()
+	var wsig := AWClipWarp.signature(clip)
+	for i in range(1, ch.effects.size()):
+		var e: AWEffect = ch.effects[i]
+		if e.bypass or not NATIVE_EFFECTS.has(e.effect_type):
+			continue
+		var info: Array = NATIVE_EFFECTS[e.effect_type]
+		var tables: Array = []
+		for key: String in info[1]:
+			tables.append(_fx_table(ch, e, key, warp, wsig, n, step_sec))
+		out.append({"type": info[0], "params": tables, "step": RATE_STEP})
+	return out
+
+
+## A card parameter over elapsed timeline time: curve values at the matching clip times.
+func _fx_table(chain: AWChain, effect: AWEffect, param: String, warp: AWClipWarp, wsig: Array, count: int, step_sec: float) -> PackedFloat32Array:
+	var curve := chain.get_curve(effect.id, param)
+	var out := PackedFloat32Array()
+	if curve == null or chain.get_keys(curve).is_empty():
+		out.append(effect.get_param(param))
+		return out
+	var sig := [_curve_signature(chain, curve, 0.0, step_sec, AWSampler.VALUE), wsig, count]
+	var hit: Array = _table_cache.get(curve, [])
+	if hit.size() == 2 and hit[0] == sig:
+		return hit[1]
+	var times := PackedFloat64Array()
+	times.resize(count)
+	for i in count:
+		times[i] = warp.unwarp(i * step_sec)
+	out = AWSampler.values_at(chain, curve, times, AWSampler.VALUE)
+	_table_cache[curve] = [sig, out]
+	return out
 
 
 ## Pitch as a playback-rate table. Same rule as AWClipWarp: a curve with two or more keys
@@ -308,12 +370,29 @@ func _rates(clip: AWClip, src: AWEffect, step_sec: float) -> PackedFloat32Array:
 func _master_plan() -> Dictionary:
 	if _project == null or _project.master_chain == null or _project.master_chain.effects.is_empty():
 		return {}
-	var out: AWEffect = _project.master_chain.effects[0]
+	var mc := _project.master_chain
+	var out: AWEffect = mc.effects[0]
 	var r := _rate()
-	return {
-		"gains": _table(_project.master_chain, out, "volume_db", _project.content_end_sec(), RATE_STEP / r, AWSampler.GAIN),
+	var step_sec := RATE_STEP / r
+	var plan := {
+		"gains": _table(mc, out, "volume_db", _project.content_end_sec(), step_sec, AWSampler.GAIN),
 		"step": RATE_STEP,
 	}
+	var fx: Array = []
+	var length_sec := _project.content_end_sec() + _tail_sec()
+	for i in range(1, mc.effects.size()):
+		var e: AWEffect = mc.effects[i]
+		if e.bypass or not NATIVE_EFFECTS.has(e.effect_type):
+			continue
+		var info: Array = NATIVE_EFFECTS[e.effect_type]
+		var tables: Array = []
+		for key: String in info[1]:
+			tables.append(_table(mc, e, key, length_sec, step_sec, AWSampler.VALUE))
+		fx.append({"type": info[0], "params": tables, "step": RATE_STEP})
+	if not fx.is_empty():
+		plan["effects"] = fx
+		plan["tail_frames"] = int(_tail_sec() * r)
+	return plan
 
 
 ## Samples a parameter every `step_sec` over 0..length_sec (curve value, LFO included) and

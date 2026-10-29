@@ -259,6 +259,186 @@ static func dry_playback_tests(screen: AWMainScreen) -> void:
 		e2._player.queue_free()
 
 
+# --- Effects (milestone 4a: filters, EQ, Amplify, tails) -----------------------------
+
+static func _sine_source(core: Object, hz: float, secs: float) -> int:
+	var sr: float = core.call("get_sample_rate")
+	var a := PackedVector2Array()
+	a.resize(int(secs * sr))
+	for i in a.size():
+		var v := 0.5 * sin(TAU * hz * i / sr)
+		a[i] = Vector2(v, v)
+	return core.call("add_source", a)
+
+
+static func _fx(type: int, params: Array) -> Dictionary:
+	var tables: Array = []
+	for p: float in params:
+		tables.append(PackedFloat32Array([p]))
+	return {"type": type, "params": tables, "step": 64}
+
+
+static func _fx_voice(src_id: int, secs: float, sr: float, effects: Array, tail_frames := 0) -> Dictionary:
+	return {"source": src_id, "start_frame": 0, "offset": 0.0, "length": secs * sr, "rates": PackedFloat32Array([1.0]),
+		"rate_step": 64, "effects": effects, "tail_frames": tail_frames}
+
+
+static func _peak(buf: PackedVector2Array, from: int, to: int) -> float:
+	var m := 0.0
+	for i in range(from, mini(to, buf.size())):
+		m = maxf(m, absf(buf[i].x))
+	return m
+
+
+## Peak of a steady sine of `hz` after the given effect, measured away from the start-up.
+static func _through(core: Object, hz: float, effects: Array) -> float:
+	var sr: float = core.call("get_sample_rate")
+	core.call("clear_sources")
+	var id := _sine_source(core, hz, 1.5)
+	core.call("set_plan", [_fx_voice(id, 1.5, sr, effects)])
+	var b: PackedVector2Array = core.call("render_range", 0, int(1.5 * sr))
+	return _peak(b, int(0.8 * sr), int(1.4 * sr))
+
+
+static func effects_tests(screen: AWMainScreen) -> void:
+	var sr := int(AudioServer.get_mix_rate())
+	var e := AWEngine.new()
+	e.set_project(AWProject.new())
+	if e.core == null:
+		return
+	var core: Object = e.core
+	core.call("set_sample_rate", float(sr))
+
+	# Filters: -3 dB at the cutoff, flat in the pass band, steep stop band.
+	var lp := [_fx(1, [1000.0, 0.5])]
+	var p1 := _through(core, 1000.0, lp)
+	check(absf(p1 - 0.5 * 0.7071) < 0.01, "low pass: -3 dB at the cutoff (%.3f, want 0.354)" % p1)
+	check(absf(_through(core, 100.0, lp) - 0.5) < 0.01, "low pass: 100 Hz passes untouched")
+	check(_through(core, 10000.0, lp) < 0.02, "low pass: 10 kHz is cut by 28 dB or more")
+	var hp := [_fx(2, [1000.0, 0.5])]
+	check(absf(_through(core, 1000.0, hp) - 0.5 * 0.7071) < 0.01, "high pass: -3 dB at the cutoff")
+	check(absf(_through(core, 10000.0, hp) - 0.5) < 0.01, "high pass: 10 kHz passes untouched")
+	check(_through(core, 100.0, hp) < 0.02, "high pass: 100 Hz is cut by 28 dB or more")
+	var bp := [_fx(3, [1000.0, 0.5])]
+	check(absf(_through(core, 1000.0, bp) - 0.5) < 0.01, "band pass: centre frequency passes at full level")
+	check(_through(core, 100.0, bp) < 0.1 and _through(core, 10000.0, bp) < 0.1, "band pass: both sides are attenuated")
+	var res_hi := _through(core, 1000.0, [_fx(1, [1000.0, 1.0])])
+	check(res_hi > 3.0, "low pass: full resonance rings up at the cutoff (%.2f)" % res_hi)
+
+	# EQ: gain at a band centre equals the setting.
+	var eq_up := [_fx(4, [0.0, 0.0, 0.0, 12.0, 0.0, 0.0])]
+	var pu := _through(core, 1000.0, eq_up)
+	check(absf(pu - 0.5 * db_to_linear(12.0)) < 0.03, "EQ: +12 dB at 1 kHz (%.3f, want %.3f)" % [pu, 0.5 * db_to_linear(12.0)])
+	var pd := _through(core, 1000.0, [_fx(4, [0.0, 0.0, 0.0, -12.0, 0.0, 0.0])])
+	check(absf(pd - 0.5 * db_to_linear(-12.0)) < 0.01, "EQ: -12 dB at 1 kHz (%.3f)" % pd)
+	check(absf(_through(core, 1000.0, [_fx(4, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])]) - 0.5) < 0.0001, "EQ: flat settings leave the signal alone")
+	check(absf(_through(core, 100.0, eq_up) - 0.5) < 0.1, "EQ: a 1 kHz boost barely touches 100 Hz")
+
+	# Amplify.
+	check(absf(_through(core, 440.0, [_fx(5, [-6.0206])]) - 0.25) < 0.002, "amplify -6 dB halves the level")
+
+	# Automation: a cutoff table sweeping 18 kHz down to 200 Hz closes the filter over time.
+	var sweep := PackedFloat32Array()
+	for i in int(0.8 * sr / 64.0) + 2:
+		sweep.append(lerpf(18000.0, 200.0, minf(1.0, i * 64.0 / sr / 0.8))) # closes over 0.8 s, then holds
+	core.call("clear_sources")
+	var sid := _sine_source(core, 3000.0, 1.0)
+	var sw := {"type": 1, "params": [sweep, PackedFloat32Array([0.5])], "step": 64}
+	core.call("set_plan", [_fx_voice(sid, 1.0, sr, [sw])])
+	var sb: PackedVector2Array = core.call("render_range", 0, sr)
+	var early := _peak(sb, int(0.05 * sr), int(0.15 * sr))
+	var late := _peak(sb, int(0.9 * sr), sr)
+	check(early > 0.45 and late < 0.05, "cutoff sweep: open at the start (%.3f), closed at the end (%.4f)" % [early, late])
+
+	# State is continuous across blocks and resets on a seek.
+	core.call("clear_sources")
+	sid = _sine_source(core, 700.0, 2.0)
+	core.call("set_plan", [_fx_voice(sid, 2.0, sr, [_fx(1, [900.0, 0.8]), _fx(4, [3.0, 0.0, -4.0, 6.0, 0.0, 0.0])])])
+	var whole: PackedVector2Array = core.call("render_range", 0, 6000)
+	core.call("play", 0)
+	var worst := 0.0
+	var at := 0
+	for n: int in [777, 1500, 53, 1024, 2646]:
+		var blk: PackedVector2Array = core.call("render", n)
+		for i in n:
+			worst = maxf(worst, absf(blk[i].x - whole[at + i].x))
+		at += n
+	check(worst < 0.00001, "chain state carries across blocks (worst difference %.7f)" % worst)
+	core.call("seek", 3000)
+	var after: PackedVector2Array = core.call("render", 512)
+	var fresh: PackedVector2Array = core.call("render_range", 3000, 512)
+	worst = 0.0
+	for i in 512:
+		worst = maxf(worst, absf(after[i].x - fresh[i].x))
+	check(worst < 0.00001, "seeking clears the filters (worst difference %.7f)" % worst)
+	core.call("stop")
+
+	# Tails: effects keep ringing after the clip, and the plan end includes them.
+	core.call("clear_sources")
+	var click := PackedVector2Array()
+	click.resize(sr / 2)
+	click[int(0.195 * sr)] = Vector2(1, 1) # just before the clip ends
+	var cid: int = core.call("add_source", click)
+	var tail := sr / 2
+	var clen := 0.2
+	var end_no: int = core.call("set_plan", [_fx_voice(cid, clen, sr, [_fx(3, [1000.0, 1.0])])])
+	var tb0: PackedVector2Array = core.call("render_range", 0, sr)
+	end_no += 0
+	check(_peak(tb0, int(clen * sr) + 100, sr) == 0.0 and int(core.call("get_plan_end")) == int(round(clen * sr)), "no tail: silent after the clip, plan ends with it")
+	var end_tail: int = core.call("set_plan", [_fx_voice(cid, clen, sr, [_fx(3, [1000.0, 1.0])], tail)])
+	var tb: PackedVector2Array = core.call("render_range", 0, sr)
+	check(end_tail == int(round(clen * sr)) + tail, "tail: plan end grows by the tail (%d)" % end_tail)
+	check(_peak(tb, int(clen * sr) + 5, int(clen * sr) + 400) > 0.0005 and _peak(tb, end_tail + 10, sr) == 0.0, "tail: ringing continues past the clip, then stops")
+
+	# Master chain.
+	core.call("clear_sources")
+	sid = _sine_source(core, 440.0, 1.0)
+	var plain := {"source": sid, "start_frame": 0, "offset": 0.0, "length": float(sr), "rates": PackedFloat32Array([1.0]), "rate_step": 64}
+	var mend: int = core.call("set_plan", [plain], {"gains": PackedFloat32Array([1.0]), "step": 64, "effects": [_fx(5, [-6.0206])], "tail_frames": 1000})
+	var mb: PackedVector2Array = core.call("render_range", 0, sr)
+	check(absf(_peak(mb, 1000, sr - 1000) - 0.25) < 0.002 and mend == sr + 1000, "master chain: amplify -6 dB on the mix, tail extends the end (%d)" % mend)
+
+	# Plugin path: effect cards in a clip's chain reach the engine.
+	var tone := "/tmp/aw_tone5k.wav"
+	write_wav(tone, 2.0, func(i: int, rate: int) -> Vector2i:
+		var v := int(16384.0 * sin(TAU * 5000.0 * i / rate))
+		return Vector2i(v, v))
+	var proj := AWProject.new()
+	proj.master_chain = AWChain.create(AWEffectLibrary.MASTER_OUTPUT)
+	proj.export_tail_sec = 0.5
+	var ge := AWEngine.new()
+	ge.set_project(proj)
+	var clip := AWClip.create("fx", 0.0, 1.0, 0, Color.RED)
+	clip.source_path = tone
+	proj.clips.assign([clip])
+	ge.project_edited(true)
+	var dry := ge.render_preview_range(0.0, 1.0)
+	var d_peak := _peak(dry, int(0.3 * sr), int(0.9 * sr))
+	var card := AWEffect.create("Low Pass", clip.chain.new_effect_id())
+	card.params["cutoff_hz"] = 500.0
+	clip.chain.effects.append(card)
+	ge.project_edited(true)
+	var wet := ge.render_preview_range(0.0, 1.0)
+	check(d_peak > 0.45 and _peak(wet, int(0.3 * sr), int(0.9 * sr)) < 0.01, "Low Pass card at 500 Hz removes a 5 kHz tone (dry %.2f, wet %.4f)" % [d_peak, _peak(wet, int(0.3 * sr), int(0.9 * sr))])
+	check(int(ge.core.call("get_plan_end")) == sr + int(0.5 * sr), "the Export tail setting lengthens the plan (%d frames)" % int(ge.core.call("get_plan_end")))
+	card.bypass = true
+	ge.project_edited(true)
+	check(_peak(ge.render_preview_range(0.0, 1.0), int(0.3 * sr), int(0.9 * sr)) > 0.45 and int(ge.core.call("get_plan_end")) == sr, "bypassed card: signal passes, no tail")
+	card.bypass = false
+	var rev := AWEffect.create("Reverb", clip.chain.new_effect_id())
+	clip.chain.effects.append(rev)
+	ge.project_edited(true)
+	check(_peak(ge.render_preview_range(0.0, 1.0), int(0.3 * sr), int(0.9 * sr)) < 0.01, "effects not ported yet (Reverb) are skipped without error")
+	# A cutoff curve opens the filter over time.
+	var cut := clip.chain.effects[1]
+	AWProject._curve(clip.chain, cut.id, "cutoff_hz", Color.WHITE, [AWProject._k(0.0, 200.0, AWCurve.HandleMode.LINEAR), AWProject._k(1.0, 12000.0, AWCurve.HandleMode.LINEAR)])
+	ge.project_edited(true)
+	var cb := ge.render_preview_range(0.0, 1.0)
+	check(_peak(cb, int(0.05 * sr), int(0.15 * sr)) < 0.05 and _peak(cb, int(0.9 * sr), int(0.98 * sr)) > 0.3, "cutoff curve 200 Hz to 12 kHz opens the filter over the clip")
+	var ref_curve := clip.chain.get_curve(cut.id, "cutoff_hz")
+	check(ref_curve != null, "cutoff curve exists on the card")
+
+
 static func automation_tests(_screen: AWMainScreen) -> void:
 	var sr := int(AudioServer.get_mix_rate())
 	var dc := "/tmp/aw_dc.wav" # 4 s of constant 0.5, written by dry_playback_tests
@@ -576,8 +756,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.3.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.3.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.4.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.4.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -616,6 +796,7 @@ static func run(screen: AWMainScreen) -> void:
 		await dry_playback_tests(screen)
 		print("--- automation ---")
 		automation_tests(screen)
+		effects_tests(screen)
 		print("--- sampler ---")
 		sampler_tests(screen)
 

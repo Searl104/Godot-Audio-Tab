@@ -30,6 +30,7 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("sample_curve_at", "animation", "spec", "times", "unit"), &AWCore::sample_curve_at);
 	ClassDB::bind_method(D_METHOD("set_plan", "voices", "master"), &AWCore::set_plan, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("get_plan_end"), &AWCore::get_plan_end);
+	ClassDB::bind_method(D_METHOD("get_effect_types"), &AWCore::get_effect_types);
 	ClassDB::bind_method(D_METHOD("play", "from_frame"), &AWCore::play);
 	ClassDB::bind_method(D_METHOD("stop"), &AWCore::stop);
 	ClassDB::bind_method(D_METHOD("seek", "frame"), &AWCore::seek);
@@ -178,70 +179,107 @@ static inline float aw_table(const std::vector<float> &t, double pos, int64_t st
 	return t[i] + (t[i + 1] - t[i]) * f;
 }
 
-// Adds every voice that overlaps [from, from + frames) into the interleaved buffer.
-void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_out) {
-	for (const Voice &v : p_plan.voices) {
+// Adds one voice's dry signal (source, rate warp, gain, pan, fades) for block frames
+// [j0, j1) into r_out, where block frame j is written at r_out[(j - origin) * 2].
+void AWCore::render_voice_dry(const Voice &p_voice, int64_t p_from, int64_t p_j0, int64_t p_j1, float *r_out, int64_t p_origin) {
+	const int64_t j0 = p_j0, j1 = p_j1;
+	const Source &src = *p_voice.source;
+	// Cursor into the rate table, advanced monotonically across the block.
+	size_t cur = 0;
+	const bool table = !p_voice.cum.empty();
+	if (table) {
+		const double p0 = (double)(p_from + j0 - p_voice.start);
+		if (p0 > 0.0) {
+			cur = (size_t)(std::upper_bound(p_voice.cum.begin(), p_voice.cum.end(), p0) - p_voice.cum.begin());
+			cur = cur == 0 ? 0 : cur - 1;
+		}
+	}
+	const double smax = table ? (double)(p_voice.rates.size() - 1) * (double)p_voice.step : 0.0;
+	for (int64_t j = j0; j < j1; j++) {
+		const double p = (double)(p_from + j - p_voice.start);
+		double s;
+		if (!table) {
+			s = p * p_voice.rates[0];
+		} else if (p <= 0.0) {
+			s = p * p_voice.rates[0];
+		} else if (p >= p_voice.cum.back()) {
+			s = smax + (p - p_voice.cum.back()) * p_voice.rates.back();
+		} else {
+			while (cur + 2 < p_voice.cum.size() && p >= p_voice.cum[cur + 1]) {
+				cur++;
+			}
+			const double span = p_voice.cum[cur + 1] - p_voice.cum[cur];
+			const double f = span > 0.0 ? (p - p_voice.cum[cur]) / span : 0.0;
+			s = ((double)cur + f) * (double)p_voice.step;
+		}
+		if (s < 0.0 || s >= p_voice.length) {
+			continue;
+		}
+		const double x = p_voice.offset + s;
+		if (x < -1.0 || x > (double)src.frames) {
+			continue;
+		}
+		float g = aw_table(p_voice.gains, s, p_voice.step);
+		const float pan = aw_table(p_voice.pans, s, p_voice.step);
+		const float gl = pan > 0.0f ? 1.0f - pan : 1.0f;
+		const float gr = pan < 0.0f ? 1.0f + pan : 1.0f;
+		if (p_voice.fade_in > 0.0 && s < p_voice.fade_in) {
+			g *= (float)(s / p_voice.fade_in);
+		}
+		if (p_voice.fade_out > 0.0 && s > p_voice.length - p_voice.fade_out) {
+			g *= (float)std::max(0.0, (p_voice.length - s) / p_voice.fade_out);
+		}
+		r_out[(j - p_origin) * 2] += aw_hermite(src, x, 0) * g * gl;
+		r_out[(j - p_origin) * 2 + 1] += aw_hermite(src, x, 1) * g * gr;
+	}
+}
+
+// Adds every voice that overlaps [from, from + frames) into the interleaved buffer, running
+// each voice's effect chain (and its tail) when `p_fx` is given.
+void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_out, FxRuntime *p_fx) {
+	for (size_t vi = 0; vi < p_plan.voices.size(); vi++) {
+		const Voice &v = p_plan.voices[vi];
 		if (!v.source) {
 			continue;
 		}
+		const int64_t play_end = (int64_t)std::ceil(v.play_frames) + v.start - p_from;
 		const int64_t j0 = std::max<int64_t>(0, v.start - p_from);
-		const int64_t j1 = std::min<int64_t>(p_frames, (int64_t)std::ceil(v.play_frames) + v.start - p_from);
-		if (j0 >= j1) {
+		const int64_t j1 = std::min<int64_t>(p_frames, play_end);
+		const bool has_fx = p_fx && vi < p_fx->voice.size() && !p_fx->voice[vi].empty();
+		const int64_t jx = has_fx ? std::min<int64_t>(p_frames, play_end + v.tail_frames) : j1;
+		if (j0 >= jx) {
 			continue;
 		}
-		const Source &src = *v.source;
-		// Cursor into the rate table, advanced monotonically across the block.
-		size_t cur = 0;
-		const bool table = !v.cum.empty();
-		if (table) {
-			const double p0 = (double)(p_from + j0 - v.start);
-			if (p0 > 0.0) {
-				cur = (size_t)(std::upper_bound(v.cum.begin(), v.cum.end(), p0) - v.cum.begin());
-				cur = cur == 0 ? 0 : cur - 1;
-			}
+		if (!has_fx) {
+			render_voice_dry(v, p_from, j0, j1, r_out, 0);
+			continue;
 		}
-		const double smax = table ? (double)(v.rates.size() - 1) * (double)v.step : 0.0;
-		for (int64_t j = j0; j < j1; j++) {
-			const double p = (double)(p_from + j - v.start);
-			double s;
-			if (!table) {
-				s = p * v.rates[0];
-			} else if (p <= 0.0) {
-				s = p * v.rates[0];
-			} else if (p >= v.cum.back()) {
-				s = smax + (p - v.cum.back()) * v.rates.back();
-			} else {
-				while (cur + 2 < v.cum.size() && p >= v.cum[cur + 1]) {
-					cur++;
-				}
-				const double span = v.cum[cur + 1] - v.cum[cur];
-				const double f = span > 0.0 ? (p - v.cum[cur]) / span : 0.0;
-				s = ((double)cur + f) * (double)v.step;
-			}
-			if (s < 0.0 || s >= v.length) {
-				continue;
-			}
-			const double x = v.offset + s;
-			if (x < -1.0 || x > (double)src.frames) {
-				continue;
-			}
-			float g = aw_table(v.gains, s, v.step);
-			const float pan = aw_table(v.pans, s, v.step);
-			const float gl = pan > 0.0f ? 1.0f - pan : 1.0f;
-			const float gr = pan < 0.0f ? 1.0f + pan : 1.0f;
-			if (v.fade_in > 0.0 && s < v.fade_in) {
-				g *= (float)(s / v.fade_in);
-			}
-			if (v.fade_out > 0.0 && s > v.length - v.fade_out) {
-				g *= (float)std::max(0.0, (v.length - s) / v.fade_out);
-			}
-			r_out[j * 2] += aw_hermite(src, x, 0) * g * gl;
-			r_out[j * 2 + 1] += aw_hermite(src, x, 1) * g * gr;
+		const int64_t n = jx - j0;
+		p_fx->scratch.assign((size_t)n * 2, 0.0f);
+		if (j0 < j1) {
+			render_voice_dry(v, p_from, j0, j1, p_fx->scratch.data(), j0);
+		}
+		const int64_t pos0 = p_from + j0 - v.start;
+		for (auto &e : p_fx->voice[vi]) {
+			e->process(p_fx->scratch.data(), n, pos0);
+		}
+		float *dst = r_out + j0 * 2;
+		for (int64_t i = 0; i < n * 2; i++) {
+			dst[i] += p_fx->scratch[(size_t)i];
 		}
 	}
 }
 
-void AWCore::apply_master(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_out) {
+void AWCore::apply_master(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_out, FxRuntime *p_fx) {
+	apply_master_gain(p_plan, p_from, p_frames, r_out);
+	if (p_fx) {
+		for (auto &e : p_fx->master) {
+			e->process(r_out, p_frames, p_from);
+		}
+	}
+}
+
+void AWCore::apply_master_gain(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_out) {
 	if (p_plan.master.size() == 1) {
 		const float g = p_plan.master[0];
 		if (g != 1.0f) {
@@ -482,6 +520,66 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 
 // --- Plan -----------------------------------------------------------------------
 
+// --- Effects ----------------------------------------------------------------------
+
+static bool aw_parse_effects(const Array &p_in, std::vector<aw::EffectSpec> &r_out) {
+	for (int i = 0; i < p_in.size(); i++) {
+		const Dictionary d = p_in[i];
+		aw::EffectSpec spec;
+		spec.type = d.get("type", 0);
+		const Array tables = d.get("params", Array());
+		const int64_t step = std::max<int64_t>(1, (int64_t)d.get("step", 64));
+		for (int k = 0; k < tables.size(); k++) {
+			const PackedFloat32Array t = tables[k];
+			aw::Param p;
+			p.step = step;
+			if (!t.is_empty()) {
+				p.table.assign(t.ptr(), t.ptr() + t.size());
+			}
+			spec.params.push_back(std::move(p));
+		}
+		if (spec.type != aw::FX_NONE) {
+			r_out.push_back(std::move(spec));
+		}
+	}
+	return !r_out.empty();
+}
+
+void AWCore::FxRuntime::bind(const std::shared_ptr<const Plan> &p_plan, double p_rate) {
+	plan = p_plan;
+	voice.clear();
+	master.clear();
+	next = -1;
+	if (!plan) {
+		return;
+	}
+	for (const Voice &v : plan->voices) {
+		voice.emplace_back();
+		for (const aw::EffectSpec &spec : v.effects) {
+			if (auto e = aw::make_effect(spec, p_rate)) {
+				voice.back().push_back(std::move(e));
+			}
+		}
+	}
+	for (const aw::EffectSpec &spec : plan->master_effects) {
+		if (auto e = aw::make_effect(spec, p_rate)) {
+			master.push_back(std::move(e));
+		}
+	}
+	scratch.reserve(4096);
+}
+
+void AWCore::FxRuntime::reset() {
+	for (auto &chain : voice) {
+		for (auto &e : chain) {
+			e->reset();
+		}
+	}
+	for (auto &e : master) {
+		e->reset();
+	}
+}
+
 int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 	auto np = std::make_shared<Plan>();
 	{
@@ -492,6 +590,8 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 		} else {
 			np->master.push_back(1.0f);
 		}
+		aw_parse_effects(p_master.get("effects", Array()), np->master_effects);
+		np->master_tail = np->master_effects.empty() ? 0 : std::max<int64_t>(0, (int64_t)p_master.get("tail_frames", 0));
 	}
 	for (int i = 0; i < p_voices.size(); i++) {
 		const Dictionary d = p_voices[i];
@@ -524,9 +624,13 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 		v.rates.assign(rates.ptr(), rates.ptr() + rates.size());
 		v.step = d.get("rate_step", 64);
 		v.prepare();
-		np->end_frame = std::max(np->end_frame, v.start + (int64_t)std::ceil(v.play_frames));
+		if (aw_parse_effects(d.get("effects", Array()), v.effects)) {
+			v.tail_frames = std::max<int64_t>(0, (int64_t)d.get("tail_frames", 0));
+		}
+		np->end_frame = std::max(np->end_frame, v.start + (int64_t)std::ceil(v.play_frames) + v.tail_frames);
 		np->voices.push_back(std::move(v));
 	}
+	np->end_frame += np->master_tail;
 	{
 		std::lock_guard<std::mutex> lock(plan_mutex);
 		retired.push_back(plan);
@@ -537,6 +641,16 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 		retired.erase(retired.begin());
 	}
 	return np->end_frame;
+}
+
+PackedInt32Array AWCore::get_effect_types() const {
+	PackedInt32Array out;
+	out.push_back(aw::FX_LOW_PASS);
+	out.push_back(aw::FX_HIGH_PASS);
+	out.push_back(aw::FX_BAND_PASS);
+	out.push_back(aw::FX_EQ6);
+	out.push_back(aw::FX_AMPLIFY);
+	return out;
 }
 
 std::shared_ptr<const AWCore::Plan> AWCore::current_plan() {
@@ -604,8 +718,14 @@ void AWCore::mix_transport(float *r_out, int64_t p_frames) {
 		} else {
 			limit = std::min(limit, pl->end_frame - pos);
 		}
-		render_voices(*pl, pos, limit, r_out + done * 2);
-		apply_master(*pl, pos, limit, r_out + done * 2);
+		if (fx.plan != pl) {
+			fx.bind(pl, sample_rate);
+		} else if (fx.next != pos) {
+			fx.reset();
+		}
+		render_voices(*pl, pos, limit, r_out + done * 2, &fx);
+		apply_master(*pl, pos, limit, r_out + done * 2, &fx);
+		fx.next = pos + limit;
 		pos += limit;
 		done += limit;
 		if (loop && pos >= loop_end.load()) {
@@ -639,8 +759,10 @@ PackedVector2Array AWCore::render_range(int64_t p_from_frame, int64_t p_frames) 
 	std::vector<float> buf((size_t)p_frames * 2, 0.0f);
 	const auto pl = current_plan();
 	if (pl) {
-		render_voices(*pl, p_from_frame, p_frames, buf.data());
-		apply_master(*pl, p_from_frame, p_frames, buf.data());
+		FxRuntime rt;
+		rt.bind(pl, sample_rate);
+		render_voices(*pl, p_from_frame, p_frames, buf.data(), &rt);
+		apply_master(*pl, p_from_frame, p_frames, buf.data(), &rt);
 	}
 	Vector2 *w = out.ptrw();
 	for (int64_t i = 0; i < p_frames; i++) {
