@@ -191,6 +191,23 @@ static inline float aw_table(const std::vector<float> &t, double pos, int64_t st
 
 // Adds one voice's dry signal (source, rate warp, gain, pan, fades) for block frames
 // [j0, j1) into r_out, where block frame j is written at r_out[(j - origin) * 2].
+// AWClip.fade_gain: gain at fade position u (0 = silent end, 1 = full) for each fade shape.
+static inline double aw_fade_shape(int p_shape, double u) {
+	u = u < 0.0 ? 0.0 : (u > 1.0 ? 1.0 : u);
+	switch (p_shape) {
+		case 1: // fast: rises quickly, then levels off
+			return 1.0 - (1.0 - u) * (1.0 - u);
+		case 2: // slow: stays low, then rises
+			return u * u;
+		case 3: // S-curve
+			return u * u * (3.0 - 2.0 * u);
+		case 4: // equal power (for crossfades)
+			return std::sin(u * 1.5707963267948966);
+		default:
+			return u;
+	}
+}
+
 void AWCore::render_voice_dry(const Voice &p_voice, int64_t p_from, int64_t p_j0, int64_t p_j1, float *r_out, int64_t p_origin) {
 	const int64_t j0 = p_j0, j1 = p_j1;
 	const Source &src = *p_voice.source;
@@ -225,7 +242,7 @@ void AWCore::render_voice_dry(const Voice &p_voice, int64_t p_from, int64_t p_j0
 		if (s < 0.0 || s >= p_voice.length) {
 			continue;
 		}
-		const double x = p_voice.offset + s;
+		const double x = p_voice.reversed ? p_voice.offset + p_voice.length - s : p_voice.offset + s;
 		if (x < -1.0 || x > (double)src.frames) {
 			continue;
 		}
@@ -234,10 +251,10 @@ void AWCore::render_voice_dry(const Voice &p_voice, int64_t p_from, int64_t p_j0
 		const float gl = pan > 0.0f ? 1.0f - pan : 1.0f;
 		const float gr = pan < 0.0f ? 1.0f + pan : 1.0f;
 		if (p_voice.fade_in > 0.0 && s < p_voice.fade_in) {
-			g *= (float)(s / p_voice.fade_in);
+			g *= (float)aw_fade_shape(p_voice.fade_in_shape, s / p_voice.fade_in);
 		}
 		if (p_voice.fade_out > 0.0 && s > p_voice.length - p_voice.fade_out) {
-			g *= (float)std::max(0.0, (p_voice.length - s) / p_voice.fade_out);
+			g *= (float)aw_fade_shape(p_voice.fade_out_shape, std::max(0.0, (p_voice.length - s) / p_voice.fade_out));
 		}
 		r_out[(j - p_origin) * 2] += aw_hermite(src, x, 0) * g * gl;
 		r_out[(j - p_origin) * 2 + 1] += aw_hermite(src, x, 1) * g * gr;
@@ -730,6 +747,9 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 		v.length = d.get("length", 0.0);
 		v.fade_in = d.get("fade_in", 0.0);
 		v.fade_out = d.get("fade_out", 0.0);
+		v.fade_in_shape = d.get("fade_in_shape", 0);
+		v.fade_out_shape = d.get("fade_out_shape", 0);
+		v.reversed = d.get("reversed", false);
 		const PackedFloat32Array gains = d.get("gains", PackedFloat32Array());
 		if (gains.is_empty()) {
 			v.gains.push_back((float)(double)d.get("gain", 1.0));
@@ -780,7 +800,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 10; // 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 11; // 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {

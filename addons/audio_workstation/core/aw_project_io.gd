@@ -77,6 +77,9 @@ static func open(path: String) -> Dictionary:
 ## Fixes what would crash or confuse the editor or the engine. Returns what it changed.
 static func sanitize(p: AWProject) -> Array:
 	var rep: Array = []
+	for i in p.rows.size():
+		if p.rows[i] == null:
+			p.rows[i] = AWRow.new()
 	if not _fin(p.length_sec) or p.length_sec <= 0.0:
 		p.length_sec = 4.0
 		rep.append("Project length was invalid; set to 4 s.")

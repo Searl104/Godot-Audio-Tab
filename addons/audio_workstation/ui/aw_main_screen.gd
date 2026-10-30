@@ -138,16 +138,64 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if not is_visible_in_tree():
 		return
 	var k := event as InputEventKey
-	if k == null or not k.pressed or k.echo:
+	if k == null or not k.pressed:
 		return
 	var ctrl := k.ctrl_pressed or k.meta_pressed
+	# Arrows repeat while held: nudge the selection (Shift = 10 steps; Up/Down = rows).
+	if not ctrl and not k.alt_pressed and k.keycode in [KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN] and not doc.selection.is_empty():
+		var mul := 10.0 if k.shift_pressed else 1.0
+		match k.keycode:
+			KEY_LEFT: doc.nudge_selected(-mul, 0)
+			KEY_RIGHT: doc.nudge_selected(mul, 0)
+			KEY_UP: doc.nudge_selected(0.0, -1)
+			KEY_DOWN: doc.nudge_selected(0.0, 1)
+		get_viewport().set_input_as_handled()
+		return
+	if k.echo:
+		return
 	var handled := true
 	match k.keycode:
+		KEY_C:
+			if ctrl:
+				doc.copy_selected()
+			else:
+				handled = false
+		KEY_X:
+			if ctrl:
+				doc.cut_selected()
+			else:
+				handled = false
+		KEY_V:
+			if ctrl:
+				doc.paste()
+			else:
+				handled = false
+		KEY_Q:
+			if not ctrl:
+				doc.trim_selected_to_playhead("start")
+			else:
+				handled = false
+		KEY_W:
+			if not ctrl:
+				doc.trim_selected_to_playhead("end")
+			else:
+				handled = false
+		KEY_F2:
+			if doc.selection.size() == 1:
+				timeline.grid.start_rename(doc.selection[0])
+			else:
+				handled = false
 		KEY_SPACE: doc.play_pause()
 		KEY_ENTER, KEY_KP_ENTER: doc.stop()
 		KEY_HOME: doc.seek(0.0)
 		KEY_L: doc.toggle_loop()
-		KEY_G: doc.toggle_snap()
+		KEY_G:
+			if ctrl and k.shift_pressed:
+				doc.ungroup_selected()
+			elif ctrl:
+				doc.group_selected()
+			else:
+				doc.toggle_snap()
 		KEY_S:
 			if ctrl:
 				_on_request("save")

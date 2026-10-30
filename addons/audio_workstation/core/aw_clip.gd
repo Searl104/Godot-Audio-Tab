@@ -27,8 +27,16 @@ extends Resource
 ## Fades are in clip (audio) time.
 @export var fade_in_sec: float = 0.0
 @export var fade_out_sec: float = 0.0
+enum FadeShape { LINEAR, FAST, SLOW, S_CURVE, EQUAL_POWER }
+const FADE_SHAPE_NAMES := ["Linear", "Fast", "Slow", "S-Curve", "Equal Power"]
+@export var fade_in_shape: FadeShape = FadeShape.LINEAR
+@export var fade_out_shape: FadeShape = FadeShape.LINEAR
 @export var color: Color = Color("#4f9edb")
 @export var muted: bool = false
+## Plays the covered part of the source backwards (source_offset_sec + length_sec down to source_offset_sec).
+@export var reversed: bool = false
+## Clips sharing a non-zero group id are selected (and so moved, trimmed, muted) together.
+@export var group_id: int = 0
 @export var chain: AWChain
 
 
@@ -78,6 +86,32 @@ func local_to_project(s: float) -> float:
 
 func project_to_local(p: float) -> float:
 	return warp().unwarp(p - start_sec)
+
+
+## Gain at fade position u (0 = the silent end, 1 = full), for a fade shape. Same as the engine.
+static func fade_gain(shape: int, u: float) -> float:
+	u = clampf(u, 0.0, 1.0)
+	match shape:
+		FadeShape.FAST: return 1.0 - (1.0 - u) * (1.0 - u)
+		FadeShape.SLOW: return u * u
+		FadeShape.S_CURVE: return u * u * (3.0 - 2.0 * u)
+		FadeShape.EQUAL_POWER: return sin(u * PI * 0.5)
+	return u
+
+
+## Fade gain at clip time `local` (both fades).
+func fade_at(local: float) -> float:
+	var g := 1.0
+	if fade_in_sec > 0.0 and local < fade_in_sec:
+		g = fade_gain(fade_in_shape, local / fade_in_sec)
+	if fade_out_sec > 0.0 and local > length_sec - fade_out_sec:
+		g = minf(g, fade_gain(fade_out_shape, (length_sec - local) / fade_out_sec))
+	return g
+
+
+## Source time (seconds in the file) heard at clip time `local`.
+func source_time(local: float) -> float:
+	return source_offset_sec + length_sec - local if reversed else source_offset_sec + local
 
 
 func duplicate_clip() -> AWClip:

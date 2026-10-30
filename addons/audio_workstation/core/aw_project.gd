@@ -3,7 +3,7 @@ class_name AWProject
 extends Resource
 ## The saved sound-effect document. All times are in seconds.
 
-const FORMAT_VERSION := 3 # 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
+const FORMAT_VERSION := 4 # 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
 const CLIP_COLORS := [
 	Color("#4f7fd9"), Color("#d9b63f"), Color("#6fae4f"), Color("#e07a3f"),
 	Color("#a77fd9"), Color("#d95f7a"), Color("#3fb8b0"),
@@ -17,6 +17,8 @@ const CLIP_COLORS := [
 @export var loop_end_sec: float = 2.0
 @export var clips: Array[AWClip] = []
 @export var master_chain: AWChain
+## Row (layer) settings by row index; null or missing = defaults.
+@export var rows: Array[AWRow] = []
 
 @export_group("Export")
 ## 16 or 32 (32 = float).
@@ -51,7 +53,7 @@ const MAX_END_SEC := 600.0
 func last_clip_end_sec() -> float:
 	var end := 0.0
 	for c in clips:
-		if not c.muted:
+		if is_clip_audible(c):
 			end = maxf(end, c.start_sec + c.play_length())
 	return end
 
@@ -79,6 +81,40 @@ func content_end_sec() -> float:
 	for c in clips:
 		end = maxf(end, c.end_sec())
 	return end
+
+
+func row(i: int) -> AWRow:
+	return rows[i] if i >= 0 and i < rows.size() else null
+
+
+func row_name(i: int) -> String:
+	var r := row(i)
+	return r.name if r and r.name != "" else "Row %d" % (i + 1)
+
+
+func any_solo() -> bool:
+	for r in rows:
+		if r and r.solo:
+			return true
+	return false
+
+
+## Whether a row is heard: not muted and, while any row is soloed, soloed itself.
+func row_audible(i: int) -> bool:
+	var r := row(i)
+	if r and r.muted:
+		return false
+	return not any_solo() or (r != null and r.solo)
+
+
+## Heard in playback and in the export (clip and row mute, row solo).
+func is_clip_audible(c: AWClip) -> bool:
+	return not c.muted and row_audible(c.row)
+
+
+func row_locked(i: int) -> bool:
+	var r := row(i)
+	return r != null and r.locked
 
 
 func max_row() -> int:

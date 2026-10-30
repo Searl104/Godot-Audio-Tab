@@ -224,6 +224,29 @@ The **Audio Export** dock bakes the whole sound (every clip, clip and master cha
 - Ogg encoding uses vendored libogg 1.3.5 and libvorbis 1.3.7 (BSD, `extension/thirdparty/`). Needs engine 0.8.0 or newer.
 
 
+## Grid editing (0.14, engine 0.10.0)
+
+| Do | How |
+|---|---|
+| Copy / cut / paste | Ctrl+C / Ctrl+X / Ctrl+V. Pastes at the playhead on the rows the clips came from; works after opening another sound. |
+| Nudge | Arrow keys: Left/Right by one snap step (10 ms with snap off), Shift = 10 steps, Up/Down = one row. Hold to repeat. |
+| Trim to playhead | Q trims the start, W the end of the selected clips under the playhead. |
+| Rename | F2, double-click the clip's name strip, or right-click > Rename. |
+| Colour | Right-click > Colour (applies to the selection). |
+| Clip gain | Ctrl + drag up/down on a clip (Shift = fine). On a selection, every clip changes by the same amount. Ctrl+click still toggles the selection. |
+| Slip | Ctrl+Alt + drag: slides the audio inside the clip; the clip, its fades and curves stay. |
+| Reverse | Right-click > Reverse: the same part of the file plays backwards (◂ on the clip). Trims and splits keep working as you'd expect. |
+| Fade shapes | Right-click > Fade In Shape / Fade Out Shape: Linear, Fast, Slow, S-Curve, Equal Power. The clip draws the curve. |
+| Crossfade | Overlapping clips simply mix (that's layering). Select overlapping clips > right-click > Crossfade Overlaps: equal-power fades across each overlap. |
+| Groups | Ctrl+G groups the selection (clicking one selects all: they move, nudge, mute, copy and delete together); Ctrl+Shift+G ungroups. |
+| Several clips at once | With several clips selected, Gain, Pitch and Pan on the Clip card change every selected clip by the same amount. |
+| Import here | Double-click empty grid space opens Import Sound at that spot. |
+
+**Row headers** (left of the grid; "◂ Rows" narrows them): a colour bar, the row's name (double-click to rename), and
+**M** (mute), **S** (solo; Ctrl+click solos only that row) and **L** (lock: its clips can't be selected or edited).
+Mute and Solo apply to the export as well; the Export dock warns while a Solo is on. Click a header to select its clips;
+right-click for Rename, Row Colour, Unmute All Rows and Clear All Solos. Sounds saved by 0.14 use format 4.
+
 ## Importing sounds (0.13)
 
 - **File > Import Sound...** or right-click the clip grid > **Import Sound...** opens a browser for anywhere on disk:

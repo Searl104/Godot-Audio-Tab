@@ -21,7 +21,10 @@ const PEAKS_PER_SEC := 120.0
 ## Height of one grid row. Alt+wheel changes it (taller rows show the waveform better).
 var row_h := ROW_H_DEFAULT
 
-enum Drag { NONE, MOVE, TRIM_L, TRIM_R, FADE_IN, FADE_OUT, MARQUEE, CLICK }
+## Row height changed (Alt+wheel), or the number of rows (the row headers follow).
+signal row_height_changed
+
+enum Drag { NONE, MOVE, TRIM_L, TRIM_R, FADE_IN, FADE_OUT, MARQUEE, CLICK, CTRL_PENDING, GAIN, SLIP }
 
 var doc: AWDocument
 var view: AWTimeView
@@ -41,6 +44,12 @@ var _menu_clip: AWClip = null
 var _menu_t := 0.0
 var _menu_pos := Vector2.ZERO
 var _drop_ghost := Rect2()
+var _color_menu: PopupMenu
+var _fade_menus: Array[PopupMenu] = []
+var _rename_edit: LineEdit
+var _rename_clip: AWClip = null
+var _gain_readout := ""
+var _gain_clip: AWClip = null
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -56,6 +65,37 @@ func _ready() -> void:
 	_menu = PopupMenu.new()
 	_menu.id_pressed.connect(_on_menu)
 	add_child(_menu)
+	_color_menu = PopupMenu.new()
+	_color_menu.name = "ColourMenu"
+	for i in AWProject.CLIP_COLORS.size():
+		var img := Image.create(14, 14, false, Image.FORMAT_RGBA8)
+		img.fill(AWProject.CLIP_COLORS[i])
+		_color_menu.add_icon_item(ImageTexture.create_from_image(img), "", i)
+	_color_menu.id_pressed.connect(func(i: int) -> void:
+		if _menu_clip:
+			doc.set_clip_color(_menu_clip, AWProject.CLIP_COLORS[i]))
+	_menu.add_child(_color_menu)
+	for side in 2:
+		var fm := PopupMenu.new()
+		fm.name = "FadeInShape" if side == 0 else "FadeOutShape"
+		for k in AWClip.FADE_SHAPE_NAMES.size():
+			fm.add_radio_check_item(AWClip.FADE_SHAPE_NAMES[k], k)
+		var sd := "in" if side == 0 else "out"
+		fm.id_pressed.connect(func(k: int) -> void:
+			if _menu_clip:
+				doc.set_fade_shape(_menu_clip, sd, k as AWClip.FadeShape))
+		_menu.add_child(fm)
+		_fade_menus.append(fm)
+	_rename_edit = LineEdit.new()
+	_rename_edit.visible = false
+	_rename_edit.text_submitted.connect(func(_t: String) -> void: _finish_rename(true))
+	_rename_edit.focus_exited.connect(func() -> void: _finish_rename(true))
+	_rename_edit.gui_input.connect(func(e: InputEvent) -> void:
+		var k := e as InputEventKey
+		if k and k.pressed and k.keycode == KEY_ESCAPE:
+			_finish_rename(false)
+			_rename_edit.accept_event())
+	add_child(_rename_edit)
 	resized.connect(func() -> void: view.set_view_width(size.x))
 	view.changed.connect(queue_redraw)
 	doc.project_changed.connect(func(_s: bool) -> void: _update_height(); queue_redraw())
@@ -71,6 +111,7 @@ func set_row_height(h: float) -> void:
 	row_h = clampf(h, ROW_H_MIN, ROW_H_MAX)
 	_update_height()
 	queue_redraw()
+	row_height_changed.emit()
 
 
 func _update_height() -> void:
@@ -101,9 +142,12 @@ func row_at(y: float) -> int:
 	return maxi(0, floori(y / row_h))
 
 
+## The clip under `pos` (clips on locked rows are ignored).
 func clip_at(pos: Vector2) -> AWClip:
 	for i in range(doc.project.clips.size() - 1, -1, -1):
 		var c := doc.project.clips[i]
+		if doc.project.row_locked(c.row):
+			continue
 		if clip_rect(c).grow_individual(0, 0, 0, 0).has_point(pos):
 			return c
 	return null
@@ -144,9 +188,13 @@ func _gui_input(event: InputEvent) -> void:
 			if mb.pressed:
 				if mb.double_click:
 					var c := clip_at(mb.position)
-					if c:
+					if c and mb.position.y <= clip_rect(c).position.y + 13.0:
+						start_rename(c)
+					elif c:
 						doc.engine.audition_clip(c)
 						doc.message.emit("Audition \"%s\"" % c.name)
+					else:
+						doc.import_requested.emit(row_at(mb.position.y), maxf(0.0, doc.snap(view.x_to_time(mb.position.x))))
 				else:
 					_press(mb)
 			else:
@@ -174,8 +222,19 @@ func _press(mb: InputEventMouseButton) -> void:
 		_drag = Drag.CLICK
 		_marquee_base = doc.selection.duplicate() if (mb.shift_pressed or mb.ctrl_pressed) else ([] as Array[AWClip])
 		return
+	if mb.ctrl_pressed and mb.alt_pressed:
+		# Ctrl+Alt+drag: slip the audio inside the clip(s), always unsnapped.
+		if not doc.is_selected(c):
+			doc.select_clip(c)
+		_drag = Drag.SLIP
+		for s in doc.selection:
+			_items.append([s, {"source_offset_sec": s.source_offset_sec}])
+		_press_warp = c.warp()
+		return
 	if mb.ctrl_pressed:
-		doc.select_clip(c, "toggle")
+		# Ctrl+click toggles the selection on release; Ctrl+vertical drag changes clip gain.
+		_drag = Drag.CTRL_PENDING
+		return
 	elif mb.shift_pressed:
 		doc.select_clip(c, "add")
 	elif not doc.is_selected(c):
@@ -216,12 +275,27 @@ func _motion(mm: InputEventMouseMotion) -> void:
 			_marquee_rect = Rect2(_press_pos, pos - _press_pos).abs()
 			var picked: Array[AWClip] = _marquee_base.duplicate()
 			for c in doc.project.clips:
-				if _marquee_rect.intersects(clip_rect(c)) and not picked.has(c):
+				if _marquee_rect.intersects(clip_rect(c)) and not picked.has(c) and not doc.project.row_locked(c.row):
 					picked.append(c)
 			doc.set_selection(picked)
 			queue_redraw()
 		Drag.MOVE:
 			_move_selection(pos, mm.alt_pressed)
+		Drag.CTRL_PENDING:
+			var d := pos - _press_pos
+			if absf(d.y) > 4.0 and absf(d.y) > absf(d.x):
+				_start_gain_drag()
+				_motion(mm)
+		Drag.GAIN:
+			var delta := -(pos.y - _press_pos.y) * (0.05 if mm.shift_pressed else 0.25)
+			for it: Array in _items:
+				var p: Dictionary = (it[1].params as Dictionary).duplicate()
+				p["gain_db"] = clampf(float(p.get("gain_db", 0.0)) + delta, -60.0, 24.0)
+				doc.preview_set(it[0], {"params": p})
+			_gain_readout = "%+.1f dB" % delta if _items.size() > 1 else "%.1f dB" % float(_gain_clip.chain.effects[0].get_param("gain_db"))
+			queue_redraw()
+		Drag.SLIP:
+			_slip(pos)
 		Drag.TRIM_L, Drag.TRIM_R, Drag.FADE_IN, Drag.FADE_OUT:
 			_edit_edge(pos)
 
@@ -245,6 +319,54 @@ func _move_selection(pos: Vector2, free_time: bool) -> void:
 		doc.preview_set(it[0], {"start_sec": it[1].start_sec + dt, "row": it[1].row + drow})
 
 
+## Ctrl+vertical drag: gain of the pressed clip, or of every selected clip (relative) if it's selected.
+func _start_gain_drag() -> void:
+	_drag = Drag.GAIN
+	_gain_clip = _press_clip
+	var targets: Array[AWClip] = doc.selection if doc.is_selected(_press_clip) else ([_press_clip] as Array[AWClip])
+	_items.clear()
+	for c in targets:
+		var src: AWEffect = c.chain.effects[0]
+		_items.append([src, {"params": src.params.duplicate()}])
+	if _press_clip.chain.get_curve(_press_clip.chain.effects[0].id, "gain_db"):
+		doc.message.emit("This clip's Gain has a curve, which overrides the gain set here.")
+
+
+## Ctrl+Alt+drag: moves the audio under the clip; the clip, its fades and curves stay put.
+func _slip(pos: Vector2) -> void:
+	var c := _press_clip
+	var start := c.start_sec
+	var w := _press_warp
+	var d_audio := w.unwarp(view.x_to_time(pos.x) - start) - w.unwarp(_press_t - start)
+	for it: Array in _items:
+		var clip: AWClip = it[0]
+		var src_len := doc.engine.get_source_length(clip.source_path)
+		var max_off := maxf(0.0, src_len - clip.length_sec) if src_len > 0.0 else INF
+		var off: float = it[1].source_offset_sec + (d_audio if clip.reversed else -d_audio)
+		doc.preview_set(clip, {"source_offset_sec": clampf(off, 0.0, max_off)})
+
+
+func start_rename(c: AWClip) -> void:
+	_rename_clip = c
+	var r := clip_rect(c)
+	_rename_edit.text = c.name
+	_rename_edit.position = Vector2(maxf(r.position.x, 0.0), r.position.y - 2.0)
+	_rename_edit.size = Vector2(clampf(r.size.x, 120.0, 320.0), 0)
+	_rename_edit.visible = true
+	_rename_edit.grab_focus()
+	_rename_edit.select_all()
+
+
+func _finish_rename(apply: bool) -> void:
+	if _rename_clip == null:
+		return
+	var c := _rename_clip
+	_rename_clip = null
+	_rename_edit.visible = false
+	if apply:
+		doc.rename_clip(c, _rename_edit.text)
+
+
 ## Edge drags: the mouse is in project time; the warp captured at press converts it to clip
 ## (audio) time, so trims and fades land on the sound you see under the cursor.
 func _edit_edge(pos: Vector2) -> void:
@@ -256,17 +378,26 @@ func _edit_edge(pos: Vector2) -> void:
 	var t := doc.snap(view.x_to_time(pos.x))
 	match _drag:
 		Drag.TRIM_L:
-			# Can't reveal audio before the file's start, or cross the right edge.
-			var min_start := maxf(0.0, start + w.warp(-o.source_offset_sec))
+			# Can't reveal audio past the file's edge, or cross the right edge. A reversed clip
+			# starts at the source's end, so trimming its start reveals later audio.
+			var spare: float = o.source_offset_sec
+			if c.reversed:
+				var src_len := doc.engine.get_source_length(c.source_path)
+				spare = maxf(0.0, src_len - o.source_offset_sec - length) if src_len > 0.0 else 3600.0
+			var min_start := maxf(0.0, start + w.warp(-spare))
 			var max_start := start + w.warp(length - AWDocument.MIN_LEN)
 			var s := clampf(t, min_start, max_start)
 			var cut := w.unwarp(s - start) # audio time removed (negative = revealed)
 			doc.preview_shift_curves(c, _orig_curve_keys, cut)
-			doc.preview_set(c, {"start_sec": s, "length_sec": length - cut,
-				"source_offset_sec": o.source_offset_sec + cut,
-				"fade_in_sec": minf(o.fade_in_sec, length - cut)})
+			var props := {"start_sec": s, "length_sec": length - cut,
+				"source_offset_sec": o.source_offset_sec + (0.0 if c.reversed else cut),
+				"fade_in_sec": minf(o.fade_in_sec, length - cut)}
+			doc.preview_set(c, props)
 		Drag.TRIM_R:
 			var new_len := maxf(AWDocument.MIN_LEN, w.unwarp(t - start))
+			if c.reversed: # the end of a reversed clip is the source's start
+				new_len = minf(new_len, o.source_offset_sec + length)
+				doc.preview_set(c, {"source_offset_sec": o.source_offset_sec + length - new_len})
 			for i in range(1, _items.size()):
 				doc.preview_set(_items[i][0], {"end_sec": new_len})
 			doc.preview_set(c, {"length_sec": new_len, "fade_out_sec": minf(o.fade_out_sec, new_len)})
@@ -292,6 +423,14 @@ func _release(mb: InputEventMouseButton) -> void:
 			doc.commit_drags(_items, "Trim Clip")
 		Drag.FADE_IN, Drag.FADE_OUT:
 			doc.commit_drags(_items, "Edit Fade")
+		Drag.CTRL_PENDING:
+			doc.select_clip(_press_clip, "toggle")
+		Drag.GAIN:
+			doc.commit_drags(_items, "Clip Gain")
+			_gain_readout = ""
+			_gain_clip = null
+		Drag.SLIP:
+			doc.commit_drags(_items, "Slip Clip")
 	_drag = Drag.NONE
 	_items.clear()
 	queue_redraw()
@@ -324,6 +463,17 @@ func _open_menu(pos: Vector2) -> void:
 		_menu.add_item("Split Here", 3)
 		_menu.add_item("Duplicate", 4)
 		_menu.add_item("Unmute" if _menu_clip.muted else "Mute", 5)
+		_menu.add_item("Rename  (F2)", 14)
+		_menu.add_submenu_node_item("Colour", _color_menu)
+		_menu.add_item("Unreverse" if _menu_clip.reversed else "Reverse", 15)
+		_menu.add_submenu_node_item("Fade In Shape", _fade_menus[0])
+		_menu.add_submenu_node_item("Fade Out Shape", _fade_menus[1])
+		for side in 2:
+			var cur: int = _menu_clip.fade_in_shape if side == 0 else _menu_clip.fade_out_shape
+			for k in _fade_menus[side].item_count:
+				_fade_menus[side].set_item_checked(k, k == cur)
+		if doc.selection.size() >= 2:
+			_menu.add_item("Crossfade Overlaps", 16)
 		_menu.add_separator()
 		_menu.add_item("Delete", 6)
 		if doc.is_clip_missing(_menu_clip):
@@ -351,12 +501,15 @@ func _on_menu(id: int) -> void:
 		2: doc.split_clip(_menu_clip, doc.playhead_sec)
 		3: doc.split_clip(_menu_clip, _menu_t)
 		4: doc.duplicate_selected()
-		5: doc.set_props(_menu_clip, {"muted": not _menu_clip.muted}, "Mute Clip")
+		5: doc.toggle_mute_clips(_menu_clip)
 		6: doc.delete_selected_clips()
 		7: doc.relink_requested.emit(_menu_clip, "file")
 		8: doc.relink_requested.emit(_menu_clip, "folder")
 		9: doc.copy_clip_into_project(_menu_clip)
 		13: doc.import_requested.emit(row_at(_menu_pos.y), _menu_t)
+		14: start_rename(_menu_clip)
+		15: doc.toggle_reverse_clips(_menu_clip)
+		16: doc.crossfade_selected()
 		10: doc.select_all_clips()
 		11: doc.clear_selection()
 		12: doc.seek(_menu_t)
@@ -407,6 +560,9 @@ func _draw() -> void:
 	for r in rows:
 		if r % 2 == 1:
 			draw_rect(Rect2(0, r * row_h, size.x, row_h), Color(1, 1, 1, 0.015))
+		var rr := doc.project.row(r)
+		if rr and rr.color.a > 0.0:
+			draw_rect(Rect2(0, r * row_h, size.x, row_h), Color(rr.color, 0.06))
 		draw_line(Vector2(0, (r + 1) * row_h - 0.5), Vector2(size.x, (r + 1) * row_h - 0.5), Color(0, 0, 0, 0.25))
 	AWTheme.draw_time_grid(self, view, 0.0, size.y)
 
@@ -424,6 +580,14 @@ func _draw() -> void:
 		var w := font.get_string_size(msg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 		draw_string(font, Vector2((size.x - w) * 0.5, minf(size.y * 0.5, row_h * 1.5)), msg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(c_text, 0.5))
 
+	if _gain_readout != "" and _gain_clip:
+		var gr := clip_rect(_gain_clip)
+		var font := get_theme_default_font()
+		var fs := get_theme_default_font_size()
+		var tw := font.get_string_size(_gain_readout, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		var box := Rect2(Vector2(clampf(gr.get_center().x - tw * 0.5 - 6.0, 0.0, size.x - tw - 12.0), gr.position.y + gr.size.y * 0.5 - fs * 0.5 - 4.0), Vector2(tw + 12.0, fs + 8.0))
+		draw_rect(box, Color(0, 0, 0, 0.75))
+		draw_string(font, box.position + Vector2(6, fs + 2), _gain_readout, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color.WHITE)
 	if _drop_ghost.size != Vector2.ZERO:
 		draw_rect(_drop_ghost, Color(c_acc, 0.2))
 		draw_rect(_drop_ghost, c_acc, false, 1.0)
@@ -446,7 +610,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	if r.end.x < -2.0 or r.position.x > size.x + 2.0:
 		return
 	var base := c.color
-	if c.muted:
+	if c.muted or not doc.project.row_audible(c.row):
 		base = base.lerp(Color(0.45, 0.45, 0.45), 0.75)
 	var body := base.darkened(0.45)
 	draw_rect(r, body)
@@ -468,14 +632,9 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	var x_end := minf(r.end.x, size.x)
 	while x < x_end:
 		var local := w.unwarp((x - r.position.x) / view.pixels_per_sec)
-		var src := local + c.source_offset_sec
-		var peak := peaks[clampi(int(src * PEAKS_PER_SEC), 0, peaks.size() - 1)] if src * PEAKS_PER_SEC < peaks.size() else (0.0 if has_real else 0.05)
-		var g := 1.0
-		if c.fade_in_sec > 0.0 and local < c.fade_in_sec:
-			g = local / c.fade_in_sec
-		if c.fade_out_sec > 0.0 and local > c.length_sec - c.fade_out_sec:
-			g = minf(g, (c.length_sec - local) / c.fade_out_sec)
-		var h := peak * amp * g
+		var src := c.source_time(local)
+		var peak := peaks[clampi(int(src * PEAKS_PER_SEC), 0, peaks.size() - 1)] if src >= 0.0 and src * PEAKS_PER_SEC < peaks.size() else (0.0 if has_real else 0.05)
+		var h := peak * amp * c.fade_at(local)
 		draw_line(Vector2(x, mid - h), Vector2(x, mid + h), wave)
 		x += 2.0
 
@@ -483,12 +642,23 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	var fpx := _fade_px(c)
 	var fi := fpx.x
 	var fo := fpx.y
-	if fi > 1.0:
-		draw_colored_polygon(PackedVector2Array([Vector2(r.position.x, wave_top), Vector2(r.position.x + fi, wave_top), Vector2(r.position.x, r.end.y)]), Color(0, 0, 0, 0.35))
-		draw_line(Vector2(r.position.x, r.end.y), Vector2(r.position.x + fi, wave_top), Color(c_text, 0.6))
-	if fo > 1.0:
-		draw_colored_polygon(PackedVector2Array([Vector2(r.end.x - fo, wave_top), Vector2(r.end.x, wave_top), r.end]), Color(0, 0, 0, 0.35))
-		draw_line(Vector2(r.end.x - fo, wave_top), r.end, Color(c_text, 0.6))
+	# The fade curves follow their shape (Linear, Fast, Slow, S-Curve, Equal Power).
+	for side in 2:
+		var span := fi if side == 0 else fo
+		if span <= 1.0:
+			continue
+		var shape := c.fade_in_shape if side == 0 else c.fade_out_shape
+		var line := PackedVector2Array()
+		var n := clampi(int(span / 3.0), 4, 48)
+		for k in n + 1:
+			var u := float(k) / n # 0 = silent end, 1 = full
+			var fx := r.position.x + u * span if side == 0 else r.end.x - u * span
+			line.append(Vector2(fx, r.end.y - (r.end.y - wave_top) * AWClip.fade_gain(shape, u)))
+		var shade := line.duplicate()
+		shade.append(Vector2(line[n].x, wave_top))
+		shade.append(Vector2(line[0].x, wave_top))
+		draw_colored_polygon(shade, Color(0, 0, 0, 0.35))
+		draw_polyline(line, Color(c_text, 0.6), 1.0, true)
 
 	var font := get_theme_default_font()
 	var fs := get_theme_default_font_size() - 3
@@ -503,7 +673,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 			draw_line(a, b, Color(red, 0.35), 1.0)
 			hx += 12.0
 	var external := not missing and doc.is_clip_external(c)
-	var label := c.name + ("  (muted)" if c.muted else "") + ("  (sound file missing)" if missing else "") + ("  ↗ outside project" if external else "")
+	var label := ("◂ " if c.reversed else "") + c.name + ("  (muted)" if c.muted else "") + ("  (locked)" if doc.project.row_locked(c.row) else "") + ("  (sound file missing)" if missing else "") + ("  ↗ outside project" if external else "")
 	draw_string(font, r.position + Vector2(5, 10), label, HORIZONTAL_ALIGNMENT_LEFT, maxf(r.size.x - 10.0, 0.0), fs, c_text)
 	var fx_count := c.chain.effects.size() - 1 if c.chain else 0
 	if fx_count > 0 and r.size.x > 90.0:
