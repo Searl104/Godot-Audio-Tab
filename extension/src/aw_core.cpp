@@ -863,52 +863,79 @@ void AWCore::set_loop(bool p_enabled, int64_t p_start_frame, int64_t p_end_frame
 // --- Scrub --------------------------------------------------------------------------
 
 void AWCore::Scrub::prepare(const std::shared_ptr<const Plan> &p_plan, double p_rate, double p_pos) {
-	buf.assign((size_t)CHUNK * 2, 0.0f);
-	buf_start = INT64_MIN;
+	grain = std::max<int64_t>(256, std::min<int64_t>(8192, (int64_t)std::llround(p_rate * 0.04)));
+	window.resize((size_t)grain);
+	for (int64_t i = 0; i < grain; i++) {
+		window[(size_t)i] = (float)(0.5 - 0.5 * std::cos(6.283185307179586 * (double)i / (double)grain));
+	}
+	for (int s = 0; s < SLOTS; s++) {
+		grains[s].assign((size_t)grain * 2, 0.0f);
+		start[s] = -1;
+		gain[s] = 0.0f;
+	}
+	next_slot = 0;
+	out_frame = 0;
+	next_grain_at = 0;
+	last_grain_target = p_pos;
+	moving = 0;
 	pos = p_pos;
-	vel = 0.0;
 	fx.bind(p_plan, p_rate);
-	fx.scratch.reserve((size_t)CHUNK * 2 + 64);
+	fx.scratch.reserve((size_t)grain * 2 + 64);
 }
 
 void AWCore::Scrub::render(const std::shared_ptr<const Plan> &p_plan, double p_rate, double p_target, float *r_out, int64_t p_frames) {
+	(void)p_rate;
 	std::memset(r_out, 0, sizeof(float) * (size_t)p_frames * 2);
-	if (!p_plan || buf.empty()) {
+	pos = std::max(0.0, p_target);
+	if (!p_plan || window.empty()) {
 		return;
 	}
 	const bool fx_ok = fx.plan == p_plan;
-	// Velocity follows the distance to the target (reaches it in ~50 ms), smoothed over ~20 ms.
-	const double reach = p_rate * 0.05;
-	const double k = 1.0 - std::exp(-1.0 / (p_rate * 0.02));
+	const int64_t hop = grain / 2;
 	for (int64_t i = 0; i < p_frames; i++) {
-		double want = (p_target - pos) / reach;
-		want = want > 4.0 ? 4.0 : (want < -4.0 ? -4.0 : want);
-		vel += (want - vel) * k;
-		pos += vel;
-		const int64_t f0 = (int64_t)std::floor(pos);
-		if (f0 < 0) {
-			continue;
-		}
-		if (buf_start == INT64_MIN || f0 < buf_start || f0 + 1 >= buf_start + CHUNK) {
-			// Refill around the position: ahead of it when moving forward, behind it when backward.
-			int64_t start = vel >= 0.0 ? f0 - 16 : f0 - CHUNK + 16;
-			start = std::max<int64_t>(0, start);
-			std::fill(buf.begin(), buf.end(), 0.0f);
-			if (fx_ok && fx.next != start) {
-				fx.reset();
+		if (out_frame >= next_grain_at) {
+			// A new grain from where the target is now. Full level while the target keeps moving
+			// (held for 3 grains, ~60 ms, to ride over uneven mouse events), else silent.
+			if (std::fabs(pos - last_grain_target) >= 1.0) {
+				moving = 3;
+			} else if (moving > 0) {
+				moving--;
 			}
-			render_voices(*p_plan, start, CHUNK, buf.data(), fx_ok ? &fx : nullptr);
-			apply_master(*p_plan, start, CHUNK, buf.data(), fx_ok ? &fx : nullptr);
-			if (fx_ok) {
-				fx.next = start + CHUNK;
+			last_grain_target = pos;
+			const int s = next_slot;
+			next_slot = (next_slot + 1) % SLOTS;
+			start[s] = out_frame;
+			gain[s] = moving > 0 ? 1.0f : 0.0f;
+			std::fill(grains[s].begin(), grains[s].end(), 0.0f);
+			if (gain[s] > 0.0f) {
+				const int64_t from = (int64_t)std::llround(pos);
+				if (fx_ok) {
+					fx.reset();
+				}
+				render_voices(*p_plan, from, grain, grains[s].data(), fx_ok ? &fx : nullptr);
+				apply_master(*p_plan, from, grain, grains[s].data(), fx_ok ? &fx : nullptr);
+				if (fx_ok) {
+					fx.next = from + grain;
+				}
 			}
-			buf_start = start;
+			next_grain_at = out_frame + hop;
 		}
-		const int64_t j = f0 - buf_start;
-		const float f = (float)(pos - (double)f0);
-		const float g = (float)std::min(1.0, std::fabs(vel) * 3.0); // a stopped tape is silent
-		r_out[i * 2] = (buf[(size_t)j * 2] * (1.0f - f) + buf[(size_t)(j + 1) * 2] * f) * g;
-		r_out[i * 2 + 1] = (buf[(size_t)j * 2 + 1] * (1.0f - f) + buf[(size_t)(j + 1) * 2 + 1] * f) * g;
+		float l = 0.0f, r = 0.0f;
+		for (int s = 0; s < SLOTS; s++) {
+			if (start[s] < 0 || gain[s] <= 0.0f) {
+				continue;
+			}
+			const int64_t j = out_frame - start[s];
+			if (j < 0 || j >= grain) {
+				continue;
+			}
+			const float w = window[(size_t)j] * gain[s];
+			l += grains[s][(size_t)j * 2] * w;
+			r += grains[s][(size_t)j * 2 + 1] * w;
+		}
+		r_out[i * 2] = l;
+		r_out[i * 2 + 1] = r;
+		out_frame++;
 	}
 }
 

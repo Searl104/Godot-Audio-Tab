@@ -123,18 +123,26 @@ private:
 	std::unique_ptr<FxRuntime> staged_fx; // guarded by plan_mutex
 
 public:
-	// Tape-style scrubbing: the read position chases a target with a smoothed velocity, so slow
-	// drags sound slow and low, and dragging left plays backwards. The mix is rendered in short
-	// chunks around the position (effects restart when it jumps) and read with interpolation.
+	// Scrubbing at normal pitch: short overlapping grains (~40 ms, Hann window, 50% overlap) of the
+	// mix, each starting where the target is when it begins, so you hear the real sound whatever
+	// the drag speed or direction. Grains fade out when the target stops moving. All memory is
+	// allocated in prepare() (main thread); render() never allocates.
 	struct Scrub {
-		static constexpr int64_t CHUNK = 2048;
-		std::vector<float> buf; // CHUNK interleaved frames
-		int64_t buf_start = INT64_MIN;
-		double pos = 0.0; // frames
-		double vel = 0.0; // frames per output frame
+		static constexpr int SLOTS = 3;
+		int64_t grain = 1764; // frames per grain
+		std::vector<float> grains[SLOTS]; // interleaved, grain frames each
+		std::vector<float> window;
+		int64_t start[SLOTS] = { 0, 0, 0 }; // output frame where each grain began (-1 = idle)
+		float gain[SLOTS] = { 0, 0, 0 };
+		int next_slot = 0;
+		int64_t out_frame = 0; // output frames rendered since begin
+		int64_t next_grain_at = 0;
+		double last_grain_target = -1.0;
+		int moving = 0; // grains left at full level since the target last moved
+		double pos = 0.0; // the target (frames), reported as the playhead
 		FxRuntime fx;
 		void prepare(const std::shared_ptr<const Plan> &p_plan, double p_rate, double p_pos);
-		// Writes `frames` interleaved frames chasing `target`. No allocation.
+		// Writes `frames` interleaved frames following `target`. No allocation.
 		void render(const std::shared_ptr<const Plan> &p_plan, double p_rate, double p_target, float *r_out, int64_t p_frames);
 	};
 

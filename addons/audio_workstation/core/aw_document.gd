@@ -117,8 +117,14 @@ func set_project(p: AWProject) -> void:
 	_recompute_missing()
 	selection.clear()
 	focus_clip = p.clips[p.clips.size() - 1] if not p.clips.is_empty() else null
+	# The chain panel shows the new sound: its last clip's chain, or nothing.
+	tab_chain = focus_clip.fx_chain if focus_clip else null
+	chain_tab = ChainTab.CHAIN if tab_chain else ChainTab.CLIP
+	curve_on_clip = false
 	active_curve = null
 	solo_curve = null
+	lfo_curve = null
+	clear_time_selection()
 	playhead_sec = 0.0
 	engine.set_project(p)
 	project_changed.emit(true)
