@@ -42,6 +42,7 @@ var _menu_t := 0.0
 var _menu_pos := Vector2.ZERO
 var _drop_ghost := Rect2()
 var _color_menu: PopupMenu
+var _fade_menus: Array[PopupMenu] = []
 var _rename_edit: LineEdit
 var _rename_clip: AWClip = null
 var _gain_readout := ""
@@ -71,6 +72,17 @@ func _ready() -> void:
 		if _menu_clip:
 			doc.set_clip_color(_menu_clip, AWProject.CLIP_COLORS[i]))
 	_menu.add_child(_color_menu)
+	for side in 2:
+		var fm := PopupMenu.new()
+		fm.name = "FadeInShape" if side == 0 else "FadeOutShape"
+		for k in AWClip.FADE_SHAPE_NAMES.size():
+			fm.add_radio_check_item(AWClip.FADE_SHAPE_NAMES[k], k)
+		var sd := "in" if side == 0 else "out"
+		fm.id_pressed.connect(func(k: int) -> void:
+			if _menu_clip:
+				doc.set_fade_shape(_menu_clip, sd, k as AWClip.FadeShape))
+		_menu.add_child(fm)
+		_fade_menus.append(fm)
 	_rename_edit = LineEdit.new()
 	_rename_edit.visible = false
 	_rename_edit.text_submitted.connect(func(_t: String) -> void: _finish_rename(true))
@@ -359,17 +371,26 @@ func _edit_edge(pos: Vector2) -> void:
 	var t := doc.snap(view.x_to_time(pos.x))
 	match _drag:
 		Drag.TRIM_L:
-			# Can't reveal audio before the file's start, or cross the right edge.
-			var min_start := maxf(0.0, start + w.warp(-o.source_offset_sec))
+			# Can't reveal audio past the file's edge, or cross the right edge. A reversed clip
+			# starts at the source's end, so trimming its start reveals later audio.
+			var spare: float = o.source_offset_sec
+			if c.reversed:
+				var src_len := doc.engine.get_source_length(c.source_path)
+				spare = maxf(0.0, src_len - o.source_offset_sec - length) if src_len > 0.0 else 3600.0
+			var min_start := maxf(0.0, start + w.warp(-spare))
 			var max_start := start + w.warp(length - AWDocument.MIN_LEN)
 			var s := clampf(t, min_start, max_start)
 			var cut := w.unwarp(s - start) # audio time removed (negative = revealed)
 			doc.preview_shift_curves(c, _orig_curve_keys, cut)
-			doc.preview_set(c, {"start_sec": s, "length_sec": length - cut,
-				"source_offset_sec": o.source_offset_sec + cut,
-				"fade_in_sec": minf(o.fade_in_sec, length - cut)})
+			var props := {"start_sec": s, "length_sec": length - cut,
+				"source_offset_sec": o.source_offset_sec + (0.0 if c.reversed else cut),
+				"fade_in_sec": minf(o.fade_in_sec, length - cut)}
+			doc.preview_set(c, props)
 		Drag.TRIM_R:
 			var new_len := maxf(AWDocument.MIN_LEN, w.unwarp(t - start))
+			if c.reversed: # the end of a reversed clip is the source's start
+				new_len = minf(new_len, o.source_offset_sec + length)
+				doc.preview_set(c, {"source_offset_sec": o.source_offset_sec + length - new_len})
 			for i in range(1, _items.size()):
 				doc.preview_set(_items[i][0], {"end_sec": new_len})
 			doc.preview_set(c, {"length_sec": new_len, "fade_out_sec": minf(o.fade_out_sec, new_len)})
@@ -437,6 +458,15 @@ func _open_menu(pos: Vector2) -> void:
 		_menu.add_item("Unmute" if _menu_clip.muted else "Mute", 5)
 		_menu.add_item("Rename  (F2)", 14)
 		_menu.add_submenu_node_item("Colour", _color_menu)
+		_menu.add_item("Unreverse" if _menu_clip.reversed else "Reverse", 15)
+		_menu.add_submenu_node_item("Fade In Shape", _fade_menus[0])
+		_menu.add_submenu_node_item("Fade Out Shape", _fade_menus[1])
+		for side in 2:
+			var cur: int = _menu_clip.fade_in_shape if side == 0 else _menu_clip.fade_out_shape
+			for k in _fade_menus[side].item_count:
+				_fade_menus[side].set_item_checked(k, k == cur)
+		if doc.selection.size() >= 2:
+			_menu.add_item("Crossfade Overlaps", 16)
 		_menu.add_separator()
 		_menu.add_item("Delete", 6)
 		if doc.is_clip_missing(_menu_clip):
@@ -471,6 +501,8 @@ func _on_menu(id: int) -> void:
 		9: doc.copy_clip_into_project(_menu_clip)
 		13: doc.import_requested.emit(row_at(_menu_pos.y), _menu_t)
 		14: start_rename(_menu_clip)
+		15: doc.toggle_reverse_clips(_menu_clip)
+		16: doc.crossfade_selected()
 		10: doc.select_all_clips()
 		11: doc.clear_selection()
 		12: doc.seek(_menu_t)
@@ -590,14 +622,9 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	var x_end := minf(r.end.x, size.x)
 	while x < x_end:
 		var local := w.unwarp((x - r.position.x) / view.pixels_per_sec)
-		var src := local + c.source_offset_sec
-		var peak := peaks[clampi(int(src * PEAKS_PER_SEC), 0, peaks.size() - 1)] if src * PEAKS_PER_SEC < peaks.size() else (0.0 if has_real else 0.05)
-		var g := 1.0
-		if c.fade_in_sec > 0.0 and local < c.fade_in_sec:
-			g = local / c.fade_in_sec
-		if c.fade_out_sec > 0.0 and local > c.length_sec - c.fade_out_sec:
-			g = minf(g, (c.length_sec - local) / c.fade_out_sec)
-		var h := peak * amp * g
+		var src := c.source_time(local)
+		var peak := peaks[clampi(int(src * PEAKS_PER_SEC), 0, peaks.size() - 1)] if src >= 0.0 and src * PEAKS_PER_SEC < peaks.size() else (0.0 if has_real else 0.05)
+		var h := peak * amp * c.fade_at(local)
 		draw_line(Vector2(x, mid - h), Vector2(x, mid + h), wave)
 		x += 2.0
 
@@ -605,12 +632,23 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	var fpx := _fade_px(c)
 	var fi := fpx.x
 	var fo := fpx.y
-	if fi > 1.0:
-		draw_colored_polygon(PackedVector2Array([Vector2(r.position.x, wave_top), Vector2(r.position.x + fi, wave_top), Vector2(r.position.x, r.end.y)]), Color(0, 0, 0, 0.35))
-		draw_line(Vector2(r.position.x, r.end.y), Vector2(r.position.x + fi, wave_top), Color(c_text, 0.6))
-	if fo > 1.0:
-		draw_colored_polygon(PackedVector2Array([Vector2(r.end.x - fo, wave_top), Vector2(r.end.x, wave_top), r.end]), Color(0, 0, 0, 0.35))
-		draw_line(Vector2(r.end.x - fo, wave_top), r.end, Color(c_text, 0.6))
+	# The fade curves follow their shape (Linear, Fast, Slow, S-Curve, Equal Power).
+	for side in 2:
+		var span := fi if side == 0 else fo
+		if span <= 1.0:
+			continue
+		var shape := c.fade_in_shape if side == 0 else c.fade_out_shape
+		var line := PackedVector2Array()
+		var n := clampi(int(span / 3.0), 4, 48)
+		for k in n + 1:
+			var u := float(k) / n # 0 = silent end, 1 = full
+			var fx := r.position.x + u * span if side == 0 else r.end.x - u * span
+			line.append(Vector2(fx, r.end.y - (r.end.y - wave_top) * AWClip.fade_gain(shape, u)))
+		var shade := line.duplicate()
+		shade.append(Vector2(line[n].x, wave_top))
+		shade.append(Vector2(line[0].x, wave_top))
+		draw_colored_polygon(shade, Color(0, 0, 0, 0.35))
+		draw_polyline(line, Color(c_text, 0.6), 1.0, true)
 
 	var font := get_theme_default_font()
 	var fs := get_theme_default_font_size() - 3
@@ -625,7 +663,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 			draw_line(a, b, Color(red, 0.35), 1.0)
 			hx += 12.0
 	var external := not missing and doc.is_clip_external(c)
-	var label := c.name + ("  (muted)" if c.muted else "") + ("  (sound file missing)" if missing else "") + ("  ↗ outside project" if external else "")
+	var label := ("◂ " if c.reversed else "") + c.name + ("  (muted)" if c.muted else "") + ("  (sound file missing)" if missing else "") + ("  ↗ outside project" if external else "")
 	draw_string(font, r.position + Vector2(5, 10), label, HORIZONTAL_ALIGNMENT_LEFT, maxf(r.size.x - 10.0, 0.0), fs, c_text)
 	var fx_count := c.chain.effects.size() - 1 if c.chain else 0
 	if fx_count > 0 and r.size.x > 90.0:

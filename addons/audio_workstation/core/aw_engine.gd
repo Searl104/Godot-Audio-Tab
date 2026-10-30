@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 10:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 11:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -320,6 +320,9 @@ func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
 		"length": clip.length_sec * r,
 		"fade_in": clip.fade_in_sec * r,
 		"fade_out": clip.fade_out_sec * r,
+		"fade_in_shape": clip.fade_in_shape,
+		"fade_out_shape": clip.fade_out_shape,
+		"reversed": clip.reversed,
 		"rate_step": RATE_STEP,
 		"rates": _rates(clip, src, step_sec),
 	}

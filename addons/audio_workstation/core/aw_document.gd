@@ -978,7 +978,8 @@ func split_clip(clip: AWClip, t: float) -> void:
 	right.name = clip.name + " (2)"
 	right.start_sec = t
 	right.length_sec = clip.length_sec - local
-	right.source_offset_sec = clip.source_offset_sec + local
+	# A reversed clip's first half plays the end of its source range.
+	right.source_offset_sec = clip.source_offset_sec if clip.reversed else clip.source_offset_sec + local
 	right.fade_in_sec = 0.0
 	# Right half's curves shift so they keep playing the same values at the same moment.
 	for c in right.chain.curves:
@@ -986,8 +987,9 @@ func split_clip(clip: AWClip, t: float) -> void:
 		if c.lfo: # keep the oscillation's phase and fades on the same moments
 			c.lfo.start_sec -= local
 			c.lfo.end_sec -= local
-	var old := {"length_sec": clip.length_sec, "fade_out_sec": clip.fade_out_sec}
-	var now := {"length_sec": local, "fade_out_sec": 0.0}
+	var old := {"length_sec": clip.length_sec, "fade_out_sec": clip.fade_out_sec, "source_offset_sec": clip.source_offset_sec}
+	var now := {"length_sec": local, "fade_out_sec": 0.0,
+		"source_offset_sec": clip.source_offset_sec + (clip.length_sec - local) if clip.reversed else clip.source_offset_sec}
 	_begin("Split Clip")
 	_add_do(_apply_props.bind(clip, now))
 	_add_do(_apply_insert_clip.bind(right, project.clips.find(clip) + 1))
@@ -1179,6 +1181,59 @@ func right_trim_props(c: AWClip, new_len: float) -> Dictionary:
 	if c.reversed:
 		return {"length_sec": new_len, "source_offset_sec": c.source_offset_sec + (c.length_sec - new_len)}
 	return {"length_sec": new_len}
+
+
+## Reverses (or un-reverses) the selection, or `clip` if it isn't selected. The clip keeps its place
+## and length and plays the same part of the file backwards. One undo step.
+func toggle_reverse_clips(clip: AWClip) -> void:
+	var targets: Array[AWClip] = selection if selection.has(clip) else ([clip] as Array[AWClip])
+	var to := not clip.reversed
+	_begin("Reverse Clips" if to else "Unreverse Clips")
+	for c in targets:
+		_add_do(_apply_props.bind(c, {"reversed": to}))
+		_add_undo(_apply_props.bind(c, {"reversed": c.reversed}))
+	_commit()
+
+
+## Sets the fade-in ("in") or fade-out ("out") shape of the selection, or `clip`. One undo step.
+func set_fade_shape(clip: AWClip, side: String, shape: AWClip.FadeShape) -> void:
+	var targets: Array[AWClip] = selection if selection.has(clip) else ([clip] as Array[AWClip])
+	var prop := "fade_in_shape" if side == "in" else "fade_out_shape"
+	_begin("Fade Shape")
+	for c in targets:
+		_add_do(_apply_props.bind(c, {prop: shape}))
+		_add_undo(_apply_props.bind(c, {prop: c.get(prop)}))
+	_commit()
+
+
+## Crossfades overlapping selected clips: sorted by start, each overlapping pair gets an
+## equal-power fade-out / fade-in across the overlap (any rows). One undo step. Returns pairs done.
+func crossfade_selected() -> int:
+	var clips := selection.duplicate()
+	clips.sort_custom(func(a: AWClip, b: AWClip) -> bool: return a.start_sec < b.start_sec)
+	var pairs := []
+	for i in clips.size():
+		for j in range(i + 1, clips.size()):
+			var a: AWClip = clips[i]
+			var b: AWClip = clips[j]
+			if b.start_sec < a.end_sec() - 1e-4 and b.end_sec() > a.end_sec() and b.start_sec > a.start_sec:
+				pairs.append([a, b])
+	if pairs.is_empty():
+		message.emit("Select clips that overlap in time to crossfade them.")
+		return 0
+	_begin("Crossfade")
+	for pr: Array in pairs:
+		var a: AWClip = pr[0]
+		var b: AWClip = pr[1]
+		var a_fade := a.length_sec - a.project_to_local(b.start_sec)
+		var b_fade := b.project_to_local(a.end_sec())
+		_add_do(_apply_props.bind(a, {"fade_out_sec": clampf(a_fade, 0.0, a.length_sec - a.fade_in_sec), "fade_out_shape": AWClip.FadeShape.EQUAL_POWER}))
+		_add_undo(_apply_props.bind(a, {"fade_out_sec": a.fade_out_sec, "fade_out_shape": a.fade_out_shape}))
+		_add_do(_apply_props.bind(b, {"fade_in_sec": clampf(b_fade, 0.0, b.length_sec - b.fade_out_sec), "fade_in_shape": AWClip.FadeShape.EQUAL_POWER}))
+		_add_undo(_apply_props.bind(b, {"fade_in_sec": b.fade_in_sec, "fade_in_shape": b.fade_in_shape}))
+	_commit()
+	message.emit("Crossfaded %d pair%s." % [pairs.size(), "" if pairs.size() == 1 else "s"])
+	return pairs.size()
 
 
 func rename_clip(c: AWClip, new_name: String) -> void:

@@ -49,6 +49,11 @@ public:
 		double length = 0.0; // clip (audio) time covered by the clip
 		double fade_in = 0.0; // clip time
 		double fade_out = 0.0;
+		// Fade shapes (AWClip.FadeShape): 0 linear, 1 fast, 2 slow, 3 S-curve, 4 equal power.
+		int fade_in_shape = 0;
+		int fade_out_shape = 0;
+		// Play the covered part of the source backwards.
+		bool reversed = false;
 		// Gain (linear) and pan (-1 left .. +1 right, balance) over clip time, same layout as
 		// `rates`: entry i is the value at clip time i * step; one entry means constant.
 		std::vector<float> gains;

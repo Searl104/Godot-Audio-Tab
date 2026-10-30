@@ -1996,6 +1996,102 @@ static func grid_edit_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	d.new_project()
 
 
+## Left channel of a render at time t (seconds).
+static func _at(r: PackedVector2Array, t: float) -> float:
+	var i := clampi(int(t * AudioServer.get_mix_rate()), 0, r.size() - 1)
+	return r[i].x
+
+
+static func reverse_fade_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var e := d.engine
+	d.new_project()
+	# A rising ramp: the level tells where in the file we are (0 at the start, 0.5 at 1 s).
+	write_wav("/tmp/aw_ramp.wav", 1.0, func(i: int, rt: int) -> Vector2i:
+		var v := int(16384.0 * float(i) / rt)
+		return Vector2i(v, v))
+	var c := d.add_clip_from_path("/tmp/aw_ramp.wav", 0, 0.0)
+	d.set_props(c, {"source_offset_sec": 0.2, "length_sec": 0.6}, "setup")
+	var fwd := e.render_preview_range(0.0, 0.6)
+	check(absf(_at(fwd, 0.1) - 0.15) < 0.01 and absf(_at(fwd, 0.5) - 0.35) < 0.01, "reverse: forward clip plays the ramp up (%.3f, %.3f)" % [_at(fwd, 0.1), _at(fwd, 0.5)])
+	d.select_clip(c)
+	d.toggle_reverse_clips(c)
+	await frames(tree, 2)
+	var rev := e.render_preview_range(0.0, 0.6)
+	check(c.reversed and absf(_at(rev, 0.1) - 0.35) < 0.01 and absf(_at(rev, 0.5) - 0.15) < 0.01, "reverse: the same part of the file plays backwards (%.3f, %.3f)" % [_at(rev, 0.1), _at(rev, 0.5)])
+	check(absf(c.source_time(0.0) - 0.8) < 1e-6 and absf(c.source_time(0.6) - 0.2) < 1e-6, "reverse: clip time maps to the file backwards")
+
+	# Splitting a reversed clip keeps the sound identical.
+	d.seek(0.25)
+	d.split_selected_at_playhead()
+	await frames(tree, 2)
+	var split := e.render_preview_range(0.0, 0.6)
+	var worst := 0.0
+	for i in range(0, mini(split.size(), rev.size()), 37):
+		worst = maxf(worst, absf(split[i].x - rev[i].x))
+	check(d.project.clips.size() == 2 and worst < 0.002, "reverse: splitting a reversed clip doesn't change the sound (worst %.4f)" % worst)
+	d.undo()
+	await frames(tree, 2)
+
+	# Trimming a reversed clip: Q at 0.2 s removes the first 0.2 s heard (the file's later part).
+	d.select_clip(c)
+	d.seek(0.2)
+	d.trim_selected_to_playhead("start")
+	await frames(tree, 2)
+	check(absf(c.length_sec - 0.4) < 1e-6 and absf(c.source_offset_sec - 0.2) < 1e-6, "reverse: trimming the start keeps the file offset (offset %.3f, length %.3f)" % [c.source_offset_sec, c.length_sec])
+	var tr := e.render_preview_range(0.0, 0.6)
+	check(absf(_at(tr, 0.25) - _at(rev, 0.25)) < 0.01, "reverse: the rest still plays where it did (%.3f vs %.3f)" % [_at(tr, 0.25), _at(rev, 0.25)])
+	d.undo()
+	d.seek(0.4)
+	d.trim_selected_to_playhead("end")
+	check(absf(c.length_sec - 0.4) < 1e-6 and absf(c.source_offset_sec - 0.4) < 1e-6, "reverse: trimming the end moves the file offset (offset %.3f)" % c.source_offset_sec)
+	d.undo()
+	d.toggle_reverse_clips(c)
+	check(not c.reversed, "reverse: toggles back")
+
+	# Fade shapes: at the middle of a fade-in, Linear = 1/2, Slow = 1/4, Fast = 3/4, S-Curve = 1/2, Equal Power = 0.707.
+	write_wav("/tmp/aw_dc.wav", 1.0, func(_i: int, _rt: int) -> Vector2i: return Vector2i(16384, 16384))
+	d.new_project()
+	var f := d.add_clip_from_path("/tmp/aw_dc.wav", 0, 0.0)
+	d.set_props(f, {"fade_in_sec": 0.4}, "setup")
+	var want := [0.5, 0.75, 0.25, 0.5, 0.7071]
+	var got := []
+	for shape in 5:
+		d.select_clip(f)
+		d.set_fade_shape(f, "in", shape)
+		await frames(tree, 1)
+		var rr := e.render_preview_range(0.0, 0.5)
+		got.append(_at(rr, 0.2) / 0.5)
+	var ok := true
+	for k in 5:
+		ok = ok and absf(got[k] - want[k]) < 0.02 and absf(AWClip.fade_gain(k, 0.5) - want[k]) < 0.001
+	check(ok, "fade shapes: engine and drawing agree on each shape (%s)" % str(got))
+
+	# Crossfade on request: overlapping clips get equal-power fades across the overlap.
+	var g := d.add_clip_from_path("/tmp/aw_dc.wav", 1, 0.7)
+	d.set_props(f, {"fade_in_sec": 0.0, "fade_in_shape": 0}, "setup")
+	d.set_selection([f, g] as Array[AWClip])
+	check(d.crossfade_selected() == 1, "crossfade: one overlapping pair")
+	check(absf(f.fade_out_sec - 0.3) < 1e-4 and absf(g.fade_in_sec - 0.3) < 1e-4 and f.fade_out_shape == AWClip.FadeShape.EQUAL_POWER and g.fade_in_shape == AWClip.FadeShape.EQUAL_POWER, "crossfade: fades cover the overlap with equal-power shapes")
+	await frames(tree, 1)
+	var xf := e.render_preview_range(0.0, 1.7)
+	check(absf(_at(xf, 0.85) - 0.5 * 2.0 * sin(PI * 0.25)) < 0.02, "crossfade: equal-power sum in the middle of the overlap (%.3f)" % _at(xf, 0.85))
+	d.undo()
+	check(f.fade_out_sec == 0.0 and g.fade_in_sec == 0.0, "crossfade: undoes in one step")
+	d.set_selection([f] as Array[AWClip])
+	check(d.crossfade_selected() == 0, "crossfade: needs overlapping clips")
+
+	# Saved and reopened.
+	d.set_props(f, {"reversed": true, "fade_out_shape": AWClip.FadeShape.S_CURVE}, "setup")
+	check(d.save_project("user://aw_rev.tres") and d.load_project("user://aw_rev.tres") and d.project.clips[0].reversed and d.project.clips[0].fade_out_shape == AWClip.FadeShape.S_CURVE, "reverse and fade shape survive save and open")
+	if OS.get_environment("AW_SHOTS") != "":
+		d.set_props(d.project.clips[0], {"fade_in_sec": 0.3, "fade_in_shape": AWClip.FadeShape.SLOW, "fade_out_sec": 0.4}, "shot")
+		d.set_props(d.project.clips[1], {"fade_in_sec": 0.3, "fade_in_shape": AWClip.FadeShape.EQUAL_POWER}, "shot")
+		screen.timeline.fit_all()
+		await shot(tree, "aw_grid_fades.png")
+	d.new_project()
+
+
 static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	d.new_project()
@@ -2458,8 +2554,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.9.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.9.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.10.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.10.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -3212,5 +3308,6 @@ static func run(screen: AWMainScreen) -> void:
 	await reexport_tests(tree, screen)
 	await import_tests(tree, screen)
 	await grid_edit_tests(tree, screen)
+	await reverse_fade_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)
