@@ -194,7 +194,7 @@ Curves are not limited to the clip: keys can sit anywhere up to one hour, so a t
 - `ui/kit/aw_panel_registry.gd`: effect type to panel. To add one, subclass `AWEffectPanel` (`ui/panels/`), register it there.
 - `core/aw_filter_response.gd`: the drawn response mirrors the engine's biquads; the self-test compares it with the engine's measured output.
 
-The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Since 0.13 (engine 0.9.0):
+The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, **Attack, Decay, Sustain, Release** and **Smoothing** (shapes each envelope segment). Since 0.13 (engine 0.9.0):
 - **Absolute / Relative:** Absolute swings between Max and Min, replacing the drawn curve while it runs. Relative wobbles
   ±**Depth** (a share of the parameter's range) around the drawn curve, so a falling pitch curve keeps falling with
   vibrato on top. The curve graph shows the ±Depth band.
@@ -202,7 +202,11 @@ The LFO editor is its own **Audio LFO** dock, a single column that suits a tall 
 - **Jitter / Jit Depth:** each cycle gets a slightly different length or height (repeatable for the seed), so the
   movement sounds less mechanical.
 - **Glide:** softens the jumps of Square, Saw and Random; at 100% Square becomes a sine and Random a smooth drift.
-- **Decay:** the swing halves every this many seconds, dying away into the drawn curve (springs, settling objects).
+- **ADSR (0.17, engine 0.12.0):** the LFO's strength follows an envelope over its span. Attack rises from the drawn
+  curve to the full swing, Decay falls to the **Sustain** level (Sustain 0% dies away into the drawn curve: springs,
+  settling objects), and Release fades out over the last part of the span. Older sounds convert: Fade In becomes
+  Attack, Fade Out becomes Release, and an old half-life Decay becomes a Decay to 0% Sustain of four times its length.
+  Sounds saved by 0.17 use format 7.
 
 Sounds saved by 0.13 use format 3; older versions refuse them rather than dropping these settings. Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 or newer (the engine evaluates Accel and Smoothing natively).
 
@@ -212,6 +216,8 @@ Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k`
 ## Export (milestone 5, engine 0.8.0)
 
 The **Audio Export** dock bakes the whole sound (every clip, clip and master chains, up to the end marker) to a file.
+- **Anywhere on disk (0.17):** Browse can pick a folder outside this project, for example another game's project.
+  Paths inside `res://` are saved relative to the project; others are saved as absolute paths.
 - **Formats:** WAV (16-bit with TPDF dither, or 32-bit float) and Ogg Vorbis (variable bit rate, Quality 0 to 10 on
   oggenc's scale; 5 is about 160 kbit/s). For a compressed WAV use Godot's own QOA option when you import the WAV.
 - **Same as the preview:** the export renders with the same native code as playback, on its own engine instance, so
@@ -259,8 +265,8 @@ Overlaps and Group / Ungroup (Ctrl+G).
   double-click to rename, right-click to delete or add one there. They show as dashed lines on the grid.
 - **Exported WAVs carry the markers as named cue points, and the loop region (when Loop is on) as a sampler loop** that
   Godot's WAV import picks up with Loop Mode "Detect From WAV". (Ogg files have neither.)
-- **Ruler:** click moves the playhead; **drag scrubs** like tape (speed and direction follow the mouse, backwards when
-  dragging left, silent when you hold still); **Shift+drag selects a time range**. Dragging on the loop strip at the top
+- **Ruler:** click moves the playhead; **drag scrubs** (since 0.17: short grains of the sound at its normal pitch
+  follow the mouse in either direction, silent when you hold still); **Shift+drag selects a time range**. Dragging on the loop strip at the top
   sets the loop's start and end; its edges still adjust it.
 - **Time selection:** right-click the ruler for Loop Selection, Split Clips at Selection, Delete Inside Selection (cuts
   the clips at the edges and removes the parts inside; nothing moves), Zoom to Selection, Clear. Delete with no clips

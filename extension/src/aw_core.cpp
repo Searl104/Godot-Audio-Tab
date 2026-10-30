@@ -471,7 +471,7 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 	int shape = 0;
 	double lmin = 0, lmax = 0, freq = 1, fade_in = 0, fade_out = 0, lstart = 0, lend = 1, seed = 1, accel = 0, smooth = 0;
 	int lmode = 0;
-	double depth = 0.1, phase0 = 0.0, jit_rate = 0.0, jit_depth = 0.0, glide = 0.0, decay = 0.0;
+	double depth = 0.1, phase0 = 0.0, jit_rate = 0.0, jit_depth = 0.0, glide = 0.0, decay = 0.0, sustain = 1.0;
 	double lo_n = 0, hi_n = 0, f_in = 0, f_out = 0, span = 0;
 	if (has_lfo) {
 		shape = lfo.get("shape", 0);
@@ -492,6 +492,7 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 		jit_depth = lfo.get("jit_depth", 0.0);
 		glide = lfo.get("glide", 0.0);
 		decay = lfo.get("decay", 0.0);
+		sustain = lfo.get("sustain", 1.0);
 		lo_n = aw_to_norm(scale, std::min(lmin, lmax), lo, hi);
 		hi_n = aw_to_norm(scale, std::max(lmin, lmax), lo, hi);
 		span = std::max(lend - lstart, 0.0);
@@ -515,18 +516,24 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 		if (has_lfo && p_unit != 4) {
 			double e = 0.0;
 			if (!(t < lstart || t > lend || span <= 0.0)) {
-				e = 1.0;
-				if (f_in > 0.0) {
-					e = std::min(e, (t - lstart) / f_in);
+				// AWLfo.envelope: Attack, Decay to Sustain, Release over the span's last part.
+				auto shape = [smooth](double u) {
+					u = aw_clamp01(u);
+					return u + smooth * (u * u * (3.0 - 2.0 * u) - u);
+				};
+				const double rel_start = lend - f_out;
+				const double a_t = std::min(t, rel_start) - lstart;
+				if (f_in > 0.0 && a_t < f_in) {
+					e = shape(a_t / f_in);
+				} else if (decay > 0.0 && a_t < f_in + decay) {
+					e = 1.0 - (1.0 - sustain) * shape((a_t - f_in) / decay);
+				} else {
+					e = sustain;
 				}
-				if (f_out > 0.0) {
-					e = std::min(e, (lend - t) / f_out);
+				if (f_out > 0.0 && t > rel_start) {
+					e *= shape((lend - t) / f_out);
 				}
 				e = aw_clamp01(e);
-				e = e + smooth * (e * e * (3.0 - 2.0 * e) - e);
-				if (decay > 0.0) {
-					e *= std::pow(0.5, (t - lstart) / decay);
-				}
 			}
 			if (e > 0.0) {
 				double tau = t - lstart;
@@ -806,7 +813,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 12; // 12: scrub; 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 13; // 13: LFO ADSR (sustain), normal-pitch scrub; 12: scrub; 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {

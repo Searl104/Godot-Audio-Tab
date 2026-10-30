@@ -668,11 +668,15 @@ func _draw_lfo_overlay(ch: AWChain, c_text: Color) -> void:
 		draw_string(font, Vector2(xa + 6, val_to_y(c, ch.to_norm(c, lo)) + fs + 2), "Min", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, 0.9))
 	if not l.enabled:
 		return
-	var f := l.fades()
 	var top := 2.0
 	var bot := PAD_Y + 8.0
-	var poly := PackedVector2Array([Vector2(xa, bot), Vector2(local_to_x(l.start_sec + f.x), top),
-		Vector2(local_to_x(l.end_sec - f.y), top), Vector2(xb, bot)])
+	# The ADSR envelope (how much of the LFO is heard) across its span.
+	var poly := PackedVector2Array([Vector2(xa, bot)])
+	var steps := clampi(int((xb - xa) / 3.0), 8, 400)
+	for k in steps + 1:
+		var tt := l.start_sec + l.span() * float(k) / steps
+		poly.append(Vector2(local_to_x(tt), bot - (bot - top) * l.envelope(tt)))
+	poly.append(Vector2(xb, bot))
 	draw_colored_polygon(poly, Color(c.color, 0.22))
 	var outline := poly.duplicate()
 	outline.append(poly[0])

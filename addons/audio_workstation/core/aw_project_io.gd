@@ -9,7 +9,29 @@ extends RefCounted
 
 ## version -> Callable(project) that brings a project of that version up by one. Empty until the
 ## format changes; the tests add one to prove the mechanism.
-static var migrations := {5: _split_clip_chains}
+static var migrations := {5: _split_clip_chains, 6: _lfo_adsr}
+
+
+## Format 6 -> 7: an LFO's half-life Decay becomes an ADSR Decay down to Sustain 0 over about four
+## half-lives (close, not identical); without one, Sustain stays at full.
+static func _lfo_adsr(p: AWProject) -> void:
+	var chains: Array[AWChain] = [p.master_chain]
+	chains.append_array(p.chains)
+	for c in p.clips:
+		if c and c.chain:
+			chains.append(c.chain)
+	for ch in chains:
+		if ch == null:
+			continue
+		for cv in ch.curves:
+			var l := cv.lfo if cv else null
+			if l == null:
+				continue
+			if l.decay_sec > 0.0:
+				l.decay_sec = l.decay_sec * 4.0
+				l.sustain = 0.0
+			else:
+				l.sustain = 1.0
 
 
 ## Format 5 -> 6: effects a clip owned (after its Clip card) move, with their curves, into a shared
@@ -297,7 +319,7 @@ static func _sanitize_curve(ch: AWChain, c: AWCurve, label: String, rep: Array) 
 		l.freq_accel = clampf(l.freq_accel if _fin(l.freq_accel) else 0.0, -5.0, 5.0)
 		l.fade_smoothing = clampf(l.fade_smoothing if _fin(l.fade_smoothing) else 0.0, 0.0, 1.0)
 		for prop: Array in [["depth", 0.1, 0.0, 1.0], ["phase_deg", 0.0, 0.0, 360.0], ["jitter_rate", 0.0, 0.0, 1.0],
-				["jitter_depth", 0.0, 0.0, 1.0], ["glide", 0.0, 0.0, 1.0], ["decay_sec", 0.0, 0.0, 60.0]]:
+				["jitter_depth", 0.0, 0.0, 1.0], ["glide", 0.0, 0.0, 1.0], ["decay_sec", 0.0, 0.0, 240.0], ["sustain", 1.0, 0.0, 1.0]]:
 			var v: float = l.get(prop[0])
 			var fixed := clampf(v if _fin(v) else float(prop[1]), float(prop[2]), float(prop[3]))
 			if fixed != v:
