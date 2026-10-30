@@ -1658,6 +1658,165 @@ static func lfo_param_tests(ch: AWChain) -> void:
 	ch.set_keys(wet, keys)
 
 
+static func _rm_tree(abs_dir: String) -> void:
+	if not DirAccess.dir_exists_absolute(abs_dir):
+		return
+	for f in DirAccess.get_files_at(abs_dir):
+		DirAccess.remove_absolute(abs_dir.path_join(f))
+	for d in DirAccess.get_directories_at(abs_dir):
+		_rm_tree(abs_dir.path_join(d))
+	DirAccess.remove_absolute(abs_dir)
+
+
+static func import_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var imports_abs := ProjectSettings.globalize_path(AWImporter.ROOT)
+	_rm_tree(imports_abs)
+	_rm_tree("/tmp/aw_imp")
+	DirAccess.make_dir_recursive_absolute("/tmp/aw_imp/sub folder")
+	var tone := func(hz: float) -> Callable:
+		return func(i: int, rt: int) -> Vector2i:
+			var v := int(9000.0 * sin(TAU * hz * i / rt))
+			return Vector2i(v, v)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	write_wav("/tmp/aw_imp/door slam.wav", 0.6, func(i: int, rt: int) -> Vector2i:
+		var t := float(i) / rt
+		var env := exp(-t * 7.0) * minf(1.0, t * 400.0) + 0.25 * exp(-maxf(t - 0.22, 0.0) * 18.0) * float(t > 0.22)
+		var v := int(clampf((rng.randf() * 2.0 - 1.0) * 0.6 * env + 0.3 * sin(TAU * 70.0 * t) * env, -1.0, 1.0) * 32000.0)
+		return Vector2i(v, v))
+	write_wav("/tmp/aw_imp/glass.wav", 0.4, tone.call(900.0))
+	write_wav("/tmp/aw_imp/sub folder/step.wav", 0.3, tone.call(400.0))
+	var f := FileAccess.open("/tmp/aw_imp/notes.txt", FileAccess.WRITE)
+	f.store_string("not a sound")
+	f.close()
+	var saved_copy: bool = AWImporter.copy_by_default()
+	d.new_project()
+
+	# Copy (the default): the file lands in res://audio_workstation_imports/<sound>/ and plays.
+	var got := d.import_files(PackedStringArray(["/tmp/aw_imp/door slam.wav", "/tmp/aw_imp/notes.txt"]), 0, 0.5, true)
+	var want := AWImporter.ROOT.path_join("Untitled/door slam.wav")
+	check(got.size() == 1 and got[0].source_path == want and FileAccess.file_exists(want), "import: an outside file is copied into %s (%s)" % [want.get_base_dir(), got[0].source_path if got.size() > 0 else "-"])
+	check(got.size() == 1 and absf(got[0].start_sec - 0.5) < 1e-6 and got[0].row == 0 and absf(got[0].length_sec - 0.6) < 0.01, "import: placed at the row and time, with the file's length")
+	check(got.size() == 1 and not d.is_clip_external(got[0]), "import: a copied clip is not marked as outside the project")
+	var pk := d.engine.get_peaks(want, 50.0)
+	var loud := 0.0
+	for v in pk:
+		loud = maxf(loud, v)
+	check(loud > 0.1, "import: the copied clip has sound right away, before the editor's import (peak %.2f)" % loud)
+	# The same file again reuses the copy; a different file with the same name gets a suffix.
+	var again := d.import_files(PackedStringArray(["/tmp/aw_imp/door slam.wav"]), 1, 0.0, true)
+	check(again.size() == 1 and again[0].source_path == want, "import: an identical file reuses the existing copy")
+	DirAccess.make_dir_recursive_absolute("/tmp/aw_imp/other")
+	write_wav("/tmp/aw_imp/other/door slam.wav", 0.2, tone.call(300.0))
+	var clash := d.import_files(PackedStringArray(["/tmp/aw_imp/other/door slam.wav"]), 2, 0.0, true)
+	check(clash.size() == 1 and clash[0].source_path == AWImporter.ROOT.path_join("Untitled/door slam_2.wav"), "import: a different file with the same name gets _2 (%s)" % (clash[0].source_path if clash.size() > 0 else "-"))
+
+	# A saved sound uses its file name for the folder.
+	check(d.save_project("res://aw_import_test_hit.tres"), "import: saved the sound")
+	var named := d.import_files(PackedStringArray(["/tmp/aw_imp/glass.wav"]), 3, 0.0, true)
+	check(named.size() == 1 and named[0].source_path == AWImporter.ROOT.path_join("aw_import_test_hit/glass.wav"), "import: the folder is named after the saved sound (%s)" % (named[0].source_path if named.size() > 0 else "-"))
+
+	# Reference in place: marked as outside; Copy Into Project brings it in (undoable).
+	var ext := d.import_files(PackedStringArray(["/tmp/aw_imp/sub folder/step.wav"]), 4, 0.0, false)
+	check(ext.size() == 1 and ext[0].source_path == "/tmp/aw_imp/sub folder/step.wav" and d.is_clip_external(ext[0]), "import: without copying, the clip uses the file where it is and is marked")
+	d.copy_clip_into_project(ext[0])
+	check(ext[0].source_path == AWImporter.ROOT.path_join("aw_import_test_hit/step.wav") and not d.is_clip_external(ext[0]), "import: Copy Into Project moves the clip to a copy in the project")
+	d.undo()
+	check(ext[0].source_path == "/tmp/aw_imp/sub folder/step.wav", "import: Copy Into Project undoes")
+	d.redo()
+
+	# Files already in the project are used where they are.
+	var inproj := d.import_files(PackedStringArray([ProjectSettings.globalize_path(want)]), 5, 0.0, true)
+	check(inproj.size() == 1 and inproj[0].source_path == want, "import: a file inside the project is used in place, as res:// (%s)" % (inproj[0].source_path if inproj.size() > 0 else "-"))
+
+	# The copy choice is remembered.
+	AWImporter.set_pref(AWImporter.PREF_COPY, false)
+	check(not AWImporter.copy_by_default(), "import: the copy choice is remembered (off)")
+	AWImporter.set_pref(AWImporter.PREF_COPY, true)
+	check(AWImporter.copy_by_default(), "import: the copy choice is remembered (on)")
+
+	# Dropped from the system file manager onto the grid.
+	var grid := screen.timeline.grid
+	var n0 := d.project.clips.size()
+	var at := Vector2(grid.view.time_to_x(1.0), grid.row_h * 6.5)
+	screen.drop_os_files(PackedStringArray(["/tmp/aw_imp/glass.wav", "/tmp/aw_imp/notes.txt"]), at)
+	var dropped := d.project.clips[d.project.clips.size() - 1]
+	check(d.project.clips.size() == n0 + 1 and dropped.row == 6 and absf(dropped.start_sec - d.snap(1.0)) < 1e-3, "import: a file dropped from the file manager lands where it was dropped (row %d, %.2f s)" % [dropped.row, dropped.start_sec])
+
+	# WAV facts without decoding.
+	var wi := AWImporter.wav_info("/tmp/aw_imp/door slam.wav")
+	check(wi.get("channels", 0) == 2 and wi.get("bits", 0) == 16 and absf(float(wi.get("length", 0.0)) - 0.6) < 0.01, "import: WAV header read for the browser (%s)" % str(wi))
+
+	# The browser.
+	var b := screen.browser
+	for w: Window in screen.find_children("*", "Window", true, false):
+		if w != b and w.visible:
+			w.hide() # a dialog left open by an earlier test would block this one
+	screen._on_request("import")
+	await frames(tree, 4)
+	check(b.visible, "browser: File > Import Sound opens it")
+	b.open_dir("/tmp/aw_imp")
+	await frames(tree, 2)
+	var names: Array = b.entries.map(func(e: Dictionary) -> String: return e.name)
+	check(names == ["other", "sub folder", "door slam.wav", "glass.wav"], "browser: folders first, then sounds; other files hidden (%s)" % str(names))
+	b._search.text = "gla"
+	b._search.text_changed.emit("gla")
+	check(b.entries.size() == 1 and b.entries[0].name == "glass.wav", "browser: search filters the folder")
+	b._search.text = ""
+	b._search.text_changed.emit("")
+	b.select_paths(PackedStringArray(["/tmp/aw_imp/door slam.wav"]))
+	await frames(tree, 3)
+	check(b.wave_peaks.size() == 600 and b.preview.stream != null, "browser: selecting a sound shows its waveform")
+	check(b.preview.playing or not b._autoplay.button_pressed, "browser: Play on select plays it")
+	b.stop()
+	b.open_dir("/tmp/aw_imp/sub folder")
+	b.go_back()
+	check(b.dir == "/tmp/aw_imp", "browser: Back returns to the previous folder")
+	var fav0 := b.favorites().has("/tmp/aw_imp")
+	b.toggle_favorite()
+	check(b.favorites().has("/tmp/aw_imp") != fav0, "browser: favorite toggles and is remembered")
+	b.toggle_favorite()
+	check(AWImporter.get_pref(AWImporter.PREF_LAST_DIR, "") == "/tmp/aw_imp", "browser: the folder is remembered")
+	b.select_paths(PackedStringArray(["/tmp/aw_imp/door slam.wav", "/tmp/aw_imp/glass.wav"]))
+	b._select_file("/tmp/aw_imp/door slam.wav")
+	b.play(0.0)
+	await tree.create_timer(0.15).timeout
+	check(b.get_ok_button().text == "Import 2", "browser: the Import button counts the selection (%s)" % b.get_ok_button().text)
+	if OS.get_environment("AW_SHOTS") != "":
+		await frames(tree, 6)
+		var img := b.get_texture().get_image() if not b.is_embedded() else tree.root.get_viewport().get_texture().get_image()
+		img.save_png(out_dir.path_join("aw_sound_browser.png"))
+	screen._import_at = Vector2(8, 0.25)
+	var n1 := d.project.clips.size()
+	b.confirmed.emit()
+	await frames(tree, 2)
+	check(d.project.clips.size() == n1 + 2 and d.project.clips[n1].row == 8 and d.project.clips[n1 + 1].row == 9, "browser: Import adds the selected sounds, one row each")
+	b.hide()
+	check(not b.preview.playing, "browser: closing stops the preview")
+
+	# The grid's menu offers Import Sound and Copy Into Project.
+	var items := []
+	grid._open_menu(Vector2(grid.view.time_to_x(10.0), 2.0))
+	for i in grid._menu.item_count:
+		items.append(grid._menu.get_item_text(i))
+	grid._menu.hide()
+	check(items.has("Import Sound..."), "grid menu: Import Sound... on empty space")
+	var fm_items := []
+	for fm: MenuButton in screen.find_children("*", "MenuButton", true, false):
+		if fm.text == "File":
+			for i in fm.get_popup().item_count:
+				fm_items.append(fm.get_popup().get_item_text(i))
+	check(fm_items.has("Import Sound..."), "File menu: Import Sound...")
+
+	AWImporter.set_pref(AWImporter.PREF_COPY, saved_copy)
+	d.new_project()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://aw_import_test_hit.tres"))
+	_rm_tree(imports_abs)
+	_rm_tree("/tmp/aw_imp")
+	EditorInterface.get_resource_filesystem().scan()
+
+
 static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	d.new_project()
@@ -2869,5 +3028,6 @@ static func run(screen: AWMainScreen) -> void:
 	await load_tests(tree, screen)
 	await empty_start_tests(tree, screen)
 	await reexport_tests(tree, screen)
+	await import_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

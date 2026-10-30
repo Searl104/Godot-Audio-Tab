@@ -39,6 +39,7 @@ var _marquee_rect := Rect2()
 var _menu: PopupMenu
 var _menu_clip: AWClip = null
 var _menu_t := 0.0
+var _menu_pos := Vector2.ZERO
 var _drop_ghost := Rect2()
 
 
@@ -312,6 +313,7 @@ func _update_cursor(pos: Vector2) -> void:
 func _open_menu(pos: Vector2) -> void:
 	_menu.clear()
 	_menu_clip = clip_at(pos)
+	_menu_pos = pos
 	_menu_t = maxf(0.0, doc.snap(view.x_to_time(pos.x)))
 	if _menu_clip:
 		if not doc.is_selected(_menu_clip):
@@ -328,7 +330,14 @@ func _open_menu(pos: Vector2) -> void:
 			_menu.add_separator()
 			_menu.add_item("Relink Sound File...", 7)
 			_menu.add_item("Relink From Folder...", 8)
+		elif doc.is_clip_external(_menu_clip):
+			_menu.add_separator()
+			_menu.add_item("Copy Into Project", 9)
+		_menu.add_separator()
+		_menu.add_item("Import Sound...", 13)
 	else:
+		_menu.add_item("Import Sound...", 13)
+		_menu.add_separator()
 		_menu.add_item("Select All", 10)
 		_menu.add_item("Clear Selection", 11)
 		_menu.add_separator()
@@ -346,6 +355,8 @@ func _on_menu(id: int) -> void:
 		6: doc.delete_selected_clips()
 		7: doc.relink_requested.emit(_menu_clip, "file")
 		8: doc.relink_requested.emit(_menu_clip, "folder")
+		9: doc.copy_clip_into_project(_menu_clip)
+		13: doc.import_requested.emit(row_at(_menu_pos.y), _menu_t)
 		10: doc.select_all_clips()
 		11: doc.clear_selection()
 		12: doc.seek(_menu_t)
@@ -376,11 +387,7 @@ func _drop_data(at_position: Vector2, data: Variant) -> void:
 	_drop_ghost = Rect2()
 	var t := maxf(0.0, doc.snap(view.x_to_time(at_position.x)))
 	var row := row_at(at_position.y)
-	var added: Array[AWClip] = []
-	for f in _audio_files(data):
-		added.append(doc.add_clip_from_path(f, row, t))
-		row += 1
-	doc.set_selection(added)
+	doc.import_files(_audio_files(data), row, t, AWImporter.copy_by_default())
 
 
 func _notification(what: int) -> void:
@@ -495,7 +502,8 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 			var b := Vector2(minf(hx + r.size.y, r.end.x), r.end.y - (minf(hx + r.size.y, r.end.x) - hx))
 			draw_line(a, b, Color(red, 0.35), 1.0)
 			hx += 12.0
-	var label := c.name + ("  (muted)" if c.muted else "") + ("  (sound file missing)" if missing else "")
+	var external := not missing and doc.is_clip_external(c)
+	var label := c.name + ("  (muted)" if c.muted else "") + ("  (sound file missing)" if missing else "") + ("  ↗ outside project" if external else "")
 	draw_string(font, r.position + Vector2(5, 10), label, HORIZONTAL_ALIGNMENT_LEFT, maxf(r.size.x - 10.0, 0.0), fs, c_text)
 	var fx_count := c.chain.effects.size() - 1 if c.chain else 0
 	if fx_count > 0 and r.size.x > 90.0:

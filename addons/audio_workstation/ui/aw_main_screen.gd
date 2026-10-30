@@ -26,6 +26,8 @@ var _pending_after_ask := Callable()
 var _after_save := Callable()
 var _relink_clip: AWClip
 var _toolbar: AWToolbar
+var browser: AWSoundBrowser
+var _import_at := Vector2(0, 0) # (row, time) for the next import
 var _recovery: ConfirmationDialog
 var recovery_prompt_in_tests := false
 
@@ -95,6 +97,13 @@ func _ready() -> void:
 		_show_dialog("relink_" + mode))
 	if Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().filesystem_changed.connect(doc.refresh_sources)
+	browser = AWSoundBrowser.new()
+	add_child(browser)
+	browser.import_chosen.connect(func(paths: PackedStringArray, copy: bool) -> void:
+		doc.import_files(paths, int(_import_at.x), _import_at.y, copy))
+	doc.import_requested.connect(open_import)
+	# Files dragged in from the system file manager (Explorer) onto the clip grid.
+	get_window().files_dropped.connect(_on_os_files_dropped)
 	add_child(_dialog)
 	_build_confirm()
 	_build_recovery_prompt()
@@ -217,6 +226,30 @@ func _build_recovery_prompt() -> void:
 	_recovery.popup_centered.call_deferred()
 
 
+## Opens the Import Sound browser; chosen sounds land on `row` (one row each) at `t`.
+func open_import(row := -1, t := -1.0) -> void:
+	_import_at = Vector2(row if row >= 0 else (doc.project.max_row() + 1 if not doc.project.clips.is_empty() else 0), t if t >= 0.0 else doc.playhead_sec)
+	browser.dest_hint = AWImporter.ROOT.path_join(AWImporter.sound_folder(doc.project_path, doc.project.title)) + "/"
+	browser.open()
+
+
+func _on_os_files_dropped(files: PackedStringArray) -> void:
+	if not is_visible_in_tree():
+		return
+	var grid := timeline.grid
+	var at := grid.get_local_mouse_position()
+	if not Rect2(Vector2.ZERO, grid.size).has_point(at):
+		return
+	drop_os_files(files, at)
+
+
+## Imports files dropped from the system file manager at a position on the grid.
+func drop_os_files(files: PackedStringArray, at: Vector2) -> void:
+	var grid := timeline.grid
+	var t := maxf(0.0, doc.snap(grid.view.x_to_time(at.x)))
+	doc.import_files(files, grid.row_at(at.y), t, AWImporter.copy_by_default())
+
+
 ## Opens a saved sound from the FileSystem dock (after asking about unsaved changes).
 func open_from_editor(path: String) -> void:
 	ask_discard(func() -> void: doc.load_project(path))
@@ -248,6 +281,9 @@ func _on_request(action: String) -> void:
 			action = "save_as"
 		"export":
 			doc.export_now()
+			return
+		"import":
+			open_import()
 			return
 	_show_dialog(action)
 

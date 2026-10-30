@@ -224,6 +224,19 @@ The **Audio Export** dock bakes the whole sound (every clip, clip and master cha
 - Ogg encoding uses vendored libogg 1.3.5 and libvorbis 1.3.7 (BSD, `extension/thirdparty/`). Needs engine 0.8.0 or newer.
 
 
+## Importing sounds (0.13)
+
+- **File > Import Sound...** or right-click the clip grid > **Import Sound...** opens a browser for anywhere on disk:
+  places (Project, Home, Desktop, Documents, Downloads, Music, drives) and favorites (☆ by the path), a search box,
+  length and format for each WAV, and a waveform of the selection. Click the waveform to play from there; Space
+  plays and stops; **Play on select** auditions as you step through with the arrow keys. Ctrl/Shift select several;
+  Import (or Enter, or a double-click) adds them one row each at the playhead (or where you right-clicked).
+- **Copy into project** (on by default, remembered): sounds from outside the project are copied to
+  `res://audio_workstation_imports/<sound name>/` (the sound's file name, or its title while unsaved). An identical
+  file already there is reused; a different one with the same name gets `_2`. Off: the clip uses the file where it
+  is and shows "↗ outside project"; right-click > **Copy Into Project** brings it in later (undoable).
+- Files dragged from Windows Explorer onto the clip grid, or from the FileSystem dock, are imported the same way.
+
 ## Saving and opening (milestone 6, engine 0.8.2)
 
 One sound is open at a time. **File > Save / Save As** writes a Godot resource (`.tres`, or `.res`); the sound's name
