@@ -11,8 +11,10 @@ The included `project.godot` is a ready-to-open test project with demo content.
 
 ## Layout (from the sketch)
     toolbar: File, Edit, Undo/Redo, transport, clock, Snap, Export WAV
-    [reserved] [ Timeline: clip grid ] [ Timeline: automation curves ]
-    [Master] [Clip]  Effect Chain:  Clip | Limiter | Reverb | Chorus | [+]
+    Clips | Curves   (curve bar in curve mode: owner, LFOs, Show All)
+    [rows] [ timeline: clip grid, with the curves drawn over it ] [scroll] [dots | value axis]
+           [ scrollbar with scale handles                         ] [Fit]
+    |Master|chains|+|  Clips | Low Pass | Reverb | [+]
 
 ## Timing model
 Each clip has its own clock, called **clip time**, which is time in its audio. The clip's curves,
@@ -35,14 +37,40 @@ on the sound under the cursor. The Master chain runs on project time.
 - Drop audio files from the FileSystem dock. Several files land on consecutive rows.
 - Right-click for Split, Duplicate, Mute and Delete.
 - Keys: S splits at the playhead, Ctrl+D duplicates, Del deletes, Ctrl+A selects all, Esc deselects, F fits.
+- Wheel scrolls rows, Alt+wheel changes the row height, Ctrl+wheel zooms time, Shift+wheel scrolls time.
 - Ruler: the top strip edits the loop region; click or drag below it to seek.
 
-**Curve graph** (controls follow Godot's Bezier editor)
+**Clip mode and curve mode (0.18)**
+The curves are a layer over the clip grid, on the same timeline (project time), using the
+grid's whole height for the value axis. **Tab** or the **Clips / Curves** switch above the ruler
+changes mode, and opening a curve (its dot on a card, Make Curve, an LFO, or the LFO list)
+switches to curve mode on its own; nothing switches back without you.
+- Clip mode: the grid is edited. The curves are drawn faintly and ignore the mouse; the eye
+  button hides them (remembered per user).
+- Curve mode: the grid fades back and can't be clicked; the curves are edited. The value axis and
+  the curve list (coloured dots) appear on the right, and the curve bar above the ruler holds the
+  Chain / Clip curves switch, LFOs and Show All.
+- Which curves: a clip's own curves (Gain, Pitch, Pan) over that clip, stretched with Pitch as it
+  plays; a shared chain's curves over the focused clip, with faint copies over the chain's other
+  clips (editing one edits them all); Master curves over the whole sound.
+- The Clip Time / Project Time toggle and the separate curve pane are gone.
+
+**Navigation (0.18, both modes, on the active layer)**
+- Middle-drag pans time and rows (values in curve mode).
+- Shift+middle-drag zooms, anchored at the view's top-left: right zooms time in, down makes rows
+  taller (in curve mode: a closer value range).
+- Scrollbars on both axes: drag the thumb to scroll, drag either end of it to zoom that axis (the
+  other end stays put), double-click it to fit that axis. So a mouse without a middle button or a
+  trackpad can do everything.
+- **Fit** (the square where the scrollbars meet, or F) fits both axes; in curve mode F also resets
+  the value zoom. Time zoom and scroll are shared by both modes; the vertical axis is per mode.
+- Curve mode wheel: wheel scrolls values, Alt+wheel zooms them, Ctrl+wheel zooms time.
+
+**Curve layer** (controls follow Godot's Bezier editor)
 - Click a key to select it; drag to move. Shift locks an axis, Alt ignores snap.
 - Drag the handles of selected keys. Handle modes are Free, Linear, Balanced and Mirrored (right-click).
 - Double-click or Ctrl+click adds a key to the active curve, or to the curve under the mouse.
-- Drag on empty space to box-select keys. Del deletes, Ctrl+A selects all, F frames.
-- Wheel zooms, Shift+wheel scrolls, middle-drag pans.
+- Drag on empty space to box-select keys. Del deletes, Ctrl+A selects all, F fits.
 - Right-click also offers Smooth and Ease (flat handles), plus Solo, Mute and Remove for the curve under the mouse.
 - **Scales**: each curve fills the graph's height on its parameter's natural scale. Frequencies
   (Hz) use a log scale (equal space per octave). Decibels use a mixing-fader scale (more room
@@ -53,10 +81,6 @@ on the sound under the cursor. The Master chain runs on project time.
   scale. Hz uses decades (20, 50, 100 … 1k … 20k), dB crowds toward 0, and pitch uses octaves first
   (0, ±12, ±24). The unit sits above the axis, the grid lines follow the ticks, and the selected
   key's exact value is tagged on the axis while you drag. Ticks thin out when the graph is short.
-- **Clip Time / Project Time** toggle: show the clip's curves on its own audio clock (0 = clip start,
-  playhead at the clip's playback rate), or on the project timeline, where pitch changes stretch
-  them to line up with the clip block. Keys can be edited in either view. The Master chain always
-  uses project time.
 
 **LFO** (right-click a curve, its dot, or its parameter row › LFO…)
 - A panel docks beside the graph with Shape (sine, triangle, square, saw, random), Max, Min,
@@ -81,7 +105,7 @@ on the sound under the cursor. The Master chain runs on project time.
 - A grey outline means the parameter has no curve. It has a slider and a field instead; right-click it and choose **Make Curve**.
 
 **Effect chain**
-- Master / Clip tabs switch between the master chain and the selected clip's chain. The curve graph follows the active tab.
+- Master / Clip tabs switch between the master chain and the selected clip's chain. The curve layer follows the active tab.
 - Cards are processed left to right. Drag a card's header onto another card to reorder.
 - The ⋮ menu on each card offers Move, Reset and Remove. The toggle on the card bypasses it. The + card adds an effect.
 - The first card is the fixed source stage: **Clip** (Gain, Pitch, Pan) or **Output** (Volume).
@@ -106,7 +130,7 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
     core/aw_time_view.gd            zoom/scroll for one time axis
     ui/aw_lfo_panel.gd              the docked LFO panel
     ui/aw_curve_axis.gd             value axis + tick generation (linear / log / fader / semitones)
-    ui/*                            toolbar, clip grid, curve graph + dot column, effect cards, main screen
+    ui/*                            toolbar, timeline (clip grid + curve layer, scale bars), effect cards, main screen
 
 ## Native engine (milestones 1 to 4)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
@@ -208,7 +232,7 @@ The LFO editor is its own **Audio LFO** dock, a single column that suits a tall 
   Attack, Fade Out becomes Release, and an old half-life Decay becomes a Decay to 0% Sustain of four times its length.
   Sounds saved by 0.17 use format 7.
 
-Sounds saved by 0.13 use format 3; older versions refuse them rather than dropping these settings. Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 or newer (the engine evaluates Accel and Smoothing natively).
+Sounds saved by 0.13 use format 3; older versions refuse them rather than dropping these settings. Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve bar (curve mode) brings the dock up. Needs engine 0.4.2 or newer (the engine evaluates Accel and Smoothing natively).
 
 Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k` works, Enter applies, Esc cancels), **Ctrl+click to reset**, right-click for options.
 
@@ -271,7 +295,8 @@ Overlaps and Group / Ungroup (Ctrl+G).
 - **Time selection:** right-click the ruler for Loop Selection, Split Clips at Selection, Delete Inside Selection (cuts
   the clips at the edges and removes the parts inside; nothing moves), Zoom to Selection, Clear. Delete with no clips
   selected removes the audio inside; Esc clears it.
-- **Navigation:** Z zooms to the time selection or the selected clips; a zoom slider sits above the grid; hovering a
+- **Navigation:** Z zooms to the time selection or the selected clips (the zoom slider was replaced by scale
+  handles on the scrollbars in 0.18); hovering a
   clip shows its file, length, gain, pitch, pan, offset, fades and chain.
 
 Sounds saved by 0.15 use format 5 (markers).

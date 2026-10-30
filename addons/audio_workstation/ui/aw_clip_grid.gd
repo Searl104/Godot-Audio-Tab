@@ -7,7 +7,8 @@ extends Control
 ## edges to trim, drag the small squares at its top corners to set fades.
 ## Drag on empty space to box-select; click empty space to deselect and move the playhead.
 ## Shift adds to the selection, Ctrl toggles. Double-click a clip to audition it.
-## Ctrl+wheel zooms, Shift+wheel scrolls time, Alt+wheel changes the row height, plain wheel scrolls rows.
+## Ctrl+wheel zooms, Shift+wheel scrolls time, Alt+wheel changes the row height, plain wheel scrolls rows;
+## middle-drag pans, Shift+middle-drag zooms (AWTimelinePane.nav_input).
 ## Drop audio files from the FileSystem dock; several files land on consecutive rows.
 
 const ROW_H_DEFAULT := 48.0
@@ -53,6 +54,8 @@ var _gain_readout := ""
 var _gain_clip: AWClip = null
 var _targets := PackedFloat64Array() # snap targets for the drag in progress
 var _snap_hit := -1.0 # target the drag is snapped to (drawn as a guide), or -1
+## Callable(event) -> bool from the timeline pane: shared pan / zoom gestures.
+var nav := Callable()
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -191,6 +194,9 @@ func clip_zone(c: AWClip, pos: Vector2) -> String:
 # --- Input --------------------------------------------------------------------
 
 func _gui_input(event: InputEvent) -> void:
+	if nav.is_valid() and nav.call(event):
+		accept_event()
+		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.alt_pressed and mb.pressed and (mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN):

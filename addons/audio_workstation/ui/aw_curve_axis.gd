@@ -26,7 +26,7 @@ func _ready() -> void:
 	custom_minimum_size = Vector2(W, 0)
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for s: Signal in [doc.curve_view_changed, doc.chain_target_changed]:
+	for s: Signal in [doc.curve_view_changed, doc.chain_target_changed, doc.value_view.changed]:
 		s.connect(queue_redraw)
 	doc.project_changed.connect(func(_s: bool) -> void: queue_redraw())
 	doc.lfo_panel_changed.connect(queue_redraw)
@@ -144,7 +144,7 @@ func _draw() -> void:
 	var unit: String = AWEffectLibrary.param_spec(e.effect_type, c.param)[4]
 	var col := c.color.lightened(0.25)
 
-	for t: Array in ticks(ch, c, graph._plot_h()):
+	for t: Array in ticks(ch, c, graph.unit_h()):
 		var y := graph.val_to_y(c, t[0])
 		draw_line(Vector2(0, y), Vector2(5, y), Color(col, 0.8))
 		var ty := clampf(y + fs * 0.35, fs, size.y - 2.0)

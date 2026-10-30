@@ -2499,6 +2499,200 @@ static func timing_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	d.new_project()
 
 
+## Middle-button drag on a control: press, one motion by `rel`, release (Shift = zoom).
+static func mid_drag(ctrl: Control, at: Vector2, rel: Vector2, shift := false) -> void:
+	var e := InputEventMouseButton.new()
+	e.button_index = MOUSE_BUTTON_MIDDLE
+	e.pressed = true
+	e.shift_pressed = shift
+	e.position = at
+	ctrl._gui_input(e)
+	var m := InputEventMouseMotion.new()
+	m.button_mask = MOUSE_BUTTON_MASK_MIDDLE
+	m.shift_pressed = shift
+	m.position = at + rel
+	m.relative = rel
+	ctrl._gui_input(m)
+	var r := InputEventMouseButton.new()
+	r.button_index = MOUSE_BUTTON_MIDDLE
+	r.pressed = false
+	r.position = at + rel
+	ctrl._gui_input(r)
+
+
+static func layer_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	print("--- timeline layers and navigation ---")
+	var d := screen.doc
+	var tl := screen.timeline
+	var clips := _grid_project(d)
+	d.set_edit_mode(AWDocument.EditMode.CLIPS)
+	await frames(tree, 3)
+	var v := d.timeline_view
+	var g := tl.graph
+	var grid := tl.grid
+	check(d.curve_view == d.timeline_view and g.view == grid.view, "layers: curves share the grid's time axis")
+	check(g.mouse_filter == Control.MOUSE_FILTER_IGNORE and is_equal_approx(tl.scroll.modulate.a, 1.0) and not tl.dots.is_visible_in_tree(), "layers: clip mode edits the grid; curve layer ignores the mouse, no curve column")
+	check(absf(g.global_position.x - grid.global_position.x) < 0.5 and absf(g.size.x - grid.size.x) < 0.5, "layers: the curve layer lies exactly over the grid (x %.0f / %.0f, w %.0f / %.0f)" % [g.global_position.x, grid.global_position.x, g.size.x, grid.size.x])
+
+	# Middle-drag pans, Shift+middle-drag zooms anchored at the top-left.
+	v.frame(0.0, 2.0)
+	tl.set_row_height(48.0, 0.0)
+	await frames(tree, 1)
+	var t0 := v.x_to_time(0.0) + 0.0
+	mid_drag(grid, Vector2(200, 30), Vector2(-100, 0))
+	check(absf(v.x_to_time(0.0) - (t0 + 100.0 / v.pixels_per_sec)) < 1e-3, "pan: middle-drag left moves time with the mouse")
+	mid_drag(grid, Vector2(200, 30), Vector2(0, -60))
+	check(absf(tl.row_scroll() - 60.0) < 1.5, "pan: middle-drag up scrolls the rows (%.0f px)" % tl.row_scroll())
+	var left := v.x_to_time(0.0)
+	var pps := v.pixels_per_sec
+	mid_drag(grid, Vector2(300, 30), Vector2(80, 0), true)
+	check(v.pixels_per_sec > pps * 1.8 and absf(v.x_to_time(0.0) - left) < 1e-3, "zoom: Shift+middle-drag right zooms time in, left edge fixed (%.0f -> %.0f px/s)" % [pps, v.pixels_per_sec])
+	tl.set_row_scroll(96.0)
+	var rh := grid.row_h
+	var top_row := tl.row_scroll() / rh
+	mid_drag(grid, Vector2(300, 30), Vector2(0, 40), true)
+	await frames(tree, 1)
+	check(grid.row_h > rh * 1.3 and absf(tl.row_scroll() / grid.row_h - top_row) < 0.05, "zoom: Shift+middle-drag down makes rows taller, top row fixed (%.2f -> %.2f)" % [top_row, tl.row_scroll() / grid.row_h])
+
+	# Scale handles on the scrollbars.
+	v.frame(0.0, 2.0)
+	await frames(tree, 1)
+	var hb := tl.hbar
+	var th := hb.thumb_px()
+	var a0 := v.x_to_time(0.0)
+	var span0 := v.x_to_time(v.view_width) - a0
+	drag(hb, Vector2(th.y - 3.0, 6), Vector2(th.y - 3.0 - (th.y - th.x) * 0.5, 6))
+	var span1 := v.x_to_time(v.view_width) - v.x_to_time(0.0)
+	check(span1 < span0 * 0.7 and absf(v.x_to_time(0.0) - a0) < 1e-3, "scale bar: dragging the thumb's right end zooms time in, start fixed (%.2f -> %.2f s)" % [span0, span1])
+	v.scroll_by(200.0)
+	await frames(tree, 1)
+	th = hb.thumb_px()
+	var b0 := v.x_to_time(v.view_width)
+	drag(hb, Vector2(th.x + 3.0, 6), Vector2(th.x + 3.0 - 20.0, 6))
+	check(absf(v.x_to_time(v.view_width) - b0) < 0.01 and v.x_to_time(v.view_width) - v.x_to_time(0.0) > span1 * 1.05, "scale bar: dragging the left end zooms out, end fixed")
+	th = hb.thumb_px()
+	var span2 := v.x_to_time(v.view_width) - v.x_to_time(0.0)
+	var s2 := v.x_to_time(0.0)
+	drag(hb, Vector2((th.x + th.y) * 0.5, 6), Vector2((th.x + th.y) * 0.5 + 15.0, 6))
+	check(v.x_to_time(0.0) > s2 + 0.01 and absf(v.x_to_time(v.view_width) - v.x_to_time(0.0) - span2) < 1e-3, "scale bar: dragging the middle scrolls without zooming")
+	th = hb.thumb_px()
+	click(hb, Vector2((th.x + th.y) * 0.5, 6), MOUSE_BUTTON_LEFT, true, true)
+	click(hb, Vector2((th.x + th.y) * 0.5, 6), MOUSE_BUTTON_LEFT, false)
+	check(v.x_to_time(0.0) <= 0.0 + 1e-6 and v.x_to_time(v.view_width) >= d.project.content_end_sec(), "scale bar: double-click fits time")
+	tl.set_row_height(48.0, 0.0)
+	tl.set_row_scroll(48.0)
+	await frames(tree, 1)
+	var vb := tl.vbar
+	var vt := vb.thumb_px()
+	var rh2 := grid.row_h
+	var top2 := tl.row_scroll() / rh2
+	drag(vb, Vector2(6, vt.y - 3.0), Vector2(6, vt.y - 3.0 + 40.0))
+	await frames(tree, 1)
+	check(grid.row_h < rh2 * 0.95 and absf(tl.row_scroll() / grid.row_h - top2) < 0.1, "scale bar: dragging the vertical thumb's end shows more rows, top row fixed (%.0f -> %.0f px)" % [rh2, grid.row_h])
+
+	# Fit, where the scrollbars meet.
+	v.zoom_by(6.0)
+	v.scroll_to(300.0)
+	tl.set_row_height(100.0)
+	tl.set_row_scroll(200.0)
+	tl.fit_button.pressed.emit()
+	await frames(tree, 1)
+	check(v.x_to_time(0.0) <= 0.0 + 1e-6 and v.x_to_time(v.view_width) >= d.project.content_end_sec() and tl.row_scroll() < 1.0, "fit: both axes fit (time 0 to the end, rows from the top)")
+
+	# Tab switches modes; clicks reach only the active layer.
+	grid.grab_focus()
+	var tab := InputEventKey.new()
+	tab.keycode = KEY_TAB
+	tab.pressed = true
+	screen._input(tab)
+	await frames(tree, 1)
+	check(d.edit_mode == AWDocument.EditMode.CURVES and g.mouse_filter == Control.MOUSE_FILTER_STOP and absf(tl.scroll.modulate.a - 0.3) < 0.01 and tl.dots.is_visible_in_tree(), "Tab: curve mode (grid faded, curve layer on top, value axis shown)")
+	var cpos := grid.get_global_transform() * grid.clip_rect(clips[1]).get_center()
+	d.clear_selection()
+	for pressed: bool in [true, false]:
+		var e := InputEventMouseButton.new()
+		e.button_index = MOUSE_BUTTON_LEFT
+		e.pressed = pressed
+		e.position = cpos
+		e.global_position = cpos
+		tree.root.push_input(e)
+	await frames(tree, 1)
+	check(d.selection.is_empty(), "curve mode: a click over a clip doesn't reach the grid")
+	screen._input(tab)
+	await frames(tree, 1)
+	for pressed: bool in [true, false]:
+		var e2 := InputEventMouseButton.new()
+		e2.button_index = MOUSE_BUTTON_LEFT
+		e2.pressed = pressed
+		e2.position = cpos
+		e2.global_position = cpos
+		tree.root.push_input(e2)
+	await frames(tree, 1)
+	check(d.edit_mode == AWDocument.EditMode.CLIPS and d.is_selected(clips[1]), "Tab back: clip mode, the same click selects the clip")
+	var le := LineEdit.new()
+	screen.add_child(le)
+	le.grab_focus()
+	screen._input(tab)
+	check(d.edit_mode == AWDocument.EditMode.CLIPS, "Tab in a text field is left alone")
+	le.queue_free()
+
+	# Opening a curve enters curve mode.
+	var a := clips[0]
+	d.select_clip(a)
+	d.set_edit_mode(AWDocument.EditMode.CLIPS)
+	var gc := d.make_curve(a.chain, a.chain.effects[0], "gain_db")
+	check(d.edit_mode == AWDocument.EditMode.CURVES and d.active_curve == gc, "Make Curve switches to curve mode")
+	d.set_active_curve(null)
+	check(d.edit_mode == AWDocument.EditMode.CURVES, "deselecting a curve stays in curve mode")
+
+	# Value axis: pan and zoom.
+	await frames(tree, 2)
+	d.value_view.reset()
+	mid_drag(g, Vector2(100, 40), Vector2(0, 40), true)
+	check(d.value_view.span < 0.75 and is_equal_approx(d.value_view.hi(), 1.0), "values: Shift+middle-drag down zooms in, top value fixed (span %.2f)" % d.value_view.span)
+	var lo0 := d.value_view.lo
+	var uh := g.unit_h()
+	mid_drag(g, Vector2(100, 40), Vector2(0, -20))
+	check(absf(d.value_view.lo - (lo0 - 20.0 / uh)) < 1e-3 or (lo0 - 20.0 / uh < 0.0 and d.value_view.lo == 0.0), "values: middle-drag up pans down the value range")
+	var y_half := g.val_to_y(gc, 0.5)
+	check(absf(g.y_to_val(gc, y_half) - 0.5) < 1e-4, "values: the value mapping round-trips when zoomed")
+	key(screen, KEY_F)
+	check(is_equal_approx(d.value_view.span, 1.0) and d.value_view.lo == 0.0, "F in curve mode resets the value zoom")
+
+	# A key placed on the layer lands at the right project and clip time (pitched clip).
+	d.set_param(a.chain.effects[0], "pitch_semitones", -12.0)
+	v.frame(0.0, d.project.content_end_sec())
+	await frames(tree, 2)
+	var tp := 1.2
+	d.set_active_curve(gc)
+	var ins := Vector2(v.time_to_x(tp), g.val_to_y(gc, 0.3))
+	var nk := a.chain.get_keys(gc).size()
+	click(g, ins, MOUSE_BUTTON_LEFT, true, true)
+	click(g, ins, MOUSE_BUTTON_LEFT, false)
+	var found := false
+	for k: Dictionary in a.chain.get_keys(gc):
+		found = found or absf(k.t - a.project_to_local(tp)) < 1e-3
+	check(a.chain.get_keys(gc).size() == nk + 1 and found, "key placed at project %.2f s lands at clip time %.2f s (pitched -12)" % [tp, a.project_to_local(tp)])
+	d.undo()
+	d.undo()
+
+	# Shared chains: the focused clip edits, the chain's other clips show faint copies.
+	d.select_clip(clips[1])
+	var shared := d.new_chain_for(clips[1])
+	d.set_clip_chain(clips[2], shared)
+	d.select_clip(clips[1])
+	await frames(tree, 2)
+	var copies := g.copy_clips()
+	check(d.chain_tab == AWDocument.ChainTab.CHAIN and copies.size() == 1 and copies[0] == clips[2], "shared chain: copies drawn over the chain's other clips (%d)" % copies.size())
+	if OS.get_environment("AW_SHOTS") != "":
+		var lp := d.add_effect(shared, "Low Pass")
+		d.make_curve(shared, lp, "cutoff_hz")
+		await shot(tree, "aw_curve_layer.png")
+		d.set_edit_mode(AWDocument.EditMode.CLIPS)
+		await shot(tree, "aw_clip_layer.png")
+	d.set_edit_mode(AWDocument.EditMode.CLIPS)
+
+
 static func navigation_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	var tl := screen.timeline
@@ -2513,10 +2707,6 @@ static func navigation_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	key(screen, KEY_Z)
 	check(absf(v.x_to_time(v.view_width) - v.x_to_time(0.0) - 0.1 / 0.92) < 0.01, "zoom: Z frames the time selection")
 	d.clear_time_selection()
-	# The zoom slider follows and sets the zoom.
-	check(absf(tl.zoom_slider.value - log(v.pixels_per_sec)) < 0.001, "zoom slider: follows the zoom")
-	tl.zoom_slider.value = log(400.0)
-	check(absf(v.pixels_per_sec - 400.0) < 0.5, "zoom slider: sets the zoom")
 	# Hover info on a clip.
 	var grid := tl.grid
 	v.frame(0.0, 2.0)
@@ -3283,7 +3473,7 @@ static func run(screen: AWMainScreen) -> void:
 	d.set_curve_time(AWDocument.CurveTime.PROJECT)
 	check(is_equal_approx(d.view_to_local(1.0), 1.0 - p.clips[0].start_sec), "project-time view offsets by clip start")
 	d.set_curve_time(AWDocument.CurveTime.CLIP)
-	check(is_equal_approx(d.view_to_project(0.0), p.clips[0].start_sec), "clip-time view maps 0 to clip start")
+	check(is_equal_approx(d.view_to_project(1.0), 1.0) and is_equal_approx(d.local_to_view(0.0), p.clips[0].start_sec), "curves sit on the shared timeline: a clip's curve time 0 is at its start")
 
 	d.select_clip(c4)
 	var n := p.clips.size()
@@ -3353,7 +3543,9 @@ static func run(screen: AWMainScreen) -> void:
 	print("--- UI: curve graph ---")
 	d.select_clip(c4)
 	await frames(tree, 6)
-	var g := screen.curves.graph
+	var g := screen.timeline.graph
+	d.set_edit_mode(AWDocument.EditMode.CURVES)
+	await frames(tree, 2)
 	var wet: AWCurve = ch.curves[2]
 	var k1: Dictionary = ch.get_keys(wet)[1]
 	var kp := g.key_pos(wet, k1)
@@ -3412,7 +3604,7 @@ static func run(screen: AWMainScreen) -> void:
 	# The Reverb card has a panel now; this section tests the generic rows, so show them for it.
 	AWPanelRegistry.suppressed = PackedStringArray(["Reverb"])
 	d.project_changed.emit(true)
-	var dots: AWCurveDots = g.get_parent().get_child(0)
+	var dots: AWCurveDots = screen.timeline.dots
 	dots._layout()
 	var first: Array = dots._placed[0]
 	var fc: AWCurve = first[0]
@@ -3490,7 +3682,7 @@ static func run(screen: AWMainScreen) -> void:
 	var rate_end := (c4.project_to_local(c4.end_sec()) - c4.project_to_local(c4.end_sec() - 0.1)) / 0.1
 	check(absf(rate_start - 1.0) < 0.02 and absf(rate_end - pow(2.0, -5.0 / 12.0)) < 0.02, "curve playhead speed: %.2fx at start, %.2fx at end" % [rate_start, rate_end])
 	d.set_curve_time(AWDocument.CurveTime.CLIP)
-	check(absf(d.project_to_view(c4.end_sec()) - L) < 1e-3, "Clip Time: curve playhead reaches the last key exactly when the clip ends")
+	check(absf(c4.project_to_local(c4.end_sec()) - L) < 1e-3, "curve clock reaches the last key exactly when the clip ends")
 	check(absf(grid.clip_rect(c4).size.x - c4.play_length() * grid.view.pixels_per_sec) < 0.01, "timeline block spans the played duration")
 	var c2b := p.clips[1]
 	d.set_param(c2b.chain.effects[0], "pitch_semitones", -12.0)
@@ -3531,7 +3723,7 @@ static func run(screen: AWMainScreen) -> void:
 	var small: Array = labels.call(AWCurveAxis.ticks(ch, lpca, 90.0))
 	check(small.size() >= 2 and small.size() < ll.size(), "short graph drops ticks to stay readable (%d vs %d)" % [small.size(), ll.size()])
 	check(AWCurveAxis.format_tick(1500.0, "Hz") == "1.5k" and AWCurveAxis.format_tick(6.0, "dB") == "+6" and AWCurveAxis.format_tick(-0.25, "") == "-0.25", "tick formatting")
-	var axis: AWCurveAxis = g.get_parent().get_child(2)
+	var axis: AWCurveAxis = screen.timeline.axis
 	d.set_active_curve(null)
 	check(axis.axis_curve() == null, "axis is empty with no selected curve")
 	d.set_active_curve(lpca)
@@ -3942,6 +4134,7 @@ static func run(screen: AWMainScreen) -> void:
 	await multi_edit_tests(tree, screen)
 	await timing_tests(tree, screen)
 	await navigation_tests(tree, screen)
+	await layer_tests(tree, screen)
 	await shared_chain_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)
