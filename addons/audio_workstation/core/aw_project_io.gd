@@ -9,7 +9,42 @@ extends RefCounted
 
 ## version -> Callable(project) that brings a project of that version up by one. Empty until the
 ## format changes; the tests add one to prove the mechanism.
-static var migrations := {}
+static var migrations := {5: _split_clip_chains}
+
+
+## Format 5 -> 6: effects a clip owned (after its Clip card) move, with their curves, into a shared
+## chain named "<clip> FX" that the clip uses.
+static func _split_clip_chains(p: AWProject) -> void:
+	for c in p.clips:
+		if c == null or c.chain == null or c.fx_chain != null:
+			continue
+		var moved := split_clip_chain(c)
+		if moved:
+			p.chains.append(moved)
+
+
+## Moves a clip's own effects (after the Clip card) and their curves into a new shared chain that
+## the clip then uses. Returns the new chain, or null if there was nothing to move.
+static func split_clip_chain(c: AWClip) -> AWChain:
+	var own := c.chain
+	var start := own.first_movable()
+	if own.effects.size() <= start:
+		return null
+	var ch := AWChain.new()
+	ch.name = (c.name if c.name != "" else "Clip") + " FX"
+	ch.next_effect_id = own.next_effect_id
+	for i in range(start, own.effects.size()):
+		ch.effects.append(own.effects[i])
+	for e in ch.effects:
+		for cv in own.curves_of(e.id):
+			var keys := own.get_keys(cv)
+			own.remove_track(cv)
+			own.curves.erase(cv)
+			ch.curves.append(cv)
+			ch.set_keys(cv, keys)
+	own.effects.resize(start)
+	c.fx_chain = ch
+	return ch
 
 
 ## Writes the project. The file is written beside the target and moved into place, so a failed
@@ -77,6 +112,18 @@ static func open(path: String) -> Dictionary:
 ## Fixes what would crash or confuse the editor or the engine. Returns what it changed.
 static func sanitize(p: AWProject) -> Array:
 	var rep: Array = []
+	# Shared chains: each one named, unique, without a fixed card.
+	_project_chains = p.chains
+	for i in range(p.chains.size() - 1, -1, -1):
+		if p.chains[i] == null:
+			p.chains.remove_at(i)
+			rep.append("Removed an empty chain entry.")
+	var names := {}
+	for ch in p.chains:
+		if ch.name.strip_edges() == "" or names.has(ch.name):
+			ch.name = "Chain %d" % (names.size() + 1)
+		names[ch.name] = true
+		_sanitize_chain(ch, "", "Chain \"%s\"" % ch.name, rep)
 	for i in p.rows.size():
 		if p.rows[i] == null:
 			p.rows[i] = AWRow.new()
@@ -144,7 +191,14 @@ static func _sanitize_clip(c: AWClip, label: String, rep: Array) -> void:
 		c.chain = AWChain.create(AWEffectLibrary.CLIP_SOURCE)
 		rep.append("%s: its effect chain was missing; made a new one." % label)
 	_sanitize_chain(c.chain, AWEffectLibrary.CLIP_SOURCE, label, rep)
+	if c.fx_chain != null and not _project_chains.has(c.fx_chain):
+		# A chain the project doesn't list (e.g. pasted from elsewhere): list it.
+		_project_chains.append(c.fx_chain)
+		rep.append("%s: its effect chain wasn't listed; added it." % label)
 	c.invalidate_warp()
+
+
+static var _project_chains: Array[AWChain] = []
 
 
 static func _sanitize_chain(ch: AWChain, fixed_type: String, label: String, rep: Array) -> void:
@@ -160,7 +214,7 @@ static func _sanitize_chain(ch: AWChain, fixed_type: String, label: String, rep:
 		if not AWEffectLibrary.EFFECTS.has(e.effect_type):
 			rep.append("%s: removed the unknown effect \"%s\"." % [label, e.effect_type])
 			continue
-		if AWEffectLibrary.is_fixed(e.effect_type) and (not effects.is_empty() or e.effect_type != fixed_type):
+		if AWEffectLibrary.is_fixed(e.effect_type) and (fixed_type == "" or not effects.is_empty() or e.effect_type != fixed_type):
 			rep.append("%s: removed a misplaced %s card." % [label, e.effect_type])
 			continue
 		if seen_ids.has(e.id):
@@ -172,7 +226,7 @@ static func _sanitize_chain(ch: AWChain, fixed_type: String, label: String, rep:
 		seen_ids[e.id] = true
 		_sanitize_params(e, label, rep)
 		effects.append(e)
-	if effects.is_empty() or effects[0].effect_type != fixed_type:
+	if fixed_type != "" and (effects.is_empty() or effects[0].effect_type != fixed_type):
 		var src := AWEffect.create(fixed_type, 0)
 		while seen_ids.has(src.id):
 			src.id = ch.new_effect_id()

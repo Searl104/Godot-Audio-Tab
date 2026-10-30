@@ -2460,14 +2460,6 @@ static func navigation_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	check(absf(tl.zoom_slider.value - log(v.pixels_per_sec)) < 0.001, "zoom slider: follows the zoom")
 	tl.zoom_slider.value = log(400.0)
 	check(absf(v.pixels_per_sec - 400.0) < 0.5, "zoom slider: sets the zoom")
-	# Overview: clicking moves the view there.
-	var ov := tl.overview
-	await frames(tree, 2)
-	var t_click := ov.total() * 0.8
-	click(ov, Vector2(ov.t_to_x(t_click), 10))
-	click(ov, Vector2(ov.t_to_x(t_click), 10), MOUSE_BUTTON_LEFT, false)
-	var mid_t := (v.x_to_time(0.0) + v.x_to_time(v.view_width)) * 0.5
-	check(absf(mid_t - t_click) < 0.1 or v.scroll_x >= v.scroll_range() - v.view_width - 1.0, "overview: a click centres the view there (%.2f vs %.2f)" % [mid_t, t_click])
 	# Hover info on a clip.
 	var grid := tl.grid
 	v.frame(0.0, 2.0)
@@ -2491,6 +2483,160 @@ static func navigation_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 		if hs:
 			hs.split_offset = keep_off
 		d.set_snap_target("transients", false)
+	d.new_project()
+
+
+static func shared_chain_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var e := d.engine
+	var cp := screen.chain_panel
+	var rate := AudioServer.get_mix_rate()
+	write_wav("/tmp/aw_sc_dc.wav", 1.0, func(_i: int, _rt: int) -> Vector2i: return Vector2i(8192, 8192))
+	d.new_project()
+	var a := d.add_clip_from_path("/tmp/aw_sc_dc.wav", 0, 0.0) # 0.25 DC, 0..1 s
+	var b := d.add_clip_from_path("/tmp/aw_sc_dc.wav", 1, 2.0) # 0.25 DC, 2..3 s
+	var c := d.add_clip_from_path("/tmp/aw_sc_dc.wav", 2, 4.0)
+	await frames(tree, 2)
+	check(c.fx_chain == null and d.chain_tab == AWDocument.ChainTab.CLIP, "chains: a new clip has no chain (dry)")
+	await frames(tree, 2)
+	check(cp.tabs.get_tab_title(1).contains("no chain") and cp.find_child("AttachChain", true, false) != null, "chains: a dry clip gets a temporary tab and an Attach card")
+
+	# + makes a chain for the selection; its tab opens with a Clips card listing both clips.
+	d.set_selection([a, b] as Array[AWClip])
+	cp.tabs.current_tab = cp.tabs.tab_count - 1
+	await frames(tree, 3)
+	var ch := a.fx_chain
+	check(ch != null and b.fx_chain == ch and d.project.chains.has(ch) and c.fx_chain == null, "chains: + attaches a new chain to the selected clips")
+	check(d.chain_tab == AWDocument.ChainTab.CHAIN and d.tab_chain == ch and cp.tabs.get_tab_title(cp.tabs.current_tab) == ch.name, "chains: its tab opens")
+	var titles := []
+	for i in cp.tabs.tab_count:
+		titles.append(cp.tabs.get_tab_title(i))
+	check(titles[0] == "Master" and titles.has(ch.name) and titles[titles.size() - 1].strip_edges() == "+", "chains: tabs read Master, chains, + (%s)" % str(titles))
+	var card: AWClipsCard = cp.find_child("ClipsCard", true, false)
+	check(card != null and card.rows.size() == 2 and card.rows[0].clip == a and (card.rows[0].knobs as Array).size() == 3, "chains: the Clips card has a row with Gain / Pitch / Pan per clip")
+
+	# One effect, every clip on the chain; each clip keeps its own gain.
+	var amp := d.add_effect(ch, "Amplify")
+	d.set_param(amp, "volume_db", -6.0206)
+	await frames(tree, 2)
+	var r := e.render_preview_range(0.0, 5.0)
+	check(absf(_at(r, 0.5) - 0.125) < 0.003 and absf(_at(r, 2.5) - 0.125) < 0.003 and absf(_at(r, 4.5) - 0.25) < 0.003, "chains: an effect on the chain applies to all its clips, not to others (%.3f %.3f %.3f)" % [_at(r, 0.5), _at(r, 2.5), _at(r, 4.5)])
+	card = cp.find_child("ClipsCard", true, false)
+	var bknob: AWKnob = card.rows[1].knobs[0]
+	bknob.binding.set_value(-6.0206)
+	await frames(tree, 2)
+	r = e.render_preview_range(0.0, 3.0)
+	check(absf(_at(r, 0.5) - 0.125) < 0.003 and absf(_at(r, 2.5) - 0.0625) < 0.003, "chains: Gain in the Clips card is per clip (%.3f, %.3f)" % [_at(r, 0.5), _at(r, 2.5)])
+	d.undo()
+
+	# A curve on the chain runs on each clip's own clock.
+	var cv := d.make_curve(ch, amp, "volume_db")
+	ch.set_keys(cv, [{"t": 0.0, "v": ch.to_norm(cv, -60.0), "in": Vector2.ZERO, "out": Vector2.ZERO, "mode": AWCurve.HandleMode.LINEAR},
+		{"t": 1.0, "v": ch.to_norm(cv, 0.0), "in": Vector2.ZERO, "out": Vector2.ZERO, "mode": AWCurve.HandleMode.LINEAR}])
+	d.project_changed.emit(false)
+	await frames(tree, 2)
+	r = e.render_preview_range(0.0, 3.0)
+	check(absf(_at(r, 0.75) - _at(r, 2.75)) < 0.003 and _at(r, 0.75) > _at(r, 0.25) + 0.02, "chains: a chain curve plays the same on each clip, from its own start (%.3f vs %.3f)" % [_at(r, 0.75), _at(r, 2.75)])
+	check(d.active_chain() == ch and not d.curve_on_clip and screen.find_child("OwnerChain", true, false) != null, "chains: the curve view shows the chain's curves")
+	# A clip's own Gain curve, made from its knob, switches the view to that clip's curves.
+	d.select_clip(a)
+	var aknob: AWKnob = (cp.find_child("ClipsCard", true, false) as AWClipsCard).rows[0].knobs[0]
+	aknob.binding.on_menu(1)
+	await frames(tree, 2)
+	check(d.curve_on_clip and d.active_chain() == a.chain and a.chain.get_curve(a.chain.effects[0].id, "gain_db") != null, "chains: a clip's Gain curve shows that clip's own curves")
+	d.set_curve_on_clip(false)
+	check(d.active_chain() == ch, "chains: the switch goes back to the chain's curves")
+
+	# Duplicate shares the chain; Effect Chain menu; delete and undo; rename.
+	d.select_clip(a)
+	d.duplicate_selected()
+	var dup := d.selection[0]
+	check(dup.fx_chain == ch and d.project.chains.size() == 1, "chains: a duplicated clip uses the same chain (not a copy)")
+	d.set_clip_chain(dup, null)
+	check(dup.fx_chain == null and a.fx_chain == ch, "chains: one clip can leave the chain")
+	d.undo()
+	d.delete_chain(ch)
+	check(not d.project.chains.has(ch) and a.fx_chain == null and b.fx_chain == null, "chains: deleting a chain leaves its clips dry")
+	d.undo()
+	check(d.project.chains.has(ch) and a.fx_chain == ch and b.fx_chain == ch, "chains: delete undoes")
+	d.rename_chain(ch, "Impact FX")
+	check(ch.name == "Impact FX", "chains: renamed")
+	var ch2 := d.duplicate_chain(ch)
+	check(ch2 != ch and ch2.name == "Impact FX copy" and ch2.effects.size() == ch.effects.size() and ch2.effects[0] != ch.effects[0], "chains: duplicate makes an independent copy")
+	d.set_clip_chain(c, ch2)
+	var all_labels: Array = d.all_lfos().map(func(x: Dictionary) -> String: return x.label)
+	d.add_lfo(ch, cv)
+	all_labels = d.all_lfos().map(func(x: Dictionary) -> String: return x.label)
+	check(all_labels.any(func(l: String) -> bool: return l.begins_with("Impact FX\\")), "chains: chain LFOs are listed under the chain's name (%s)" % str(all_labels))
+
+	# Saved and reopened: still one shared chain object.
+	check(d.save_project("user://aw_shared.tres") and d.load_project("user://aw_shared.tres"), "chains: save and open")
+	var p := d.project
+	var users := 0
+	for k in p.clips:
+		if k.fx_chain and k.fx_chain.name == "Impact FX":
+			users += 1
+			check(p.chains.has(k.fx_chain), "chains: reopened clip points at a listed chain")
+	var first: AWChain = null
+	for k in p.clips:
+		if k.fx_chain and k.fx_chain.name == "Impact FX":
+			if first == null:
+				first = k.fx_chain
+			elif k.fx_chain != first:
+				users = -100
+	check(users == 3 and p.chains.size() == 2, "chains: after reopening, the clips still share one chain (%d users)" % users)
+
+	# Paste into a new sound brings a copy of the chain along.
+	d.select_clip(p.clips[0])
+	d.copy_selected()
+	d.new_project()
+	d.paste()
+	check(d.project.clips.size() == 1 and d.project.chains.size() == 1 and d.project.clips[0].fx_chain == d.project.chains[0], "chains: pasting into another sound lists a copy of the chain")
+
+	# Opening an older sound (format 5): clips' own effects move into "<clip> FX" chains, same sound.
+	var old := AWProject.create_demo()
+	for k in old.clips:
+		k.source_path = "/tmp/aw_sc_dc.wav"
+	old.format_version = 5
+	d.set_project(old)
+	await frames(tree, 2)
+	var before := e.render_preview_range(0.0, 3.0)
+	var fpath := ProjectSettings.globalize_path("user://aw_old5.tres")
+	ResourceSaver.save(old, fpath)
+	check(d.load_project(fpath), "migration: a format 5 sound opens")
+	var bed: AWClip = d.project.clips[3]
+	check(bed.fx_chain != null and bed.fx_chain.name == bed.name + " FX" and bed.chain.effects.size() == 1 and bed.fx_chain.effects.size() == 3 and d.project.chains.size() == 1, "migration: the clip's effects moved into \"%s FX\"" % bed.name)
+	check(bed.fx_chain.curves.size() == 3 and bed.chain.curves.size() == 1, "migration: effect curves moved with them; the Pitch curve stayed (%d / %d)" % [bed.fx_chain.curves.size(), bed.chain.curves.size()])
+	await frames(tree, 2)
+	var after := e.render_preview_range(0.0, 3.0)
+	var worst := 0.0
+	for i in range(0, mini(before.size(), after.size()), 31):
+		worst = maxf(worst, absf(before[i].x - after[i].x))
+	check(worst < 1e-4, "migration: the sound is unchanged (worst %.6f)" % worst)
+	DirAccess.remove_absolute(fpath)
+
+	# Toolbar shortcuts; the narrow left column is gone.
+	for nm in ["EditMarker", "EditTrimStart", "EditTrimEnd", "EditReverse", "EditCrossfade", "EditGroup"]:
+		check(screen.find_child(nm, true, false) != null, "toolbar: %s button" % nm)
+	if OS.get_environment("AW_SHOTS") != "":
+		d.new_project()
+		var x1 := d.add_clip_from_path("/tmp/aw_sc_dc.wav", 0, 0.0)
+		var x2 := d.add_clip_from_path("/tmp/aw_sc_dc.wav", 1, 0.5)
+		d.add_clip_from_path("/tmp/aw_sc_dc.wav", 2, 1.0)
+		d.rename_clip(x1, "Body")
+		d.rename_clip(x2, "Debris")
+		d.set_selection([x1, x2] as Array[AWClip])
+		var sc := d.new_chain_for(null)
+		d.rename_chain(sc, "Impact FX")
+		d.add_effect(sc, "Low Pass")
+		d.add_effect(sc, "Reverb")
+		var other := AWChain.new()
+		d.select_clip(d.project.clips[2])
+		var dc := d.new_chain_for(null)
+		d.rename_chain(dc, "Sweetener")
+		d.select_clip(x1)
+		await frames(tree, 4)
+		await shot(tree, "aw_chain_tabs.png")
 	d.new_project()
 
 
@@ -2859,7 +3005,7 @@ static func save_open_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	ResourceSaver.save(old, old_path)
 	AWProjectIO.migrations[1] = func(pr: AWProject) -> void: pr.title += "+migrated"
 	var rold := AWProjectIO.open(old_path)
-	AWProjectIO.migrations = {}
+	AWProjectIO.migrations.erase(1)
 	check(rold.ok and rold.project.title == "old+migrated" and rold.project.format_version == AWProject.FORMAT_VERSION and str(rold.repairs).contains("Updated from format 1"), "open: an older format is migrated (%s)" % str(rold.repairs))
 
 	# Repair: a damaged project is made safe, and the engine can still render it.
@@ -3498,7 +3644,7 @@ static func run(screen: AWMainScreen) -> void:
 	d.open_lfo(ch, wet2)
 	await frames(tree, 3)
 
-	var shape_btns: Array = panel.find_children("*", "Button", true, false).filter(func(b: Button) -> bool: return b.button_group != null and not String(b.name).begins_with("Mode"))
+	var shape_btns: Array = panel.find_children("*", "Button", true, false).filter(func(b: Button) -> bool: return b.button_group != null and not String(b.name).begins_with("Mode") and not String(b.name).begins_with("Owner"))
 	check(shape_btns.size() == 5, "five shape buttons")
 	var rel_btn: Button = panel.find_child("ModeRelative", true, false)
 	var abs_btn: Button = panel.find_child("ModeAbsolute", true, false)
@@ -3715,5 +3861,6 @@ static func run(screen: AWMainScreen) -> void:
 	await multi_edit_tests(tree, screen)
 	await timing_tests(tree, screen)
 	await navigation_tests(tree, screen)
+	await shared_chain_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

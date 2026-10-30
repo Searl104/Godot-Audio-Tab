@@ -362,7 +362,7 @@ func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
 		voice["gains"] = _table(ch, src, "gain_db", clip.length_sec, step_sec, AWSampler.GAIN)
 		voice["pans"] = _table(ch, src, "pan", clip.length_sec, step_sec, AWSampler.VALUE)
 	# Past its own end a ringing chain keeps going until the export marker.
-	var tail_sec := maxf(0.0, _end_sec() - (clip.start_sec + clip.play_length())) if chain_rings(ch) else 0.0
+	var tail_sec := maxf(0.0, _end_sec() - (clip.start_sec + clip.play_length())) if chain_rings(ch) or chain_rings(clip.fx_chain) else 0.0
 	var fx := _clip_effects(clip, step_sec, tail_sec)
 	if not fx.is_empty():
 		voice["effects"] = fx
@@ -379,7 +379,7 @@ func _end_sec() -> float:
 static func chain_rings(chain: AWChain) -> bool:
 	if chain == null:
 		return false
-	for i in range(1, chain.effects.size()):
+	for i in range(chain.first_movable(), chain.effects.size()):
 		var e: AWEffect = chain.effects[i]
 		if not e.bypass and AWEffectLibrary.engine_rings(e.effect_type):
 			return true
@@ -388,34 +388,37 @@ static func chain_rings(chain: AWChain) -> bool:
 
 ## A clip's effect chain after its Clip card. Parameter tables are over elapsed timeline time
 ## since the clip started (they stretch with Pitch, and run on through the tail).
+## Effects after the clip's own Clip card (older sounds), then its shared chain's. A shared chain's
+## curves run on each clip's own clock, so every clip gets its own tables.
 func _clip_effects(clip: AWClip, step_sec: float, tail_sec: float) -> Array:
-	var ch := clip.chain
 	var out: Array = []
-	if ch == null or ch.effects.size() < 2:
-		return out
 	var n := int(ceilf((clip.play_length() + tail_sec) / step_sec)) + 2
 	var warp := clip.warp()
 	var wsig := AWClipWarp.signature(clip)
-	for i in range(1, ch.effects.size()):
-		var e: AWEffect = ch.effects[i]
-		if e.bypass or AWEffectLibrary.engine_id(e.effect_type) == 0:
+	for ch: AWChain in [clip.chain, clip.fx_chain]:
+		if ch == null:
 			continue
-		var tables: Array = []
-		for key: String in AWEffectLibrary.engine_keys(e.effect_type):
-			tables.append(_fx_table(ch, e, key, warp, wsig, n, step_sec))
-		out.append({"type": AWEffectLibrary.engine_id(e.effect_type), "params": tables, "step": RATE_STEP})
+		for i in range(ch.first_movable(), ch.effects.size()):
+			var e: AWEffect = ch.effects[i]
+			if e.bypass or AWEffectLibrary.engine_id(e.effect_type) == 0:
+				continue
+			var tables: Array = []
+			for key: String in AWEffectLibrary.engine_keys(e.effect_type):
+				tables.append(_fx_table(ch, e, key, warp, wsig, n, step_sec, clip))
+			out.append({"type": AWEffectLibrary.engine_id(e.effect_type), "params": tables, "step": RATE_STEP})
 	return out
 
 
 ## A card parameter over elapsed timeline time: curve values at the matching clip times.
-func _fx_table(chain: AWChain, effect: AWEffect, param: String, warp: AWClipWarp, wsig: Array, count: int, step_sec: float) -> PackedFloat32Array:
+func _fx_table(chain: AWChain, effect: AWEffect, param: String, warp: AWClipWarp, wsig: Array, count: int, step_sec: float, clip: AWClip = null) -> PackedFloat32Array:
 	var curve := chain.get_curve(effect.id, param)
 	var out := PackedFloat32Array()
 	if curve == null or chain.get_keys(curve).is_empty():
 		out.append(effect.get_param(param))
 		return out
 	var sig := [_curve_signature(chain, curve, 0.0, step_sec, AWSampler.VALUE), wsig, count]
-	var hit: Array = _table_cache.get(curve, [])
+	var cache_key: Variant = [curve, clip] if clip else curve # a shared curve: one table per clip
+	var hit: Array = _table_cache.get(cache_key, [])
 	if hit.size() == 2 and hit[0] == sig:
 		return hit[1]
 	var times := PackedFloat64Array()
@@ -423,7 +426,7 @@ func _fx_table(chain: AWChain, effect: AWEffect, param: String, warp: AWClipWarp
 	for i in count:
 		times[i] = warp.unwarp(i * step_sec)
 	out = AWSampler.values_at(chain, curve, times, AWSampler.VALUE)
-	_table_cache[curve] = [sig, out]
+	_table_cache[cache_key] = [sig, out]
 	return out
 
 

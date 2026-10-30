@@ -55,7 +55,6 @@ func _ready() -> void:
 	var top := HBoxContainer.new()
 	top.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	top.add_theme_constant_override("separation", 2)
-	top.add_child(_make_reserved_column())
 	var hsplit := HSplitContainer.new()
 	hsplit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	timeline = AWTimelinePane.new()
@@ -108,20 +107,6 @@ func _ready() -> void:
 	_build_confirm()
 	_build_recovery_prompt()
 	set_process(true)
-
-
-## Narrow column left of the timeline: reserved for future tools (per the sketch).
-func _make_reserved_column() -> Control:
-	var panel := PanelContainer.new()
-	panel.custom_minimum_size.x = 34
-	panel.tooltip_text = "Reserved for future tools"
-	var col := VBoxContainer.new()
-	var slot := Panel.new()
-	slot.custom_minimum_size = Vector2(26, 26)
-	slot.modulate = Color(1, 1, 1, 0.35)
-	col.add_child(slot)
-	panel.add_child(col)
-	return panel
 
 
 func _process(delta: float) -> void:
