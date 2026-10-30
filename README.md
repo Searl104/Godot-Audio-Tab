@@ -301,6 +301,26 @@ Overlaps and Group / Ungroup (Ctrl+G).
 
 Sounds saved by 0.15 use format 5 (markers).
 
+## Groups (0.19, engine 0.13.0)
+
+A group is a **frame on the grid**: a time span over one or more rows. Every clip that **starts** inside
+the span on one of its rows belongs to it, live: drop a clip in and it joins, drag it out and it leaves.
+Frames never overlap.
+- **Strip** (the header above the group's first row; it adds a little space there, so no clip is covered):
+  drag it to move the group with its clips; drag its ends to set the time span; click it to select the
+  group (its clips). Buttons: ▾ collapse, **M** mute, **S** solo (both apply to the export). Right-click:
+  Rename, Group Colour, Mute, Solo, Collapse, the group chain, Ungroup. Clicking a clip selects just
+  that clip, so you can edit inside a group freely.
+- **Rows handle** (the small ▼ grip in the frame's bottom-left corner): drag down to take in more rows,
+  up to give them back.
+- **Collapse** folds the group's rows to thin lanes; the clips still play.
+- **Group chain** (strip menu > New Group Chain): a **bus**. The group's clips are mixed first, then the chain
+  runs once on the mix, before the Master: one reverb tail, one compressor reacting to the whole group. It
+  appears as a "▣ name" tab in the chain panel; its curves run on the group's clock (0 = the group's start,
+  so they move with it).
+- Ctrl+G frames the selection; Ctrl+Shift+G removes the group (the clips stay). Sounds saved by 0.14 to 0.18
+  used group ids on clips; they open as frames around those clips. Sounds saved by 0.19 use format 8.
+
 ## Grid editing (0.14, engine 0.10.0)
 
 | Do | How |
@@ -315,7 +335,7 @@ Sounds saved by 0.15 use format 5 (markers).
 | Reverse | Right-click > Reverse: the same part of the file plays backwards (◂ on the clip). Trims and splits keep working as you'd expect. |
 | Fade shapes | Right-click > Fade In Shape / Fade Out Shape: Linear, Fast, Slow, S-Curve, Equal Power. The clip draws the curve. |
 | Crossfade | Overlapping clips simply mix (that's layering). Select overlapping clips > right-click > Crossfade Overlaps: equal-power fades across each overlap. |
-| Groups | Ctrl+G groups the selection (clicking one selects all: they move, nudge, mute, copy and delete together); Ctrl+Shift+G ungroups. |
+| Groups | Ctrl+G draws a group frame around the selection; Ctrl+Shift+G removes it (see "Groups" below). |
 | Several clips at once | With several clips selected, Gain, Pitch and Pan on the Clip card change every selected clip by the same amount. |
 | Import here | Double-click empty grid space opens Import Sound at that spot. |
 

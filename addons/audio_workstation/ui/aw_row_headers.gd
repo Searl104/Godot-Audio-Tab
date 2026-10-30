@@ -62,6 +62,7 @@ func _ready() -> void:
 	doc.selection_changed.connect(queue_redraw)
 	grid.resized.connect(_sync_size)
 	grid.row_height_changed.connect(func() -> void: _sync_size(); queue_redraw())
+	doc.groups_changed.connect(queue_redraw)
 	_sync_size()
 
 
@@ -86,8 +87,8 @@ func row_count() -> int:
 
 ## Button rectangles of a row: {"mute", "solo", "lock"}.
 func buttons(i: int) -> Dictionary:
-	var h := grid.row_h
-	var y := i * h + (h - BTN) * 0.5
+	var h := grid.row_height(i)
+	var y := grid.row_top(i) + (h - BTN) * 0.5
 	var x := size.x - 6.0 - BTN * 3.0 - 4.0
 	return {"mute": Rect2(x, y, BTN, BTN), "solo": Rect2(x + BTN + 2.0, y, BTN, BTN), "lock": Rect2(x + (BTN + 2.0) * 2.0, y, BTN, BTN)}
 
@@ -147,7 +148,7 @@ func _on_menu(id: int) -> void:
 func start_rename(i: int) -> void:
 	_edit_row = i
 	_edit.text = doc.project.row_name(i)
-	_edit.position = Vector2(8, i * grid.row_h + (grid.row_h - 26.0) * 0.5)
+	_edit.position = Vector2(8, grid.row_top(i) + (grid.row_height(i) - 26.0) * 0.5)
 	_edit.size = Vector2(size.x - 16.0 - BTN * 3.0 - 6.0, 26)
 	_edit.visible = true
 	_edit.grab_focus()
@@ -171,11 +172,16 @@ func _draw() -> void:
 	var font := get_theme_default_font()
 	var fs := get_theme_default_font_size() - 2
 	var bfs := fs - 2
-	var h := grid.row_h
 	draw_rect(Rect2(Vector2.ZERO, size), AWTheme.bg(self).darkened(0.12))
 	var solo_on := doc.project.any_solo()
 	for i in row_count():
-		var y := i * h
+		var y := grid.row_top(i)
+		var h := grid.row_height(i)
+		if h < 20.0:
+			# Inside a collapsed group: a thin row, no controls.
+			draw_rect(Rect2(0, y, size.x, h), Color(0, 0, 0, 0.12))
+			draw_line(Vector2(0, y + h - 0.5), Vector2(size.x, y + h - 0.5), Color(0, 0, 0, 0.25))
+			continue
 		var r := doc.project.row(i)
 		if i % 2 == 1:
 			draw_rect(Rect2(0, y, size.x, h), Color(1, 1, 1, 0.015))

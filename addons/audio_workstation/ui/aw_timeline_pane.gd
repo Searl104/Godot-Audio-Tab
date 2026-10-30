@@ -357,9 +357,9 @@ func set_row_scroll(px: float) -> void:
 ## Row height with the row at the top of the view held in place (`top_row` < 0: keep the current one).
 func set_row_height(h: float, top_row := -1.0) -> void:
 	if top_row < 0.0:
-		top_row = row_scroll() / grid.row_h
+		top_row = grid.y_to_rowf(row_scroll())
 	grid.set_row_height(h)
-	set_row_scroll(top_row * grid.row_h)
+	set_row_scroll(grid.rowf_to_y(top_row))
 
 
 func zoom_rows(factor: float) -> void:
@@ -371,7 +371,7 @@ func _on_vbar_scrolled(s: float) -> void:
 		var vv := doc.value_view
 		vv.set_range(1.0 - s - vv.span, 1.0 - s)
 	else:
-		set_row_scroll(s * grid.row_h)
+		set_row_scroll(grid.rowf_to_y(s))
 
 
 func _on_vbar_range(a: float, b: float) -> void:
@@ -392,8 +392,8 @@ func _sync_bars() -> void:
 		vbar.set_state(0.0, 1.0, 1.0 - vv.hi(), 1.0 - vv.lo)
 	else:
 		# In rows, so a drag that changes the row height keeps its units.
-		var top := row_scroll() / grid.row_h
-		vbar.set_state(0.0, maxf(grid.custom_minimum_size.y, _view_h()) / grid.row_h, top, top + _view_h() / grid.row_h)
+		var top := grid.y_to_rowf(row_scroll())
+		vbar.set_state(0.0, grid.y_to_rowf(maxf(grid.custom_minimum_size.y, _view_h())), top, grid.y_to_rowf(row_scroll() + _view_h()))
 
 
 # --- Navigation ---------------------------------------------------------------

@@ -36,7 +36,7 @@ signal export_finished(result: Dictionary)
 signal detail_changed
 
 ## MASTER: the master chain. CLIP: the focused clip on its own (no shared chain). CHAIN: a shared chain.
-enum ChainTab { MASTER, CLIP, CHAIN }
+enum ChainTab { MASTER, CLIP, CHAIN, GROUP }
 enum CurveTime { CLIP, PROJECT }
 ## Which layer of the timeline is edited: clips on the grid, or the curves drawn over it.
 enum EditMode { CLIPS, CURVES }
@@ -84,6 +84,8 @@ var curve_on_clip := false
 # Curves (view state)
 ## Curves are always drawn in project time on the shared timeline (since 0.18).
 var curve_time := CurveTime.PROJECT
+## On the GROUP tab: the group whose chain is shown.
+var tab_group: AWGroup = null
 var edit_mode := EditMode.CLIPS
 ## Vertical view of the curve layer (0..1 curve heights).
 var value_view := AWValueView.new()
@@ -999,6 +1001,7 @@ func is_audio_file(path: String) -> bool:
 # --- Clip selection -----------------------------------------------------------
 
 func select_clip(clip: AWClip, mode := "replace") -> void:
+	selected_group = null
 	var members := group_members(clip)
 	match mode:
 		"replace":
@@ -1024,6 +1027,7 @@ func select_clip(clip: AWClip, mode := "replace") -> void:
 
 
 func set_selection(clips: Array[AWClip]) -> void:
+	selected_group = null
 	selection = []
 	for c in clips:
 		for m in group_members(c):
@@ -1034,49 +1038,202 @@ func set_selection(clips: Array[AWClip]) -> void:
 		_focus(selection.back())
 
 
-## The clip and every clip grouped with it (Ctrl+G), in project order.
+## Selecting a clip selects only that clip (since 0.19); the group strip selects a whole group.
 func group_members(clip: AWClip) -> Array[AWClip]:
-	if clip == null or clip.group_id == 0 or project == null:
-		return [clip] as Array[AWClip]
-	var out: Array[AWClip] = []
-	for c in project.clips:
-		if c.group_id == clip.group_id:
-			out.append(c)
-	if not out.has(clip):
-		out.append(clip)
-	return out
+	return [clip] as Array[AWClip]
 
 
-## Groups the selected clips: selecting one selects them all, so they move, nudge, mute, copy and
-## delete together. One undo step.
-func group_selected() -> void:
-	if selection.size() < 2:
-		message.emit("Select two or more clips to group them.")
-		return
-	var gid := 1
-	for c in project.clips:
-		gid = maxi(gid, c.group_id + 1)
-	_begin("Group Clips")
+# --- Groups (frames on the grid) ------------------------------------------------
+# A group is a frame: clips that start inside its time span on its rows belong to it, live.
+
+## The group whose strip was clicked (its clips are selected too), or null.
+var selected_group: AWGroup = null
+
+signal groups_changed
+
+
+## Selects a group: its clips, and the group itself (so Delete / Ctrl+Shift+G act on it).
+func select_group(g: AWGroup) -> void:
+	selected_group = g
+	selection = project.group_clips(g) if g else ([] as Array[AWClip])
+	selection_changed.emit()
+	groups_changed.emit()
+	if not selection.is_empty():
+		_focus(selection.back())
+
+
+## Frames the selected clips (Ctrl+G): from the first start to the last end, over their rows.
+func group_selected() -> AWGroup:
+	if selection.is_empty():
+		message.emit("Select one or more clips to group them.")
+		return null
+	var s := INF
+	var e := -INF
+	var r0 := 1 << 30
+	var r1 := -1
 	for c in selection:
-		_add_do(_apply_props.bind(c, {"group_id": gid}))
-		_add_undo(_apply_props.bind(c, {"group_id": c.group_id}))
-	_commit()
-	message.emit("Grouped %d clips. Ctrl+Shift+G ungroups." % selection.size())
+		s = minf(s, c.start_sec)
+		e = maxf(e, c.end_sec())
+		r0 = mini(r0, c.row)
+		r1 = maxi(r1, c.row)
+	if project.group_overlaps(s, e, r0, r1):
+		message.emit("A group can't overlap another group.")
+		return null
+	var g := AWGroup.new()
+	g.name = _unique_group_name("Group %d" % (project.groups.size() + 1))
+	g.start_sec = s
+	g.end_sec = maxf(e, s + 0.05)
+	g.row = r0
+	g.row_count = r1 - r0 + 1
+	g.color = selection[0].color
+	_do_undo("Group Clips", _apply_add_group.bind(g, project.groups.size()), _apply_remove_group.bind(g))
+	select_group(g)
+	message.emit("Grouped %d clips. Drag the strip to move the group, the handle on its left to add rows." % selection.size())
+	return g
 
 
+## Removes the selected group, or the groups of the selected clips (the clips stay).
 func ungroup_selected() -> void:
-	var grouped := selection.filter(func(c: AWClip) -> bool: return c.group_id != 0)
-	if grouped.is_empty():
+	var gs: Array[AWGroup] = []
+	if selected_group:
+		gs.append(selected_group)
+	for c in selection:
+		var g := project.group_of(c)
+		if g and not gs.has(g):
+			gs.append(g)
+	if gs.is_empty():
 		return
-	_begin("Ungroup Clips")
-	for c: AWClip in grouped:
-		_add_do(_apply_props.bind(c, {"group_id": 0}))
-		_add_undo(_apply_props.bind(c, {"group_id": c.group_id}))
+	_begin("Ungroup")
+	for g in gs:
+		_add_do(_apply_remove_group.bind(g))
+		_add_undo(_apply_add_group.bind(g, project.groups.find(g)))
 	_commit()
-	message.emit("Ungrouped %d clips." % grouped.size())
+	selected_group = null
+	groups_changed.emit()
+	message.emit("Ungrouped %d group%s." % [gs.size(), "" if gs.size() == 1 else "s"])
+
+
+func remove_group(g: AWGroup) -> void:
+	_do_undo("Remove Group", _apply_remove_group.bind(g), _apply_add_group.bind(g, project.groups.find(g)))
+
+
+func _unique_group_name(base: String) -> String:
+	var names := {}
+	for g in project.groups:
+		names[g.name] = true
+	var n := project.groups.size() + 1
+	var nm := base
+	while names.has(nm):
+		n += 1
+		nm = "Group %d" % n
+	return nm
+
+
+func _apply_add_group(g: AWGroup, index: int) -> void:
+	if not project.groups.has(g):
+		project.groups.insert(clampi(index, 0, project.groups.size()), g)
+	groups_changed.emit()
+	project_changed.emit(true)
+
+
+func _apply_remove_group(g: AWGroup) -> void:
+	project.groups.erase(g)
+	if selected_group == g:
+		selected_group = null
+	if chain_tab == ChainTab.GROUP and tab_group == g:
+		chain_tab = ChainTab.CLIP
+		tab_group = null
+		_reset_curve_focus()
+		chain_target_changed.emit()
+	groups_changed.emit()
+	project_changed.emit(true)
+
+
+## True when `g` could take this frame without overlapping another group.
+func group_frame_ok(g: AWGroup, s: float, e: float, r0: int, r1: int) -> bool:
+	return s >= 0.0 and e > s and r0 >= 0 and r1 >= r0 and not project.group_overlaps(s, e, r0, r1, g)
+
+
+## Moves a group by dt seconds and drow rows, with its clips. Refused (false) if it would overlap
+## another group. Undoable when `commit`; otherwise a live preview (the caller commits later).
+func move_group(g: AWGroup, dt: float, drow: int) -> bool:
+	dt = maxf(dt, -g.start_sec)
+	drow = maxi(drow, -g.row)
+	if not group_frame_ok(g, g.start_sec + dt, g.end_sec + dt, g.row + drow, g.last_row() + drow):
+		return false
+	var items: Array = [[g, {"start_sec": g.start_sec, "end_sec": g.end_sec, "row": g.row}]]
+	for c in project.group_clips(g):
+		items.append([c, {"start_sec": c.start_sec, "row": c.row}])
+		c.start_sec += dt
+		c.row += drow
+	g.start_sec += dt
+	g.end_sec += dt
+	g.row += drow
+	commit_drags(items, "Move Group")
+	groups_changed.emit()
+	return true
+
+
+## Live frame change during a drag (no undo step); returns false (and changes nothing) if the frame
+## would overlap another group. `clips` move along by dt / drow (a moved group's clips).
+func preview_group(g: AWGroup, frame: Dictionary, clips: Array = [], orig: Dictionary = {}, dt := 0.0, drow := 0) -> bool:
+	var s: float = frame.get("start_sec", g.start_sec)
+	var e: float = frame.get("end_sec", g.end_sec)
+	var r: int = frame.get("row", g.row)
+	var n: int = frame.get("row_count", g.row_count)
+	if not group_frame_ok(g, s, e, r, r + n - 1):
+		return false
+	for key: String in frame:
+		g.set(key, frame[key])
+	for c: AWClip in clips:
+		var o: Dictionary = orig[c]
+		c.start_sec = o.start_sec + dt
+		c.row = o.row + drow
+	project_changed.emit(false)
+	groups_changed.emit()
+	return true
+
+
+func set_group_props(g: AWGroup, props: Dictionary, action_name: String) -> void:
+	set_props(g, props, action_name)
+	groups_changed.emit()
+
+
+## Gives a group an effect chain (one bus for all its clips) and shows its tab.
+func new_group_chain(g: AWGroup) -> AWChain:
+	if g.chain:
+		open_group_tab(g)
+		return g.chain
+	var ch := AWChain.new()
+	ch.name = g.name
+	set_props(g, {"chain": ch}, "Add Group Chain")
+	open_group_tab(g)
+	return ch
+
+
+func remove_group_chain(g: AWGroup) -> void:
+	if g.chain == null:
+		return
+	set_props(g, {"chain": null}, "Remove Group Chain")
+	if chain_tab == ChainTab.GROUP and tab_group == g:
+		set_chain_tab(ChainTab.CLIP)
+
+
+## Shows a group's chain on the chain panel (its curves run on the group's clock).
+func open_group_tab(g: AWGroup) -> void:
+	if g == null or g.chain == null:
+		return
+	if chain_tab == ChainTab.GROUP and tab_group == g:
+		return
+	chain_tab = ChainTab.GROUP
+	tab_group = g
+	tab_chain = null
+	_reset_curve_focus()
+	chain_target_changed.emit()
 
 
 func clear_selection() -> void:
+	selected_group = null
 	if selection.is_empty():
 		return
 	selection.clear()
@@ -1099,6 +1256,7 @@ func _focus(clip: AWClip) -> void:
 	focus_clip = clip
 	chain_tab = want_tab
 	tab_chain = want_chain
+	tab_group = null
 	_reset_curve_focus()
 	chain_target_changed.emit()
 
@@ -1111,6 +1269,8 @@ func set_chain_tab(tab: ChainTab) -> void:
 	chain_tab = tab
 	if tab != ChainTab.CHAIN:
 		tab_chain = null
+	if tab != ChainTab.GROUP:
+		tab_group = null
 	_reset_curve_focus()
 	chain_target_changed.emit()
 
@@ -1124,6 +1284,7 @@ func open_chain_tab(chain: AWChain) -> void:
 		return
 	chain_tab = ChainTab.CHAIN
 	tab_chain = chain
+	tab_group = null
 	_reset_curve_focus()
 	chain_target_changed.emit()
 
@@ -1133,6 +1294,8 @@ func active_chain() -> AWChain:
 	match chain_tab:
 		ChainTab.MASTER:
 			return project.master_chain
+		ChainTab.GROUP:
+			return tab_group.chain if tab_group else null
 		ChainTab.CHAIN:
 			var vc := view_clip()
 			if curve_on_clip and vc:
@@ -1145,6 +1308,8 @@ func active_chain_name() -> String:
 	match chain_tab:
 		ChainTab.MASTER:
 			return "Master"
+		ChainTab.GROUP:
+			return tab_group.name if tab_group else ""
 		ChainTab.CHAIN:
 			var vc := view_clip()
 			if curve_on_clip and vc:
@@ -1327,6 +1492,9 @@ func is_clip_local_view() -> bool:
 
 ## Project time -> the time a chain's curves are evaluated at.
 func chain_local_time(chain: AWChain, project_t: float) -> float:
+	for g in project.groups:
+		if g.chain == chain:
+			return project_t - g.start_sec
 	var vc := view_clip()
 	if vc and (vc.chain == chain or vc.fx_chain == chain):
 		return vc.project_to_local(project_t)
@@ -1354,15 +1522,24 @@ func toggle_edit_mode() -> void:
 
 ## View time -> curve-local time.
 func view_to_local(v: float) -> float:
+	if _group_view():
+		return v - tab_group.start_sec
 	if _clip_view() and curve_time == CurveTime.PROJECT:
 		return view_clip().project_to_local(v)
 	return v
 
 
 func local_to_view(t: float) -> float:
+	if _group_view():
+		return t + tab_group.start_sec
 	if _clip_view() and curve_time == CurveTime.PROJECT:
 		return view_clip().local_to_project(t)
 	return t
+
+
+## On a group's tab the curves run on the group's clock (0 = its start).
+func _group_view() -> bool:
+	return chain_tab == ChainTab.GROUP and tab_group != null
 
 
 ## View time -> project time (for the playhead and seeking).
@@ -1383,6 +1560,8 @@ func curve_domain_len() -> float:
 ## Where a new curve or LFO ends by default: the clip's own length (the master's content).
 ## Keys can be moved or added past it; beyond the last key a curve holds its value.
 func curve_owner_len() -> float:
+	if _group_view():
+		return tab_group.span()
 	if view_clip() != null:
 		return view_clip().length_sec
 	return project.content_end_sec() if project != null else 10.0
@@ -1394,6 +1573,8 @@ func curve_span_len() -> float:
 	if project == null:
 		return 10.0
 	var end := project.export_end_resolved()
+	if _group_view():
+		return maxf(tab_group.span(), end - tab_group.start_sec)
 	if chain_tab == ChainTab.CLIP and focus_clip != null:
 		var own := focus_clip.length_sec
 		if end > focus_clip.end_sec():

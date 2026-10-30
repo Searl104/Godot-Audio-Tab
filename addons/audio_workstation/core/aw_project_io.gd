@@ -9,7 +9,47 @@ extends RefCounted
 
 ## version -> Callable(project) that brings a project of that version up by one. Empty until the
 ## format changes; the tests add one to prove the mechanism.
-static var migrations := {5: _split_clip_chains, 6: _lfo_adsr}
+static var migrations := {5: _split_clip_chains, 6: _lfo_adsr, 7: _group_frames}
+
+
+## Format 7 -> 8: clips that shared a group id become a group frame around them (from the first
+## start to the last end, over their rows). A frame that would overlap an earlier one is dropped
+## (its clips are left ungrouped).
+static func _group_frames(p: AWProject) -> void:
+	var by_id := {}
+	for c in p.clips:
+		if c and c.group_id != 0:
+			if not by_id.has(c.group_id):
+				by_id[c.group_id] = []
+			by_id[c.group_id].append(c)
+	var ids := by_id.keys()
+	ids.sort()
+	var n := 0
+	for id: int in ids:
+		var members: Array = by_id[id]
+		var s := INF
+		var e := -INF
+		var r0 := 1 << 30
+		var r1 := -1
+		for c: AWClip in members:
+			s = minf(s, c.start_sec)
+			e = maxf(e, c.end_sec())
+			r0 = mini(r0, c.row)
+			r1 = maxi(r1, c.row)
+		if p.group_overlaps(s, e, r0, r1):
+			continue
+		n += 1
+		var g := AWGroup.new()
+		g.name = "Group %d" % n
+		g.start_sec = s
+		g.end_sec = maxf(e, s + 0.01)
+		g.row = r0
+		g.row_count = r1 - r0 + 1
+		g.color = (members[0] as AWClip).color
+		p.groups.append(g)
+	for c in p.clips:
+		if c:
+			c.group_id = 0
 
 
 ## Format 6 -> 7: an LFO's half-life Decay becomes an ADSR Decay down to Sustain 0 over about four
@@ -146,6 +186,25 @@ static func sanitize(p: AWProject) -> Array:
 			ch.name = "Chain %d" % (names.size() + 1)
 		names[ch.name] = true
 		_sanitize_chain(ch, "", "Chain \"%s\"" % ch.name, rep)
+	for i in range(p.groups.size() - 1, -1, -1):
+		var g := p.groups[i]
+		if g == null or not _fin(g.start_sec) or not _fin(g.end_sec):
+			p.groups.remove_at(i)
+			rep.append("Removed an invalid group.")
+			continue
+		g.start_sec = maxf(g.start_sec, 0.0)
+		g.end_sec = maxf(g.end_sec, g.start_sec + 0.01)
+		g.row = maxi(g.row, 0)
+		g.row_count = maxi(g.row_count, 1)
+		if g.chain:
+			_sanitize_chain(g.chain, "", "Group \"%s\"" % g.name, rep)
+	for i in range(p.groups.size() - 1, -1, -1):
+		var g := p.groups[i]
+		for j in i:
+			if p.groups[j].overlaps(g.start_sec, g.end_sec, g.row, g.last_row()):
+				p.groups.remove_at(i)
+				rep.append("Removed group \"%s\": it overlapped another group." % g.name)
+				break
 	for i in p.rows.size():
 		if p.rows[i] == null:
 			p.rows[i] = AWRow.new()

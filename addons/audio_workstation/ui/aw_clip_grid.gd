@@ -18,6 +18,13 @@ const EDGE := 6.0
 const FADE_HANDLE := 7.0
 const MIN_ROWS := 16
 const PEAKS_PER_SEC := 120.0
+## Group strip (header) height; it sits in a band above the group's first row.
+const STRIP_H := 18.0
+## Row height inside a collapsed group.
+const COLLAPSED_ROW_H := 12.0
+## Rows handle: a grip in the bottom-left corner of a group's frame.
+const HANDLE_W := 12.0
+const HANDLE_H := 16.0
 
 ## Height of one grid row. Alt+wheel changes it (taller rows show the waveform better).
 var row_h := ROW_H_DEFAULT
@@ -25,7 +32,7 @@ var row_h := ROW_H_DEFAULT
 ## Row height changed (Alt+wheel), or the number of rows (the row headers follow).
 signal row_height_changed
 
-enum Drag { NONE, MOVE, TRIM_L, TRIM_R, FADE_IN, FADE_OUT, MARQUEE, CLICK, CTRL_PENDING, GAIN, SLIP }
+enum Drag { NONE, MOVE, TRIM_L, TRIM_R, FADE_IN, FADE_OUT, MARQUEE, CLICK, CTRL_PENDING, GAIN, SLIP, GROUP_MOVE, GROUP_L, GROUP_R, GROUP_ROWS }
 
 var doc: AWDocument
 var view: AWTimeView
@@ -54,6 +61,18 @@ var _gain_readout := ""
 var _gain_clip: AWClip = null
 var _targets := PackedFloat64Array() # snap targets for the drag in progress
 var _snap_hit := -1.0 # target the drag is snapped to (drawn as a guide), or -1
+var _group: AWGroup = null # the group being dragged
+var _group_orig := {}
+var _group_clips: Array[AWClip] = []
+var _group_clip_orig := {}
+var _group_menu: PopupMenu
+var _group_color_menu: PopupMenu
+var _menu_group: AWGroup = null
+var _rename_group: AWGroup = null
+# Row layout (variable heights: group strips, collapsed groups). Rebuilt when dirty.
+var _tops := PackedFloat32Array()
+var _hs := PackedFloat32Array()
+var _layout_dirty := true
 ## Callable(event) -> bool from the timeline pane: shared pan / zoom gestures.
 var nav := Callable()
 
@@ -105,6 +124,20 @@ func _ready() -> void:
 				doc.set_fade_shape(_menu_clip, sd, k as AWClip.FadeShape))
 		_menu.add_child(fm)
 		_fade_menus.append(fm)
+	_group_menu = PopupMenu.new()
+	_group_menu.name = "GroupMenu"
+	_group_menu.id_pressed.connect(_on_group_menu)
+	add_child(_group_menu)
+	_group_color_menu = PopupMenu.new()
+	_group_color_menu.name = "GroupColour"
+	for i in AWProject.CLIP_COLORS.size():
+		var gimg := Image.create(14, 14, false, Image.FORMAT_RGBA8)
+		gimg.fill(AWProject.CLIP_COLORS[i])
+		_group_color_menu.add_icon_item(ImageTexture.create_from_image(gimg), "", i)
+	_group_color_menu.id_pressed.connect(func(i: int) -> void:
+		if _menu_group:
+			doc.set_group_props(_menu_group, {"color": AWProject.CLIP_COLORS[i]}, "Group Colour"))
+	_group_menu.add_child(_group_color_menu)
 	_rename_edit = LineEdit.new()
 	_rename_edit.visible = false
 	_rename_edit.text_submitted.connect(func(_t: String) -> void: _finish_rename(true))
@@ -117,7 +150,8 @@ func _ready() -> void:
 	add_child(_rename_edit)
 	resized.connect(func() -> void: view.set_view_width(size.x))
 	view.changed.connect(queue_redraw)
-	doc.project_changed.connect(func(_s: bool) -> void: _update_height(); queue_redraw())
+	doc.project_changed.connect(func(_s: bool) -> void: _layout_dirty = true; _update_height(); queue_redraw())
+	doc.groups_changed.connect(func() -> void: _layout_dirty = true; _update_height(); queue_redraw())
 	doc.export_settings_changed.connect(queue_redraw)
 	doc.selection_changed.connect(queue_redraw)
 	doc.chain_target_changed.connect(queue_redraw)
@@ -128,25 +162,107 @@ func _ready() -> void:
 
 func set_row_height(h: float) -> void:
 	row_h = clampf(h, ROW_H_MIN, ROW_H_MAX)
+	_layout_dirty = true
 	_update_height()
 	queue_redraw()
 	row_height_changed.emit()
 
 
 func _update_height() -> void:
-	custom_minimum_size.y = maxi(doc.project.max_row() + 2, MIN_ROWS) * row_h
+	var h := content_height()
+	if not is_equal_approx(custom_minimum_size.y, h):
+		custom_minimum_size.y = h
+		row_height_changed.emit()
+
+
+## Rows the content needs (at least MIN_ROWS, one spare below the lowest clip or group).
+func used_rows() -> int:
+	return maxi(doc.project.max_row() + 2, MIN_ROWS)
+
+
+func content_height() -> float:
+	var n := used_rows()
+	return row_top(n - 1) + row_height(n - 1)
 
 
 ## Rows drawn: enough to fill the visible area, plus one spare below the lowest clip.
 func row_count() -> int:
-	return maxi(ceili(size.y / row_h), doc.project.max_row() + 2)
+	var n := used_rows()
+	while row_top(n) < size.y:
+		n += 1
+	return n
+
+
+# --- Row layout -----------------------------------------------------------------
+# Rows are row_h tall, except inside a collapsed group (COLLAPSED_ROW_H). A row that is a group's
+# first row has a STRIP_H band above it for the group's strip.
+
+func _layout() -> void:
+	if not _layout_dirty and not _tops.is_empty():
+		return
+	_layout_dirty = false
+	var n := used_rows() + 1
+	_tops.resize(n)
+	_hs.resize(n)
+	var band := {}
+	var thin := {}
+	for g in doc.project.groups:
+		band[g.row] = true
+		if g.collapsed:
+			for r in range(g.row, g.row + g.row_count):
+				thin[r] = true
+	var y := 0.0
+	for r in n:
+		if band.has(r):
+			y += STRIP_H
+		_tops[r] = y
+		_hs[r] = COLLAPSED_ROW_H if thin.has(r) else row_h
+		y += _hs[r]
+
+
+## Top of row r's clip area (below any group strip band).
+func row_top(r: int) -> float:
+	_layout()
+	if r < 0:
+		return 0.0
+	if r < _tops.size():
+		return _tops[r]
+	var last := _tops.size() - 1
+	return _tops[last] + _hs[last] + (r - last - 1) * row_h
+
+
+func row_height(r: int) -> float:
+	_layout()
+	return _hs[r] if r >= 0 and r < _hs.size() else row_h
+
+
+## Where row r's band begins (its strip band, if any, else its top).
+func row_band_top(r: int) -> float:
+	return 0.0 if r <= 0 else row_top(r - 1) + row_height(r - 1)
+
+
+## Fractional row at y (a row's strip band counts as part of it), and back.
+func y_to_rowf(y: float) -> float:
+	var r := row_at(y)
+	var a := row_band_top(r)
+	var b := row_top(r) + row_height(r)
+	return r + clampf((y - a) / maxf(b - a, 1e-6), 0.0, 1.0)
+
+
+func rowf_to_y(f: float) -> float:
+	var r := maxi(floori(f), 0)
+	var a := row_band_top(r)
+	var b := row_top(r) + row_height(r)
+	return lerpf(a, b, f - r)
 
 
 # --- Geometry -----------------------------------------------------------------
 
 ## On the timeline a clip spans its played duration, which grows when it's pitched down.
 func clip_rect(c: AWClip) -> Rect2:
-	return Rect2(view.time_to_x(c.start_sec), c.row * row_h + 3.0, c.play_length() * view.pixels_per_sec, row_h - 6.0)
+	var h := row_height(c.row)
+	var m := 3.0 if h > COLLAPSED_ROW_H else 1.5
+	return Rect2(view.time_to_x(c.start_sec), row_top(c.row) + m, c.play_length() * view.pixels_per_sec, h - m * 2.0)
 
 
 ## Fade positions in pixels from the clip's left / right edge (fades are in clip time).
@@ -158,7 +274,173 @@ func _fade_px(c: AWClip) -> Vector2:
 
 
 func row_at(y: float) -> int:
-	return maxi(0, floori(y / row_h))
+	if y <= 0.0:
+		return 0
+	var r := 0
+	while row_top(r) + row_height(r) <= y:
+		r += 1
+		if r > 100000:
+			break
+	return r
+
+
+# --- Groups ---------------------------------------------------------------------
+
+## The whole frame: strip band plus the rows' clip area.
+func group_rect(g: AWGroup) -> Rect2:
+	var x0 := view.time_to_x(g.start_sec)
+	var x1 := view.time_to_x(g.end_sec)
+	var y0 := row_top(g.row) - STRIP_H
+	var y1 := row_top(g.last_row()) + row_height(g.last_row())
+	return Rect2(x0, y0, x1 - x0, y1 - y0)
+
+
+func strip_rect(g: AWGroup) -> Rect2:
+	var r := group_rect(g)
+	return Rect2(r.position, Vector2(r.size.x, STRIP_H))
+
+
+## The rows handle: a grip in the frame's bottom-left corner (drag it down for more rows).
+func handle_rect(g: AWGroup) -> Rect2:
+	var r := group_rect(g)
+	var h := minf(HANDLE_H, r.size.y - STRIP_H - 2.0)
+	return Rect2(r.position.x + 1.0, r.end.y - h - 1.0, HANDLE_W, h)
+
+
+## Strip buttons: [collapse] at the left, [M] [S] at the right (when there's room).
+func _strip_buttons(g: AWGroup) -> Dictionary:
+	var sr := strip_rect(g)
+	var out := {"collapse": Rect2(sr.position + Vector2(6, 2), Vector2(14, STRIP_H - 4))}
+	if sr.size.x >= 110.0:
+		out["solo"] = Rect2(Vector2(sr.end.x - 24, sr.position.y + 2), Vector2(16, STRIP_H - 4))
+		out["mute"] = Rect2(Vector2(sr.end.x - 42, sr.position.y + 2), Vector2(16, STRIP_H - 4))
+	return out
+
+
+## [group, part] under pos: part is "handle", "span_l", "span_r", "collapse", "mute", "solo" or
+## "strip"; [null, ""] when no group part is there.
+func group_part_at(pos: Vector2) -> Array:
+	for g in doc.project.groups:
+		if handle_rect(g).grow(1.0).has_point(pos):
+			return [g, "handle"]
+		var sr := strip_rect(g)
+		if not sr.grow_individual(4, 0, 4, 0).has_point(pos):
+			continue
+		var buttons := _strip_buttons(g)
+		for k: String in buttons:
+			if (buttons[k] as Rect2).has_point(pos):
+				return [g, k]
+		if pos.x <= sr.position.x + 5.0:
+			return [g, "span_l"]
+		if pos.x >= sr.end.x - 5.0:
+			return [g, "span_r"]
+		return [g, "strip"]
+	return [null, ""]
+
+
+func _begin_group_drag(g: AWGroup, kind: Drag) -> void:
+	_group = g
+	_drag = kind
+	_group_orig = {"start_sec": g.start_sec, "end_sec": g.end_sec, "row": g.row, "row_count": g.row_count}
+	_group_clips = doc.project.group_clips(g) if kind == Drag.GROUP_MOVE else ([] as Array[AWClip])
+	_group_clip_orig = {}
+	for c in _group_clips:
+		_group_clip_orig[c] = {"start_sec": c.start_sec, "row": c.row}
+	if kind == Drag.GROUP_MOVE:
+		_targets = doc.snap_targets(_group_clips)
+
+
+func _group_motion(pos: Vector2) -> void:
+	var g := _group
+	var o := _group_orig
+	var t := view.x_to_time(pos.x)
+	match _drag:
+		Drag.GROUP_MOVE:
+			var s: float = maxf(0.0, doc.snap_to(o.start_sec + t - _press_t, _targets))
+			var dt: float = s - o.start_sec
+			var drow := maxi(row_at(pos.y) - row_at(_press_pos.y), -int(o.row))
+			doc.preview_group(g, {"start_sec": o.start_sec + dt, "end_sec": o.end_sec + dt, "row": o.row + drow},
+				_group_clips, _group_clip_orig, dt, drow)
+		Drag.GROUP_L:
+			doc.preview_group(g, {"start_sec": clampf(doc.snap(t), 0.0, o.end_sec - 0.05)})
+		Drag.GROUP_R:
+			doc.preview_group(g, {"end_sec": maxf(doc.snap(t), o.start_sec + 0.05)})
+		Drag.GROUP_ROWS:
+			var last := maxi(row_at(pos.y), int(o.row))
+			doc.preview_group(g, {"row_count": last - int(o.row) + 1})
+
+
+func _group_release() -> void:
+	var g := _group
+	var o := _group_orig
+	var now := {"start_sec": g.start_sec, "end_sec": g.end_sec, "row": g.row, "row_count": g.row_count}
+	# Back to where the drag started, then one undo step to the result.
+	for key: String in o:
+		g.set(key, o[key])
+	for c in _group_clips:
+		c.start_sec = _group_clip_orig[c].start_sec
+		c.row = _group_clip_orig[c].row
+	match _drag:
+		Drag.GROUP_MOVE:
+			if not is_equal_approx(now.start_sec, o.start_sec) or now.row != o.row:
+				doc.move_group(g, now.start_sec - o.start_sec, now.row - o.row)
+		Drag.GROUP_L, Drag.GROUP_R:
+			doc.set_group_props(g, {"start_sec": now.start_sec, "end_sec": now.end_sec}, "Resize Group")
+		Drag.GROUP_ROWS:
+			doc.set_group_props(g, {"row_count": now.row_count}, "Group Rows")
+	doc.project_changed.emit(false)
+	_group = null
+	_group_clips.clear()
+
+
+func _open_group_menu(g: AWGroup, pos: Vector2) -> void:
+	_menu_group = g
+	doc.select_group(g)
+	var m := _group_menu
+	m.clear()
+	m.add_item("Rename Group", 1)
+	m.add_submenu_node_item("Group Colour", _group_color_menu)
+	m.add_separator()
+	m.add_check_item("Mute Group", 2)
+	m.set_item_checked(-1, g.muted)
+	m.add_check_item("Solo Group", 3)
+	m.set_item_checked(-1, g.solo)
+	m.add_check_item("Collapse", 4)
+	m.set_item_checked(-1, g.collapsed)
+	m.add_separator("Effect chain (a bus: the group's clips mixed, then processed once)")
+	if g.chain:
+		m.add_item("Show Group Chain", 5)
+		m.add_item("Remove Group Chain", 6)
+	else:
+		m.add_item("New Group Chain", 5)
+	m.add_separator()
+	m.add_item("Ungroup", 7)
+	AWTheme.popup_at(m, self, pos)
+
+
+func _on_group_menu(id: int) -> void:
+	var g := _menu_group
+	if g == null:
+		return
+	match id:
+		1: start_group_rename(g)
+		2: doc.set_group_props(g, {"muted": not g.muted}, "Mute Group")
+		3: doc.set_group_props(g, {"solo": not g.solo}, "Solo Group")
+		4: doc.set_group_props(g, {"collapsed": not g.collapsed}, "Collapse Group")
+		5: doc.new_group_chain(g)
+		6: doc.remove_group_chain(g)
+		7: doc.remove_group(g)
+
+
+func start_group_rename(g: AWGroup) -> void:
+	_rename_group = g
+	var r := strip_rect(g)
+	_rename_edit.text = g.name
+	_rename_edit.position = Vector2(maxf(r.position.x + 20.0, 0.0), r.position.y - 4.0)
+	_rename_edit.size = Vector2(clampf(r.size.x - 20.0, 120.0, 320.0), 0)
+	_rename_edit.visible = true
+	_rename_edit.grab_focus()
+	_rename_edit.select_all()
 
 
 ## The clip under `pos` (clips on locked rows are ignored).
@@ -237,6 +519,20 @@ func _gui_input(event: InputEvent) -> void:
 func _press(mb: InputEventMouseButton) -> void:
 	_press_pos = mb.position
 	_press_t = view.x_to_time(mb.position.x)
+	var gp := group_part_at(mb.position)
+	if gp[0] != null:
+		var g: AWGroup = gp[0]
+		match gp[1]:
+			"collapse": doc.set_group_props(g, {"collapsed": not g.collapsed}, "Collapse Group")
+			"mute": doc.set_group_props(g, {"muted": not g.muted}, "Mute Group")
+			"solo": doc.set_group_props(g, {"solo": not g.solo}, "Solo Group")
+			"handle": _begin_group_drag(g, Drag.GROUP_ROWS)
+			"span_l": _begin_group_drag(g, Drag.GROUP_L)
+			"span_r": _begin_group_drag(g, Drag.GROUP_R)
+			_:
+				doc.select_group(g)
+				_begin_group_drag(g, Drag.GROUP_MOVE)
+		return
 	var c := clip_at(mb.position)
 	_press_clip = c
 	_items.clear()
@@ -289,6 +585,9 @@ func _press(mb: InputEventMouseButton) -> void:
 
 func _motion(mm: InputEventMouseMotion) -> void:
 	var pos := mm.position
+	if _drag in [Drag.GROUP_MOVE, Drag.GROUP_L, Drag.GROUP_R, Drag.GROUP_ROWS]:
+		_group_motion(pos)
+		return
 	match _drag:
 		Drag.CLICK:
 			if pos.distance_to(_press_pos) > 4.0:
@@ -383,6 +682,13 @@ func start_rename(c: AWClip) -> void:
 
 
 func _finish_rename(apply: bool) -> void:
+	if _rename_group:
+		var g := _rename_group
+		_rename_group = null
+		_rename_edit.visible = false
+		if apply and _rename_edit.text.strip_edges() != "":
+			doc.set_group_props(g, {"name": _rename_edit.text.strip_edges()}, "Rename Group")
+		return
 	if _rename_clip == null:
 		return
 	var c := _rename_clip
@@ -469,6 +775,8 @@ func _release(mb: InputEventMouseButton) -> void:
 			_gain_clip = null
 		Drag.SLIP:
 			doc.commit_drags(_items, "Slip Clip")
+		Drag.GROUP_MOVE, Drag.GROUP_L, Drag.GROUP_R, Drag.GROUP_ROWS:
+			_group_release()
 	_drag = Drag.NONE
 	_items.clear()
 	queue_redraw()
@@ -476,6 +784,15 @@ func _release(mb: InputEventMouseButton) -> void:
 
 func _update_cursor(pos: Vector2) -> void:
 	var shape := Control.CURSOR_ARROW
+	var gp := group_part_at(pos)
+	if gp[0] != null:
+		match gp[1]:
+			"handle": shape = Control.CURSOR_VSIZE
+			"span_l", "span_r": shape = Control.CURSOR_HSIZE
+			"strip": shape = Control.CURSOR_MOVE
+			_: shape = Control.CURSOR_POINTING_HAND
+		mouse_default_cursor_shape = shape
+		return
 	var c := clip_at(pos)
 	if c:
 		match clip_zone(c, pos):
@@ -488,6 +805,10 @@ func _update_cursor(pos: Vector2) -> void:
 # --- Context menu -------------------------------------------------------------
 
 func _open_menu(pos: Vector2) -> void:
+	var gp := group_part_at(pos)
+	if gp[0] != null:
+		_open_group_menu(gp[0], pos)
+		return
 	_menu.clear()
 	_menu_clip = clip_at(pos)
 	_menu_pos = pos
@@ -578,7 +899,9 @@ func _can_drop_data(at_position: Vector2, data: Variant) -> bool:
 	if files.is_empty():
 		return false
 	var t := maxf(0.0, doc.snap(view.x_to_time(at_position.x)))
-	_drop_ghost = Rect2(view.time_to_x(t), row_at(at_position.y) * row_h + 3.0, 1.0 * view.pixels_per_sec, files.size() * row_h - 6.0)
+	var r0 := row_at(at_position.y)
+	var r1 := r0 + files.size() - 1
+	_drop_ghost = Rect2(view.time_to_x(t), row_top(r0) + 3.0, 1.0 * view.pixels_per_sec, row_top(r1) + row_height(r1) - row_top(r0) - 6.0)
 	queue_redraw()
 	return true
 
@@ -605,13 +928,17 @@ func _draw() -> void:
 	var rows := row_count()
 	draw_rect(Rect2(Vector2.ZERO, size), AWTheme.bg(self))
 	for r in rows:
+		var ry := row_top(r)
+		var rh := row_height(r)
 		if r % 2 == 1:
-			draw_rect(Rect2(0, r * row_h, size.x, row_h), Color(1, 1, 1, 0.015))
+			draw_rect(Rect2(0, ry, size.x, rh), Color(1, 1, 1, 0.015))
 		var rr := doc.project.row(r)
 		if rr and rr.color.a > 0.0:
-			draw_rect(Rect2(0, r * row_h, size.x, row_h), Color(rr.color, 0.06))
-		draw_line(Vector2(0, (r + 1) * row_h - 0.5), Vector2(size.x, (r + 1) * row_h - 0.5), Color(0, 0, 0, 0.25))
+			draw_rect(Rect2(0, ry, size.x, rh), Color(rr.color, 0.06))
+		draw_line(Vector2(0, ry + rh - 0.5), Vector2(size.x, ry + rh - 0.5), Color(0, 0, 0, 0.25))
 	AWTheme.draw_time_grid(self, view, 0.0, size.y)
+	for g in doc.project.groups:
+		_draw_group_frame(g, c_text, c_acc)
 
 	var p := doc.project
 	if p.loop_enabled:
@@ -632,6 +959,8 @@ func _draw() -> void:
 
 	for c in p.clips:
 		_draw_clip(c, c_text, c_acc)
+	for g in p.groups:
+		_draw_group_strip(g, c_text, c_acc)
 	if p.clips.is_empty():
 		var font := get_theme_default_font()
 		var fs := get_theme_default_font_size()
@@ -667,15 +996,80 @@ func _draw() -> void:
 	draw_line(Vector2(px, 0), Vector2(px, size.y), c_acc, 2.0)
 
 
+## A group's frame, under the clips: a tint over its rows and an outline.
+func _draw_group_frame(g: AWGroup, _c_text: Color, c_acc: Color) -> void:
+	var r := group_rect(g)
+	if r.end.x < -2.0 or r.position.x > size.x + 2.0:
+		return
+	var sel := doc.selected_group == g
+	var heard := not g.muted and (not doc.project.any_solo() or g.solo)
+	var col := g.color if heard else g.color.lerp(Color(0.45, 0.45, 0.45), 0.7)
+	draw_rect(Rect2(r.position + Vector2(0, STRIP_H), r.size - Vector2(0, STRIP_H)), Color(col, 0.07))
+	draw_rect(r, Color(c_acc, 0.95) if sel else Color(col, 0.55), false, 2.0 if sel else 1.0)
+
+
+## A group's strip (header), over everything: collapse arrow, name, chain mark, M / S.
+func _draw_group_strip(g: AWGroup, c_text: Color, c_acc: Color) -> void:
+	var sr := strip_rect(g)
+	if sr.end.x < -2.0 or sr.position.x > size.x + 2.0:
+		return
+	var heard := not g.muted and (not doc.project.any_solo() or g.solo)
+	var col := g.color if heard else g.color.lerp(Color(0.45, 0.45, 0.45), 0.7)
+	# Rows handle (bottom-left corner): drag down to take in more rows.
+	var hr := handle_rect(g)
+	var hb := StyleBoxFlat.new()
+	hb.bg_color = col.darkened(0.25)
+	hb.set_corner_radius_all(2)
+	hb.border_color = Color(0, 0, 0, 0.5)
+	hb.set_border_width_all(1)
+	draw_style_box(hb, hr)
+	var cx := hr.get_center().x
+	var cy := hr.get_center().y
+	draw_colored_polygon(PackedVector2Array([Vector2(cx - 3.5, cy - 1.5), Vector2(cx + 3.5, cy - 1.5), Vector2(cx, cy + 3.0)]), Color.WHITE)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = col.darkened(0.25)
+	sb.corner_radius_top_left = 3
+	sb.corner_radius_top_right = 3
+	if doc.selected_group == g:
+		sb.border_color = c_acc
+		sb.set_border_width_all(1)
+	draw_style_box(sb, sr)
+	var font := get_theme_default_font()
+	var fs := get_theme_default_font_size() - 3
+	var buttons := _strip_buttons(g)
+	var cr: Rect2 = buttons["collapse"]
+	var arrow := "▸" if g.collapsed else "▾"
+	draw_string(font, Vector2(cr.position.x, sr.position.y + STRIP_H - 5.0), arrow, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color.WHITE)
+	var right := sr.end.x - 6.0
+	for k: String in ["mute", "solo"]:
+		if buttons.has(k):
+			var br: Rect2 = buttons[k]
+			var on: bool = g.muted if k == "mute" else g.solo
+			var bcol := Color("#e0b030") if (on and k == "solo") else (Color("#d05050") if on else Color(0, 0, 0, 0.25))
+			draw_rect(br, bcol)
+			draw_string(font, br.position + Vector2(4, br.size.y - 3.0), "M" if k == "mute" else "S", HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 1, Color.WHITE)
+			right = minf(right, br.position.x - 4.0)
+	var label := g.name + ("  ▣ " + (g.chain.name if g.chain.name != "" else "chain") if g.chain else "")
+	var lx := cr.end.x + 4.0
+	if right - lx > 12.0:
+		draw_string(font, Vector2(lx, sr.position.y + STRIP_H - 5.0), label, HORIZONTAL_ALIGNMENT_LEFT, right - lx, fs, Color.WHITE)
+
+
 func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	var r := clip_rect(c)
 	if r.end.x < -2.0 or r.position.x > size.x + 2.0:
 		return
 	var base := c.color
-	if c.muted or not doc.project.row_audible(c.row):
+	if not doc.project.is_clip_audible(c):
 		base = base.lerp(Color(0.45, 0.45, 0.45), 0.75)
 	var body := base.darkened(0.45)
 	draw_rect(r, body)
+	if r.size.y < 20.0:
+		# A collapsed group's row: just the clip's extent.
+		draw_rect(Rect2(r.position, Vector2(r.size.x, 2.0)), base)
+		if doc.is_selected(c):
+			draw_rect(r, c_acc, false, 1.0)
+		return
 	draw_rect(Rect2(r.position, Vector2(r.size.x, 13.0)), base.darkened(0.15))
 
 	# Placeholder waveform, indexed by source time so trimming reveals/hides the same audio.
@@ -774,6 +1168,7 @@ func _get_tooltip(at: Vector2) -> String:
 		lines.append("Chain: %s (%d effect%s)" % [c.fx_chain.name, c.fx_chain.effects.size(), "" if c.fx_chain.effects.size() == 1 else "s"])
 	else:
 		lines.append("No effect chain (dry)")
-	if c.group_id != 0:
-		lines.append("Grouped (Ctrl+Shift+G ungroups)")
+	var g := doc.project.group_of(c)
+	if g:
+		lines.append("In group \"%s\" (drag its strip to move it; Ctrl+Shift+G ungroups)" % g.name)
 	return "\n".join(lines)

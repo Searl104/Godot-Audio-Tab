@@ -270,11 +270,20 @@ void AWCore::render_voice_dry(const Voice &p_voice, int64_t p_from, int64_t p_j0
 // Adds every voice that overlaps [from, from + frames) into the interleaved buffer, running
 // each voice's effect chain (and its tail) when `p_fx` is given.
 void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames, float *r_out, FxRuntime *p_fx) {
+	// Group buses: their voices are mixed into the bus buffer, which runs through the bus
+	// chain afterwards. Without effect state (no runtime) voices go straight to the output.
+	const bool buses = p_fx && !p_plan.buses.empty() && p_fx->bus_buf.size() == p_plan.buses.size();
+	if (buses) {
+		for (auto &b : p_fx->bus_buf) {
+			b.assign((size_t)p_frames * 2, 0.0f);
+		}
+	}
 	for (size_t vi = 0; vi < p_plan.voices.size(); vi++) {
 		const Voice &v = p_plan.voices[vi];
 		if (!v.source) {
 			continue;
 		}
+		float *out = (buses && v.bus >= 0 && v.bus < (int)p_fx->bus_buf.size()) ? p_fx->bus_buf[(size_t)v.bus].data() : r_out;
 		const int64_t play_end = (int64_t)std::ceil(v.play_frames) + v.start - p_from;
 		const int64_t j0 = std::max<int64_t>(0, v.start - p_from);
 		const int64_t j1 = std::min<int64_t>(p_frames, play_end);
@@ -284,7 +293,7 @@ void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames,
 			continue;
 		}
 		if (!has_fx) {
-			render_voice_dry(v, p_from, j0, j1, r_out, 0);
+			render_voice_dry(v, p_from, j0, j1, out, 0);
 			continue;
 		}
 		const int64_t n = jx - j0;
@@ -296,9 +305,23 @@ void AWCore::render_voices(const Plan &p_plan, int64_t p_from, int64_t p_frames,
 		for (auto &e : p_fx->voice[vi]) {
 			e->process(p_fx->scratch.data(), n, pos0);
 		}
-		float *dst = r_out + j0 * 2;
+		float *dst = out + j0 * 2;
 		for (int64_t i = 0; i < n * 2; i++) {
 			dst[i] += p_fx->scratch[(size_t)i];
+		}
+	}
+	if (buses) {
+		for (size_t b = 0; b < p_plan.buses.size(); b++) {
+			float *buf = p_fx->bus_buf[b].data();
+			const int64_t pos0 = p_from - p_plan.buses[b].start;
+			if (b < p_fx->bus.size()) {
+				for (auto &e : p_fx->bus[b]) {
+					e->process(buf, p_frames, pos0);
+				}
+			}
+			for (int64_t i = 0; i < p_frames * 2; i++) {
+				r_out[i] += buf[(size_t)i];
+			}
 		}
 	}
 }
@@ -657,12 +680,27 @@ void AWCore::FxRuntime::bind(const std::shared_ptr<const Plan> &p_plan, double p
 	plan = p_plan;
 	voice.clear();
 	master.clear();
+	bus.clear();
+	bus_buf.clear();
 	next = -1;
 	if (!plan) {
 		return;
 	}
 	voice_src.clear();
 	master_src.clear();
+	bus_src.clear();
+	for (const Bus &b : plan->buses) {
+		bus.emplace_back();
+		bus_src.emplace_back();
+		bus_buf.emplace_back();
+		bus_buf.back().reserve(8192);
+		for (size_t i = 0; i < b.effects.size(); i++) {
+			if (auto e = aw::make_effect(b.effects[i], p_rate)) {
+				bus.back().push_back(std::move(e));
+				bus_src.back().emplace_back(i, b.effects[i].type);
+			}
+		}
+	}
 	for (const Voice &v : plan->voices) {
 		voice.emplace_back();
 		voice_src.emplace_back();
@@ -712,6 +750,19 @@ bool AWCore::FxRuntime::adopt(const std::shared_ptr<const Plan> &p_plan) {
 	if (!same_layout(master_src, p_plan->master_effects)) {
 		return false;
 	}
+	if (p_plan->buses.size() != plan->buses.size() || bus_src.size() != p_plan->buses.size()) {
+		return false;
+	}
+	for (size_t b = 0; b < p_plan->buses.size(); b++) {
+		if (!same_layout(bus_src[b], p_plan->buses[b].effects)) {
+			return false;
+		}
+	}
+	for (size_t b = 0; b < bus.size(); b++) {
+		for (size_t i = 0; i < bus[b].size(); i++) {
+			bus[b][i]->rebind(p_plan->buses[b].effects[bus_src[b][i].first]);
+		}
+	}
 	for (size_t v = 0; v < voice.size(); v++) {
 		for (size_t i = 0; i < voice[v].size(); i++) {
 			voice[v][i]->rebind(p_plan->voices[v].effects[voice_src[v][i].first]);
@@ -733,6 +784,11 @@ void AWCore::FxRuntime::reset() {
 	for (auto &e : master) {
 		e->reset();
 	}
+	for (auto &chain : bus) {
+		for (auto &e : chain) {
+			e->reset();
+		}
+	}
 }
 
 int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
@@ -747,6 +803,14 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 		}
 		aw_parse_effects(p_master.get("effects", Array()), np->master_effects);
 		np->master_tail = np->master_effects.empty() ? 0 : std::max<int64_t>(0, (int64_t)p_master.get("tail_frames", 0));
+		const Array buses = p_master.get("buses", Array());
+		for (int i = 0; i < buses.size(); i++) {
+			const Dictionary bd = buses[i];
+			Bus b;
+			b.start = bd.get("start_frame", 0);
+			aw_parse_effects(bd.get("effects", Array()), b.effects);
+			np->buses.push_back(std::move(b));
+		}
 	}
 	for (int i = 0; i < p_voices.size(); i++) {
 		const Dictionary d = p_voices[i];
@@ -781,6 +845,10 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 		const PackedFloat32Array rates = d.get("rates", PackedFloat32Array());
 		v.rates.assign(rates.ptr(), rates.ptr() + rates.size());
 		v.step = d.get("rate_step", 64);
+		v.bus = d.get("bus", -1);
+		if (v.bus >= (int)np->buses.size()) {
+			v.bus = -1;
+		}
 		v.prepare();
 		if (aw_parse_effects(d.get("effects", Array()), v.effects)) {
 			v.tail_frames = std::max<int64_t>(0, (int64_t)d.get("tail_frames", 0));
@@ -813,7 +881,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 13; // 13: LFO ADSR (sustain), normal-pitch scrub; 12: scrub; 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 14; // 14: group buses (master["buses"], voice "bus"); 13: LFO ADSR (sustain), normal-pitch scrub; 12: scrub; 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
