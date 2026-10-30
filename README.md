@@ -134,11 +134,13 @@ than the plugin: rebuild it) and everything except sound still works. Build step
   warp. Eight layered 20 s clips with 24 curves, all with 20 Hz LFOs: plan rebuild 61 ms (it was 8.9 s in GDScript);
   an LFO edit re-samples one curve in about 7 ms.
   Edits while playing are heard within 50 ms.
-- **Effects (milestone 4, in progress).** Effect cards now run in the native engine, in chain order after the
-  Clip card (per clip) and after Output (master). Done so far: Low Pass, High Pass, Band Pass, EQ (6 bands) and
-  Amplify. The other cards (Distortion, Delay, Reverb, Compressor, Limiter, Chorus, Phaser, Stereo Enhance) are
-  skipped for now, so they don't sound yet. The DSP is our own (RBJ biquads), built to fit the engine rather than
-  matching Godot's effects.
+- **Effects (milestone 4).** Effect cards run in the native engine, in chain order after the Clip card (per clip)
+  and after Output (master): Low Pass, High Pass, Band Pass, EQ (6 bands), Amplify, Distortion, Delay, Compressor,
+  Limiter, Reverb, Chorus, Phaser, Stereo Enhance and Gate (engine 0.6.0). The DSP is our own, built to fit the
+  engine rather than matching Godot's effects. Reverb is a Freeverb-style network (8 damped combs and 4 allpasses
+  per side); Chorus has three modulated voices; Phaser six allpass stages; Stereo Enhance works on mid/side (Width
+  scales the side, Time delays it, Surround adds a 10 ms inverted cross-feed, so check it in mono); Gate is a
+  stereo-linked gate with attack, hold, release and hysteresis, no look-ahead.
   - Parameters come from the same curve tables as Gain/Pan, updated every 32 frames; a curve or LFO on a cutoff
     sweeps the filter. Clip chains read their curves on the clip's own clock; the master chain on project time.
   - Tails and the end marker: the orange **end marker** on the timeline sets where the exported sound ends, so one
@@ -183,7 +185,9 @@ than the plugin: rebuild it) and everything except sound still works. Build step
 
 ## Effect panels and the control kit (v0.11)
 
-Effects can have a custom detail panel. It opens in the **Audio Effect** dock (bottom by default; double-click a card's header or use ⋮ > Open Panel). Every engine-capable effect has one (Low Pass, High Pass, Band Pass, EQ, Amplify), shown compactly on their cards (small response plot plus knobs); effects not yet ported keep their generic parameter rows.
+Effects can have a custom detail panel. It opens in the **Audio Effect** dock (bottom by default; double-click a card's header or use ⋮ > Open Panel). Every effect has one, shown compactly on its card (a small plot plus knobs); Chorus, Phaser and Stereo Enhance are knobs only. Gate and Compressor have a draggable threshold, Limiter a ceiling; Reverb shows its RT60. The generic parameter rows remain as the fallback for an effect with no panel.
+
+Curves are not limited to the clip: keys can sit anywhere up to one hour, so a tail (or anything past the clip) can be shaped. A new curve or LFO still spans the clip, the graph frames the clip or, when later, the end marker, and beyond the last key a curve holds its value.
 
 - `ui/kit/aw_binding.gd`: `AWParamBinding` is the only thing a control uses to edit a parameter (undo, live preview, curve dot state, right-click menu, one undo step for multi-parameter drags).
 - `ui/kit/`: `AWKnob` (optional bipolar and view range), `AWResponsePlot` (log-frequency plot with draggable handles). Gestures: drag, Shift = fine, wheel, double-click = reset, right-click = curve options. A driven parameter shows a yellow dotted ring and a click selects its curve.

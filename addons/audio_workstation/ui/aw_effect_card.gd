@@ -51,7 +51,7 @@ func _ready() -> void:
 	title.add_theme_font_size_override("font_size", get_theme_default_font_size() + 1)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.mouse_filter = Control.MOUSE_FILTER_PASS
-	title.tooltip_text = ("Fixed source stage" if effect.is_fixed() else AWEffectLibrary.godot_class(effect.effect_type) + "\nDrag the header to reorder")
+	title.tooltip_text = ("Fixed source stage" if effect.is_fixed() else (AWEffectLibrary.godot_class(effect.effect_type) if AWEffectLibrary.godot_class(effect.effect_type) != "" else effect.effect_type) + "\nDrag the header to reorder")
 	header.add_child(title)
 	var menu := MenuButton.new()
 	menu.text = "⋮"

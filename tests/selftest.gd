@@ -920,8 +920,10 @@ static func panel_tests(screen: AWMainScreen) -> void:
 		b.sort()
 		check(a == b, "library engine ids match the engine's effect types %s" % str(a))
 		check(AWEffectLibrary.engine_keys("EQ").size() == 6 and AWEffectLibrary.engine_keys("Low Pass") == ["cutoff_hz", "resonance"], "engine parameter order comes from the schema")
-	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and AWPanelRegistry.has_panel("High Pass") and AWPanelRegistry.has_panel("Band Pass") and AWPanelRegistry.has_panel("Amplify") and not AWPanelRegistry.has_panel("Reverb"), "registry: panels for every engine-capable effect, none for Reverb")
+	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and AWPanelRegistry.has_panel("High Pass") and AWPanelRegistry.has_panel("Band Pass") and AWPanelRegistry.has_panel("Amplify") and AWPanelRegistry.has_panel("Reverb") and AWPanelRegistry.has_panel("Gate"), "registry: a panel for every engine-capable effect")
+	AWPanelRegistry.suppressed = PackedStringArray(["Reverb"])
 	check(AWPanelRegistry.create("Reverb") == null, "registry: no panel falls back to the generic rows")
+	AWPanelRegistry.suppressed = PackedStringArray()
 
 	# --- Low Pass ---
 	var undo_base := 0
@@ -1045,7 +1047,7 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	await frames(tree, 2)
 
 	# --- Distortion, Delay, Compressor, Limiter ---
-	var plot_cases := [["Distortion", 4], ["Delay", 4], ["Compressor", 6], ["Limiter", 3]]
+	var plot_cases := [["Distortion", 4], ["Delay", 4], ["Compressor", 6], ["Limiter", 3], ["Reverb", 5], ["Chorus", 4], ["Phaser", 3], ["Stereo Enhance", 3], ["Gate", 6]]
 	for pc: Array in plot_cases:
 		var t: String = pc[0]
 		var pe := d.add_effect(ch, t)
@@ -1055,8 +1057,8 @@ static func panel_tests(screen: AWMainScreen) -> void:
 		d.open_detail(ch, pe)
 		await frames(tree, 2)
 		var pp := host.panel as AWPlotKnobPanel
-		check(pp != null and not pp.compact and pp.plot_control() != null, "%s dock panel has its plot" % t)
-		if OS.get_environment("AW_SHOTS") != "" and (t == "Compressor" or t == "Delay"):
+		check(pp != null and not pp.compact and (pp.plot_control() != null) == (t != "Chorus" and t != "Phaser" and t != "Stereo Enhance"), "%s dock panel %s a plot" % [t, "has no" if (t == "Chorus" or t == "Phaser" or t == "Stereo Enhance") else "has"])
+		if OS.get_environment("AW_SHOTS") != "" and (t == "Compressor" or t == "Delay" or t == "Reverb" or t == "Gate"):
 			(screen.chain_panel._cards_box.get_parent() as ScrollContainer).scroll_horizontal = 5000
 			await _panel_shot(tree, d, ch, pe, "aw_panel_%s.png" % t.to_lower())
 		var key: String = AWEffectLibrary.param_schema(t).keys()[0]
@@ -1069,6 +1071,17 @@ static func panel_tests(screen: AWMainScreen) -> void:
 		check(pe.get_param(key) != kbefore, "%s: the first knob edits %s (%.2f)" % [t, key, pe.get_param(key)])
 		d.undo()
 		check(pe.get_param(key) == kbefore, "%s: knob drag is one undo step" % t)
+		if t == "Gate":
+			var gp := pp.plot_control() as AWTransferPlot
+			gp.size = Vector2(400, 260)
+			pp.refresh()
+			drag(gp, Vector2(gp.px(gp.handle.x), gp.py(gp.handle.y)), Vector2(gp.px(-30.0), gp.py(-30.0)))
+			check(absf(pe.get_param("threshold_db") + 30.0) < 1.5, "Gate: dragging the handle sets the threshold (%.1f dB)" % pe.get_param("threshold_db"))
+			d.undo()
+		if t == "Reverb":
+			var dp := pp.plot_control() as AWDecayPlot
+			check(AWDecayPlot.rt60(1.0, 0.0) > AWDecayPlot.rt60(0.0, 0.0) * 5.0 and AWDecayPlot.rt60(0.8, 1.0, true) < AWDecayPlot.rt60(0.8, 1.0), "Reverb: bigger room = longer RT60, damping shortens the highs (%.1f s / %.1f s)" % [AWDecayPlot.rt60(1.0, 0.0), AWDecayPlot.rt60(0.0, 0.0)])
+			check(dp != null and is_equal_approx(dp.room, pe.get_param("room_size")), "Reverb: the plot follows the Room knob")
 		if t == "Compressor" or t == "Limiter":
 			var tp := pp.plot_control() as AWTransferPlot
 			tp.size = Vector2(400, 260)
@@ -1387,6 +1400,9 @@ static func run(screen: AWMainScreen) -> void:
 	check(g.selected_keys.size() == 3, "box-select keys on active curve (got %d)" % g.selected_keys.size())
 
 	print("--- UI: dots and cards ---")
+	# The Reverb card has a panel now; this section tests the generic rows, so show them for it.
+	AWPanelRegistry.suppressed = PackedStringArray(["Reverb"])
+	d.project_changed.emit(true)
 	var dots: AWCurveDots = g.get_parent().get_child(0)
 	dots._layout()
 	var first: Array = dots._placed[0]
@@ -1419,6 +1435,7 @@ static func run(screen: AWMainScreen) -> void:
 	d.undo()
 	check(is_equal_approx(ch.effects[2].get_param("room_size"), 0.8), "slider drag is one undo step")
 
+	AWPanelRegistry.suppressed = PackedStringArray()
 	print("--- trim sync ---")
 	d.select_clip(c4)
 	await frames(tree, 4)
