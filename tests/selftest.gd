@@ -766,6 +766,11 @@ static func panel_tests(screen: AWMainScreen) -> void:
 			var want := AWFilterResponse.lowpass_db(hz, 1000.0, 0.8, sr)
 			worst = maxf(worst, absf(_measured_db(core, hz, [_fx(1, [1000.0, 0.8])]) - want))
 		check(worst < 0.5, "response vs engine: low pass within %.2f dB" % worst)
+		for kind: Array in [["High Pass", 2, [300.0, 800.0, 1500.0, 3000.0]], ["Band Pass", 3, [300.0, 800.0, 1500.0, 3000.0]]]:
+			worst = 0.0
+			for hz: float in kind[2]:
+				worst = maxf(worst, absf(_measured_db(core, hz, [_fx(kind[1], [1000.0, 0.8])]) - AWFilterResponse.filter_db(kind[0], hz, 1000.0, 0.8, sr)))
+			check(worst < 0.5, "response vs engine: %s within %.2f dB" % [kind[0], worst])
 		var g2 := [3.0, -4.0, 5.0, 8.0, -6.0, 2.0]
 		var g2p := PackedFloat32Array(g2)
 		worst = 0.0
@@ -785,7 +790,7 @@ static func panel_tests(screen: AWMainScreen) -> void:
 		b.sort()
 		check(a == b, "library engine ids match the engine's effect types %s" % str(a))
 		check(AWEffectLibrary.engine_keys("EQ").size() == 6 and AWEffectLibrary.engine_keys("Low Pass") == ["cutoff_hz", "resonance"], "engine parameter order comes from the schema")
-	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and not AWPanelRegistry.has_panel("Reverb"), "registry: panels for Low Pass and EQ only")
+	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and AWPanelRegistry.has_panel("High Pass") and AWPanelRegistry.has_panel("Band Pass") and AWPanelRegistry.has_panel("Amplify") and not AWPanelRegistry.has_panel("Reverb"), "registry: panels for every engine-capable effect, none for Reverb")
 	check(AWPanelRegistry.create("Reverb") == null, "registry: no panel falls back to the generic rows")
 
 	# --- Low Pass ---
@@ -794,7 +799,7 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	undo_base += 1
 	await frames(tree, 4)
 	var card: AWEffectCard = screen.chain_panel._cards.back()
-	check(card.effect == lp and card.panel is AWLowPassPanel and card.panel.compact and card.panel.plot.mini, "Low Pass card uses the compact panel")
+	check(card.effect == lp and card.panel is AWFilterPanel and card.panel.compact and card.panel.plot.mini, "Low Pass card uses the compact panel")
 	check(card.rows.is_empty() and card.panel.cutoff_knob != null and card.panel.plot.response.size() > 0, "compact card: plot and knobs, no generic rows")
 	d.open_detail(ch, lp)
 	await frames(tree, 2)
@@ -803,7 +808,7 @@ static func panel_tests(screen: AWMainScreen) -> void:
 		await _panel_shot(tree, d, ch, lp, "aw_panel_lowpass.png")
 		d.undo()
 	var host := screen.detail_panel
-	var lpp := host.panel as AWLowPassPanel
+	var lpp := host.panel as AWFilterPanel
 	check(lpp != null and lpp.effect == lp and host._title.text == "Low Pass", "detail dock shows the Low Pass panel")
 	lpp.plot.size = Vector2(420, 260)
 	lpp.refresh()
@@ -860,6 +865,43 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	d.remove_effect(ch, lp)
 	await frames(tree, 2)
 	check(d.detail_effect == null and host.panel == null, "removing the effect closes its panel")
+
+	# --- High Pass, Band Pass, Amplify ---
+	for t: String in ["High Pass", "Band Pass"]:
+		var fe := d.add_effect(ch, t)
+		await frames(tree, 3)
+		var fcard: AWEffectCard = screen.chain_panel._cards.back()
+		check(fcard.panel is AWFilterPanel and fcard.rows.is_empty() and fcard.panel.plot.response.size() > 0, "%s card is compact with a response plot" % t)
+		d.open_detail(ch, fe)
+		await frames(tree, 2)
+		var fp := host.panel as AWFilterPanel
+		fp.plot.size = Vector2(420, 260)
+		fp.refresh()
+		var fh: Dictionary = fp.plot.handles[0]
+		var fr0 := fe.get_param("resonance")
+		var fc0 := fe.get_param("cutoff_hz")
+		drag(fp.plot, Vector2(fp.plot.x_of(fh.f), fp.plot.y_of(fh.db)), Vector2(fp.plot.x_of(500.0), fp.plot.y_of(fh.db + 8.0)))
+		check(absf(fe.get_param("cutoff_hz") - 500.0) < 20.0 and fe.get_param("resonance") > fr0, "%s: handle drag sets cutoff and raises resonance" % t)
+		d.undo()
+		check(fe.get_param("cutoff_hz") == fc0 and fe.get_param("resonance") == fr0, "%s: one undo restores both" % t)
+		d.remove_effect(ch, fe)
+		await frames(tree, 2)
+	var amp := d.add_effect(ch, "Amplify")
+	await frames(tree, 3)
+	var acard: AWEffectCard = screen.chain_panel._cards.back()
+	check(acard.panel is AWAmplifyPanel and acard.rows.is_empty(), "Amplify card is a compact volume knob")
+	d.open_detail(ch, amp)
+	await frames(tree, 2)
+	var ap := host.panel as AWAmplifyPanel
+	ap.knob.size = ap.knob.custom_minimum_size
+	click(ap.knob, Vector2(60, 60))
+	move(ap.knob, Vector2(60, 20))
+	click(ap.knob, Vector2(60, 20), MOUSE_BUTTON_LEFT, false)
+	check(amp.get_param("volume_db") > 0.0, "Amplify knob raises the volume (%.1f dB)" % amp.get_param("volume_db"))
+	d.undo()
+	check(amp.get_param("volume_db") == 0.0, "undo restores the volume")
+	d.remove_effect(ch, amp)
+	await frames(tree, 2)
 
 	# --- EQ ---
 	var eq := d.add_effect(ch, "EQ")

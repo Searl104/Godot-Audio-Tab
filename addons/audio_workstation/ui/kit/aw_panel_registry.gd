@@ -6,7 +6,10 @@ extends RefCounted
 ## subclass (full layout, plus a compact one for the card) and add it to PANELS here.
 
 const PANELS := {
-	"Low Pass": preload("../panels/aw_lowpass_panel.gd"),
+	"Low Pass": preload("../panels/aw_filter_panel.gd"),
+	"High Pass": preload("../panels/aw_filter_panel.gd"),
+	"Band Pass": preload("../panels/aw_filter_panel.gd"),
+	"Amplify": preload("../panels/aw_amplify_panel.gd"),
 	"EQ": preload("../panels/aw_eq_panel.gd"),
 }
 

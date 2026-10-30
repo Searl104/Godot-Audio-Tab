@@ -43,6 +43,21 @@ static func lowpass_coeffs(cutoff: float, res: float, sr: float) -> PackedFloat6
 	return PackedFloat64Array([(1 - cw) * 0.5, 1 - cw, (1 - cw) * 0.5, 1 + alpha, -2 * cw, 1 - alpha])
 
 
+static func highpass_coeffs(cutoff: float, res: float, sr: float) -> PackedFloat64Array:
+	var w0 := TAU * _clamp_hz(cutoff, sr) / sr
+	var cw := cos(w0)
+	var alpha := sin(w0) / (2.0 * resonance_to_q(res))
+	return PackedFloat64Array([(1 + cw) * 0.5, -(1 + cw), (1 + cw) * 0.5, 1 + alpha, -2 * cw, 1 - alpha])
+
+
+## Band pass with 0 dB at the centre.
+static func bandpass_coeffs(cutoff: float, res: float, sr: float) -> PackedFloat64Array:
+	var w0 := TAU * _clamp_hz(cutoff, sr) / sr
+	var cw := cos(w0)
+	var alpha := sin(w0) / (2.0 * resonance_to_q(res))
+	return PackedFloat64Array([alpha, 0, -alpha, 1 + alpha, -2 * cw, 1 - alpha])
+
+
 static func peaking_coeffs(f0: float, gain_db: float, q: float, sr: float) -> PackedFloat64Array:
 	var a := pow(10.0, gain_db / 40.0)
 	var w0 := TAU * _clamp_hz(f0, sr) / sr
@@ -52,6 +67,16 @@ static func peaking_coeffs(f0: float, gain_db: float, q: float, sr: float) -> Pa
 
 
 static func lowpass_db(f: float, cutoff: float, res: float, sr: float) -> float:
+	return _mag_db(lowpass_coeffs(cutoff, res, sr), f, sr)
+
+
+## Response of a Low Pass / High Pass / Band Pass card at frequency f.
+static func filter_db(kind: String, f: float, cutoff: float, res: float, sr: float) -> float:
+	match kind:
+		"High Pass":
+			return _mag_db(highpass_coeffs(cutoff, res, sr), f, sr)
+		"Band Pass":
+			return _mag_db(bandpass_coeffs(cutoff, res, sr), f, sr)
 	return _mag_db(lowpass_coeffs(cutoff, res, sr), f, sr)
 
 

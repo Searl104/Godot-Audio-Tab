@@ -31,6 +31,8 @@ var vertical_only := false
 var sweep := Vector2.ZERO
 var bubble_text := ""
 var _active := -1
+## Where the last press landed (for relative drags).
+var press_pos := Vector2.ZERO
 var _fine_base := Vector2.ZERO
 
 
@@ -147,6 +149,7 @@ func _gui_input(event: InputEvent) -> void:
 			var i := _hit(mb.position)
 			if i >= 0:
 				_active = i
+				press_pos = mb.position
 				handle_pressed.emit(i)
 				queue_redraw()
 				accept_event()

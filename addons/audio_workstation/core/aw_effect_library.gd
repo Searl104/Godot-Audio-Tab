@@ -83,14 +83,14 @@ const EFFECTS := {
 		},
 	},
 	"High Pass": {
-		"godot_class": "AudioEffectHighPassFilter", "engine": {"id": 2, "rings": true},
+		"godot_class": "AudioEffectHighPassFilter", "color": "#e08a4f", "engine": {"id": 2, "rings": true},
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 200.0, 1.0, "Hz", "Cutoff"],
 			"resonance": [0.0, 1.0, 0.5, 0.01, "", "Resonance"],
 		},
 	},
 	"Band Pass": {
-		"godot_class": "AudioEffectBandPassFilter", "engine": {"id": 3, "rings": true},
+		"godot_class": "AudioEffectBandPassFilter", "color": "#b07fe0", "engine": {"id": 3, "rings": true},
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 1000.0, 1.0, "Hz", "Cutoff"],
 			"resonance": [0.0, 1.0, 0.5, 0.01, "", "Resonance"],
@@ -127,7 +127,7 @@ const EFFECTS := {
 		},
 	},
 	"Amplify": {
-		"godot_class": "AudioEffectAmplify", "engine": {"id": 5, "rings": false},
+		"godot_class": "AudioEffectAmplify", "color": "#d9b84a", "engine": {"id": 5, "rings": false},
 		"params": {
 			"volume_db": [-80.0, 24.0, 0.0, 0.1, "dB", "Volume"],
 		},
