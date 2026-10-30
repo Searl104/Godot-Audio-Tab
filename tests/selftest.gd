@@ -16,8 +16,9 @@ static func frames(tree: SceneTree, n: int) -> void:
 		await tree.process_frame
 
 
-static func click(ctrl: Control, pos: Vector2, button := MOUSE_BUTTON_LEFT, pressed := true, double := false, shift := false, ctrl_key := false) -> void:
+static func click(ctrl: Control, pos: Vector2, button := MOUSE_BUTTON_LEFT, pressed := true, double := false, shift := false, ctrl_key := false, alt := false) -> void:
 	var e := InputEventMouseButton.new()
+	e.alt_pressed = alt
 	e.button_index = button
 	e.pressed = pressed
 	e.position = pos
@@ -28,8 +29,20 @@ static func click(ctrl: Control, pos: Vector2, button := MOUSE_BUTTON_LEFT, pres
 	ctrl._gui_input(e)
 
 
-static func move(ctrl: Control, pos: Vector2, shift := false) -> void:
+static func key(screen: Control, code: Key, ctrl := false, shift := false, echo := false) -> void:
+	var e := InputEventKey.new()
+	e.keycode = code
+	e.pressed = true
+	e.ctrl_pressed = ctrl
+	e.shift_pressed = shift
+	e.echo = echo
+	screen._unhandled_key_input(e)
+
+
+static func move(ctrl: Control, pos: Vector2, shift := false, mods := {}) -> void:
 	var e := InputEventMouseMotion.new()
+	e.ctrl_pressed = mods.get("ctrl", false)
+	e.alt_pressed = mods.get("alt", false)
 	e.position = pos
 	e.global_position = ctrl.get_global_transform() * pos
 	e.button_mask = MOUSE_BUTTON_MASK_LEFT
@@ -1817,6 +1830,172 @@ static func import_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	EditorInterface.get_resource_filesystem().scan()
 
 
+static func _grid_project(d: AWDocument) -> Array[AWClip]:
+	d.new_project()
+	for nm: Array in [["/tmp/aw_grid_a.wav", 220.0, 1.0], ["/tmp/aw_grid_b.wav", 440.0, 0.8], ["/tmp/aw_grid_c.wav", 660.0, 0.6]]:
+		var hz: float = nm[1]
+		write_wav(nm[0], nm[2], func(i: int, rt: int) -> Vector2i:
+			var v := int(9000.0 * sin(TAU * hz * i / rt) * (1.0 - float(i) / (rt * 1.2)))
+			return Vector2i(v, v))
+	var a := d.add_clip_from_path("/tmp/aw_grid_a.wav", 0, 0.0)
+	var b := d.add_clip_from_path("/tmp/aw_grid_b.wav", 1, 0.5)
+	var c := d.add_clip_from_path("/tmp/aw_grid_c.wav", 2, 1.0)
+	d.clear_selection()
+	return [a, b, c] as Array[AWClip]
+
+
+static func grid_edit_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var grid := screen.timeline.grid
+	var clips := _grid_project(d)
+	var a := clips[0]
+	var b := clips[1]
+	var c := clips[2]
+	d.set_snap(0.05)
+	await frames(tree, 2)
+
+	# Copy / paste at the playhead, on the same rows; cut removes; paste works after New too.
+	d.set_selection([a, b] as Array[AWClip])
+	key(screen, KEY_C, true)
+	d.seek(3.0)
+	key(screen, KEY_V, true)
+	check(d.project.clips.size() == 5 and d.selection.size() == 2, "copy/paste: two clips pasted and selected")
+	var p0: AWClip = d.selection[0]
+	var p1: AWClip = d.selection[1]
+	check(absf(p0.start_sec - 3.0) < 1e-6 and absf(p1.start_sec - 3.5) < 1e-6 and p0.row == 0 and p1.row == 1, "copy/paste: lands at the playhead, spacing and rows kept")
+	check(p0 != a and p0.chain != a.chain and p0.source_path == a.source_path, "copy/paste: pasted clips are independent copies")
+	d.undo()
+	check(d.project.clips.size() == 3, "copy/paste: paste undoes in one step")
+	d.set_selection([c] as Array[AWClip])
+	key(screen, KEY_X, true)
+	check(d.project.clips.size() == 2 and not d.project.clips.has(c), "cut: removes the clip")
+	d.seek(0.25)
+	key(screen, KEY_V, true)
+	check(d.project.clips.size() == 3 and absf(d.selection[0].start_sec - 0.25) < 1e-6, "cut: pastes back at the playhead")
+	c = d.selection[0]
+
+	# Nudge: one snap step per arrow press (Shift = 10), Up/Down move rows; never before 0 or row 0.
+	d.set_selection([b] as Array[AWClip])
+	key(screen, KEY_RIGHT)
+	check(absf(b.start_sec - 0.55) < 1e-6, "nudge: Right moves one snap step (%.3f)" % b.start_sec)
+	key(screen, KEY_LEFT, false, true)
+	check(absf(b.start_sec - 0.05) < 1e-6, "nudge: Shift+Left moves ten steps (%.3f)" % b.start_sec)
+	key(screen, KEY_LEFT, false, true)
+	check(b.start_sec >= 0.0 and b.start_sec < 1e-6, "nudge: stops at 0")
+	key(screen, KEY_DOWN)
+	key(screen, KEY_UP)
+	key(screen, KEY_UP)
+	key(screen, KEY_UP)
+	check(b.row == 0, "nudge: Up/Down change rows, not above row 0 (row %d)" % b.row)
+	key(screen, KEY_RIGHT, false, false, true)
+	check(absf(b.start_sec - 0.05) < 1e-6, "nudge: holding the key repeats")
+	d.set_snap(0.0)
+	key(screen, KEY_RIGHT)
+	check(absf(b.start_sec - 0.06) < 1e-6, "nudge: 10 ms per press with snap off")
+	d.set_snap(0.05)
+
+	# Trim to playhead (Q start, W end); curves keep their place on the audio.
+	d.set_selection([a] as Array[AWClip])
+	var gain_curve := d.make_curve(a.chain, a.chain.effects[0], "gain_db")
+	a.chain.set_keys(gain_curve, [{"t": 0.6, "v": 0.5, "in": Vector2.ZERO, "out": Vector2.ZERO, "mode": AWCurve.HandleMode.LINEAR}])
+	d.seek(0.2)
+	key(screen, KEY_Q)
+	check(absf(a.start_sec - 0.2) < 1e-6 and absf(a.source_offset_sec - 0.2) < 1e-6 and absf(a.length_sec - 0.8) < 1e-6, "trim to playhead: Q trims the start")
+	check(absf(a.chain.get_keys(gain_curve)[0].t - 0.4) < 1e-6, "trim to playhead: curve keys stay on the same audio")
+	d.seek(0.7)
+	key(screen, KEY_W)
+	check(absf(a.length_sec - 0.5) < 1e-6 and a.end_sec() <= 0.7 + 1e-6, "trim to playhead: W trims the end")
+	d.undo()
+	d.undo()
+	check(absf(a.start_sec) < 1e-6 and absf(a.length_sec - 1.0) < 1e-6 and absf(a.chain.get_keys(gain_curve)[0].t - 0.6) < 1e-6, "trim to playhead: both undo")
+
+	# Rename (F2 and double-click on the name strip) and colour.
+	key(screen, KEY_F2)
+	var ed: LineEdit = grid._rename_edit
+	check(ed.visible and ed.text == a.name, "rename: F2 opens the name editor")
+	ed.text = "Impact body"
+	ed.text_submitted.emit(ed.text)
+	check(a.name == "Impact body" and not ed.visible, "rename: Enter renames")
+	var ra := grid.clip_rect(b)
+	click(grid, ra.position + Vector2(20, 5), MOUSE_BUTTON_LEFT, true, true)
+	check(ed.visible and grid._rename_clip == b, "rename: double-click on the name strip opens it")
+	var ek := InputEventKey.new()
+	ek.keycode = KEY_ESCAPE
+	ek.pressed = true
+	ed.text = "nope"
+	ed.gui_input.emit(ek)
+	check(b.name != "nope" and not ed.visible, "rename: Esc cancels")
+	d.set_selection([a, b] as Array[AWClip])
+	d.set_clip_color(a, AWProject.CLIP_COLORS[5])
+	check(a.color == AWProject.CLIP_COLORS[5] and b.color == AWProject.CLIP_COLORS[5], "colour: applies to the selection")
+	d.undo()
+	check(a.color != AWProject.CLIP_COLORS[5] or b.color != AWProject.CLIP_COLORS[5], "colour: undoes")
+
+	# Ctrl+vertical drag: clip gain (relative on a selection); Ctrl+click still toggles.
+	d.set_selection([a] as Array[AWClip])
+	a.chain.remove_track(gain_curve)
+	a.chain.curves.erase(gain_curve)
+	var rb := grid.clip_rect(b)
+	var mid := rb.get_center()
+	click(grid, mid, MOUSE_BUTTON_LEFT, true, false, false, true)
+	click(grid, mid, MOUSE_BUTTON_LEFT, false)
+	check(d.is_selected(b) and d.is_selected(a), "ctrl+click: still toggles the selection")
+	var ga := float(a.chain.effects[0].get_param("gain_db"))
+	var gb := float(b.chain.effects[0].get_param("gain_db"))
+	click(grid, mid, MOUSE_BUTTON_LEFT, true, false, false, true)
+	for i in range(1, 6):
+		move(grid, mid + Vector2(0, -4.0 * i), false, {"ctrl": true})
+	click(grid, mid + Vector2(0, -20), MOUSE_BUTTON_LEFT, false)
+	var da := float(a.chain.effects[0].get_param("gain_db")) - ga
+	var db := float(b.chain.effects[0].get_param("gain_db")) - gb
+	check(absf(da - 5.0) < 0.01 and absf(db - 5.0) < 0.01 and d.is_selected(b), "ctrl+drag: raises the gain of all selected clips by the same amount (+%.2f, +%.2f dB)" % [da, db])
+	d.undo()
+	check(absf(float(a.chain.effects[0].get_param("gain_db")) - ga) < 1e-6, "ctrl+drag: gain change undoes in one step")
+
+	# Ctrl+Alt+drag: slip the audio under the clip; the clip stays.
+	d.set_selection([c] as Array[AWClip])
+	d.set_props(c, {"source_offset_sec": 0.2, "length_sec": 0.3}, "setup")
+	var rc := grid.clip_rect(c)
+	var from := rc.get_center()
+	var px := grid.view.pixels_per_sec
+	click(grid, from, MOUSE_BUTTON_LEFT, true, false, false, true, true)
+	move(grid, from + Vector2(0.1 * px, 0), false, {"ctrl": true, "alt": true})
+	click(grid, from + Vector2(0.1 * px, 0), MOUSE_BUTTON_LEFT, false)
+	check(absf(c.source_offset_sec - 0.1) < 0.005 and absf(c.start_sec - 0.25) < 1e-6, "slip: dragging right by 0.1 s shows audio 0.1 s earlier, clip stays (offset %.3f)" % c.source_offset_sec)
+	click(grid, from, MOUSE_BUTTON_LEFT, true, false, false, true, true)
+	move(grid, from + Vector2(-5.0 * px, 0), false, {"ctrl": true, "alt": true})
+	click(grid, from + Vector2(-5.0 * px, 0), MOUSE_BUTTON_LEFT, false)
+	check(c.source_offset_sec <= 0.6 - 0.3 + 0.001, "slip: can't run past the end of the file (offset %.3f)" % c.source_offset_sec)
+
+	# Groups: selecting one selects all; Ctrl+Shift+G ungroups; copies form their own group.
+	d.set_selection([a, b] as Array[AWClip])
+	key(screen, KEY_G, true)
+	check(a.group_id != 0 and a.group_id == b.group_id, "groups: Ctrl+G groups the selection")
+	d.select_clip(a)
+	check(d.selection.size() == 2 and d.is_selected(b), "groups: clicking one selects the group")
+	d.duplicate_selected()
+	var dup: Array[AWClip] = d.selection.duplicate()
+	check(dup.size() == 2 and dup[0].group_id == dup[1].group_id and dup[0].group_id != a.group_id, "groups: a duplicated group is a new group")
+	d.select_clip(a)
+	d.toggle_mute_clips(a)
+	check(a.muted and b.muted, "groups: mute applies to the whole group")
+	d.undo()
+	key(screen, KEY_G, true, true)
+	check(a.group_id == 0 and b.group_id == 0, "groups: Ctrl+Shift+G ungroups")
+	d.select_clip(a)
+	check(d.selection.size() == 1, "groups: after ungrouping a click selects one clip")
+
+	# Double-click on empty space opens Import at that spot.
+	var opened := [false]
+	var on_req := func(_r: int, _t: float) -> void: opened[0] = true
+	d.import_requested.connect(on_req)
+	click(grid, Vector2(grid.view.time_to_x(6.0), grid.row_h * 5.5), MOUSE_BUTTON_LEFT, true, true)
+	d.import_requested.disconnect(on_req)
+	screen.browser.hide()
+	check(opened[0], "double-click on empty space asks to import there")
+	d.new_project()
+
+
 static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	d.new_project()
@@ -1905,7 +2084,10 @@ static func load_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	print("SWAPS knob drag: kept %d, fresh %d" % [int(s1[0]) - int(s0[0]), int(s1[1]) - int(s0[1])])
 	check(int(s1[0]) - int(s0[0]) >= 5 and int(s1[1]) == int(s0[1]), "playing: a knob drag keeps effect state across plan swaps (kept %d, fresh %d)" % [int(s1[0]) - int(s0[0]), int(s1[1]) - int(s0[1])])
 	d.add_effect(small.clips[0].chain, "Chorus")
-	await frames(tree, 6)
+	for i in 60: # the audio thread picks the new plan up on its next mix
+		await tree.process_frame
+		if int(e.get_fx_swaps()[1]) > int(s1[1]):
+			break
 	var s2: Array = e.get_fx_swaps()
 	check(int(s2[1]) > int(s1[1]), "playing: adding an effect rebuilds the chain")
 	d.stop()
@@ -3029,5 +3211,6 @@ static func run(screen: AWMainScreen) -> void:
 	await empty_start_tests(tree, screen)
 	await reexport_tests(tree, screen)
 	await import_tests(tree, screen)
+	await grid_edit_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

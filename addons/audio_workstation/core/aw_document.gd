@@ -669,30 +669,81 @@ func is_audio_file(path: String) -> bool:
 # --- Clip selection -----------------------------------------------------------
 
 func select_clip(clip: AWClip, mode := "replace") -> void:
+	var members := group_members(clip)
 	match mode:
 		"replace":
-			if selection.size() == 1 and selection[0] == clip:
+			if selection.size() == members.size() and members.all(func(m: AWClip) -> bool: return selection.has(m)):
 				_focus(clip)
 				return
-			selection = [clip]
+			selection = members
 		"add":
-			if not selection.has(clip):
-				selection.append(clip)
+			for m in members:
+				if not selection.has(m):
+					selection.append(m)
 		"toggle":
 			if selection.has(clip):
-				selection.erase(clip)
+				for m in members:
+					selection.erase(m)
 			else:
-				selection.append(clip)
+				for m in members:
+					if not selection.has(m):
+						selection.append(m)
 	selection_changed.emit()
 	if selection.has(clip):
 		_focus(clip)
 
 
 func set_selection(clips: Array[AWClip]) -> void:
-	selection = clips.duplicate()
+	selection = []
+	for c in clips:
+		for m in group_members(c):
+			if not selection.has(m):
+				selection.append(m)
 	selection_changed.emit()
 	if not selection.is_empty():
 		_focus(selection.back())
+
+
+## The clip and every clip grouped with it (Ctrl+G), in project order.
+func group_members(clip: AWClip) -> Array[AWClip]:
+	if clip == null or clip.group_id == 0 or project == null:
+		return [clip] as Array[AWClip]
+	var out: Array[AWClip] = []
+	for c in project.clips:
+		if c.group_id == clip.group_id:
+			out.append(c)
+	if not out.has(clip):
+		out.append(clip)
+	return out
+
+
+## Groups the selected clips: selecting one selects them all, so they move, nudge, mute, copy and
+## delete together. One undo step.
+func group_selected() -> void:
+	if selection.size() < 2:
+		message.emit("Select two or more clips to group them.")
+		return
+	var gid := 1
+	for c in project.clips:
+		gid = maxi(gid, c.group_id + 1)
+	_begin("Group Clips")
+	for c in selection:
+		_add_do(_apply_props.bind(c, {"group_id": gid}))
+		_add_undo(_apply_props.bind(c, {"group_id": c.group_id}))
+	_commit()
+	message.emit("Grouped %d clips. Ctrl+Shift+G ungroups." % selection.size())
+
+
+func ungroup_selected() -> void:
+	var grouped := selection.filter(func(c: AWClip) -> bool: return c.group_id != 0)
+	if grouped.is_empty():
+		return
+	_begin("Ungroup Clips")
+	for c: AWClip in grouped:
+		_add_do(_apply_props.bind(c, {"group_id": 0}))
+		_add_undo(_apply_props.bind(c, {"group_id": c.group_id}))
+	_commit()
+	message.emit("Ungrouped %d clips." % grouped.size())
 
 
 func clear_selection() -> void:
@@ -958,9 +1009,11 @@ func duplicate_selected() -> void:
 	if selection.is_empty():
 		return
 	var copies: Array[AWClip] = []
+	var gids := _fresh_group_ids(selection)
 	_begin("Duplicate Clips")
 	for c in selection:
 		var copy := c.duplicate_clip()
+		copy.group_id = gids.get(c.group_id, 0)
 		copy.start_sec = c.end_sec()
 		copies.append(copy)
 		_add_do(_apply_insert_clip.bind(copy, project.clips.size() + copies.size() - 1))
@@ -980,6 +1033,167 @@ func delete_selected_clips() -> void:
 	doomed.reverse()
 	for c: AWClip in doomed:
 		_add_undo(_apply_insert_clip.bind(c, project.clips.find(c)))
+	_commit()
+
+
+# --- Clipboard, nudge, trim to playhead, rename, colour -------------------------------
+
+## Copied clips (independent copies), kept while the editor runs, so they paste into another sound too.
+static var clipboard: Array[AWClip] = []
+
+
+func copy_selected() -> void:
+	if selection.is_empty():
+		return
+	clipboard.clear()
+	for c in _in_project_order(selection):
+		clipboard.append(c.duplicate_clip())
+	message.emit("Copied %d clip%s." % [clipboard.size(), "" if clipboard.size() == 1 else "s"])
+
+
+func cut_selected() -> void:
+	if selection.is_empty():
+		return
+	copy_selected()
+	var n := clipboard.size()
+	delete_selected_clips()
+	message.emit("Cut %d clip%s." % [n, "" if n == 1 else "s"])
+
+
+## Pastes the clipboard at the playhead, each clip on the row it was copied from. One undo step.
+func paste() -> void:
+	if clipboard.is_empty():
+		message.emit("Nothing to paste. Copy clips with Ctrl+C first.")
+		return
+	var base := INF
+	for c in clipboard:
+		base = minf(base, c.start_sec)
+	var pasted: Array[AWClip] = []
+	var gids := _fresh_group_ids(clipboard)
+	_begin("Paste Clips")
+	for c in clipboard:
+		var copy := c.duplicate_clip()
+		copy.group_id = gids.get(c.group_id, 0)
+		copy.start_sec = playhead_sec + (c.start_sec - base)
+		pasted.append(copy)
+		_add_do(_apply_insert_clip.bind(copy, project.clips.size() + pasted.size() - 1))
+		_add_undo(_apply_remove_clip.bind(copy))
+	_commit()
+	set_selection(pasted)
+	_recompute_missing()
+
+
+## New group ids for copies, so copied groups stay groups of their own (old id -> new id).
+func _fresh_group_ids(clips: Array[AWClip]) -> Dictionary:
+	var next := 1
+	for c in project.clips:
+		next = maxi(next, c.group_id + 1)
+	var out := {}
+	for c in clips:
+		if c.group_id != 0 and not out.has(c.group_id):
+			out[c.group_id] = next
+			next += 1
+	return out
+
+
+## Mutes or unmutes the selection (or `clip` if it isn't selected), following `clip`. One undo step.
+func toggle_mute_clips(clip: AWClip) -> void:
+	var targets: Array[AWClip] = selection if selection.has(clip) else ([clip] as Array[AWClip])
+	var to := not clip.muted
+	_begin("Unmute Clips" if not to else "Mute Clips")
+	for c in targets:
+		_add_do(_apply_props.bind(c, {"muted": to}))
+		_add_undo(_apply_props.bind(c, {"muted": c.muted}))
+	_commit()
+
+
+func _in_project_order(clips: Array[AWClip]) -> Array[AWClip]:
+	var out := clips.duplicate()
+	out.sort_custom(func(a: AWClip, b: AWClip) -> bool: return project.clips.find(a) < project.clips.find(b))
+	return out
+
+
+## Moves the selection by `steps` snap steps in time (10 ms when snap is off) and `rows` rows.
+func nudge_selected(steps: float, rows: int) -> void:
+	if selection.is_empty():
+		return
+	var step := snap_sec if snap_sec > 0.0 else 0.01
+	var dt := steps * step
+	var min_start := INF
+	var min_row := 1 << 30
+	for c in selection:
+		min_start = minf(min_start, c.start_sec)
+		min_row = mini(min_row, c.row)
+	dt = maxf(dt, -min_start)
+	rows = maxi(rows, -min_row)
+	if is_zero_approx(dt) and rows == 0:
+		return
+	_begin("Nudge Clips")
+	for c in selection:
+		var old := {"start_sec": c.start_sec, "row": c.row}
+		_add_do(_apply_props.bind(c, {"start_sec": c.start_sec + dt, "row": c.row + rows}))
+		_add_undo(_apply_props.bind(c, old))
+	_commit()
+
+
+## Trims the start ("start") or end ("end") of the selected clips under the playhead to it. One undo step.
+func trim_selected_to_playhead(side: String) -> void:
+	var targets := selection.filter(func(c: AWClip) -> bool:
+		return playhead_sec > c.start_sec + 1e-6 and playhead_sec < c.end_sec() - 1e-6)
+	if targets.is_empty():
+		message.emit("Put the playhead inside a selected clip to trim it there.")
+		return
+	_begin("Trim Start to Playhead" if side == "start" else "Trim End to Playhead")
+	for c: AWClip in targets:
+		var local := c.project_to_local(playhead_sec)
+		var before := {"start_sec": c.start_sec, "length_sec": c.length_sec, "source_offset_sec": c.source_offset_sec,
+			"fade_in_sec": c.fade_in_sec, "fade_out_sec": c.fade_out_sec}
+		var keys_before := clip_curve_keys(c)
+		var after := before.duplicate()
+		var keys_after := keys_before
+		if side == "start":
+			after.merge(left_trim_props(c, local), true)
+			after["start_sec"] = playhead_sec
+			after["fade_in_sec"] = minf(c.fade_in_sec, c.length_sec - local)
+			keys_after = []
+			for item: Array in keys_before:
+				keys_after.append([item[0], _shifted(item[1], -local), (item[2] - Vector2(local, local)) if item[2] is Vector2 else null])
+		else:
+			after.merge(right_trim_props(c, local), true)
+			after["fade_out_sec"] = minf(c.fade_out_sec, local)
+		_add_do(_apply_clip_state.bind(c, after, keys_after))
+		_add_undo(_apply_clip_state.bind(c, before, keys_before))
+	_commit()
+
+
+## Props for removing `cut` seconds of audio from a clip's start (negative reveals). A reversed clip
+## plays its source backwards, so its start is the source's end.
+func left_trim_props(c: AWClip, cut: float) -> Dictionary:
+	if c.reversed:
+		return {"length_sec": c.length_sec - cut}
+	return {"length_sec": c.length_sec - cut, "source_offset_sec": c.source_offset_sec + cut}
+
+
+## Props for a new clip length set at its end.
+func right_trim_props(c: AWClip, new_len: float) -> Dictionary:
+	if c.reversed:
+		return {"length_sec": new_len, "source_offset_sec": c.source_offset_sec + (c.length_sec - new_len)}
+	return {"length_sec": new_len}
+
+
+func rename_clip(c: AWClip, new_name: String) -> void:
+	new_name = new_name.strip_edges()
+	if c != null and new_name != "" and new_name != c.name:
+		set_props(c, {"name": new_name}, "Rename Clip")
+
+
+## Colours the selection (or `clip` if it isn't selected). One undo step.
+func set_clip_color(clip: AWClip, col: Color) -> void:
+	var targets: Array[AWClip] = selection if selection.has(clip) else ([clip] as Array[AWClip])
+	_begin("Clip Colour")
+	for c in targets:
+		_add_do(_apply_props.bind(c, {"color": col}))
+		_add_undo(_apply_props.bind(c, {"color": c.color}))
 	_commit()
 
 

@@ -21,7 +21,7 @@ const PEAKS_PER_SEC := 120.0
 ## Height of one grid row. Alt+wheel changes it (taller rows show the waveform better).
 var row_h := ROW_H_DEFAULT
 
-enum Drag { NONE, MOVE, TRIM_L, TRIM_R, FADE_IN, FADE_OUT, MARQUEE, CLICK }
+enum Drag { NONE, MOVE, TRIM_L, TRIM_R, FADE_IN, FADE_OUT, MARQUEE, CLICK, CTRL_PENDING, GAIN, SLIP }
 
 var doc: AWDocument
 var view: AWTimeView
@@ -41,6 +41,11 @@ var _menu_clip: AWClip = null
 var _menu_t := 0.0
 var _menu_pos := Vector2.ZERO
 var _drop_ghost := Rect2()
+var _color_menu: PopupMenu
+var _rename_edit: LineEdit
+var _rename_clip: AWClip = null
+var _gain_readout := ""
+var _gain_clip: AWClip = null
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -56,6 +61,26 @@ func _ready() -> void:
 	_menu = PopupMenu.new()
 	_menu.id_pressed.connect(_on_menu)
 	add_child(_menu)
+	_color_menu = PopupMenu.new()
+	_color_menu.name = "ColourMenu"
+	for i in AWProject.CLIP_COLORS.size():
+		var img := Image.create(14, 14, false, Image.FORMAT_RGBA8)
+		img.fill(AWProject.CLIP_COLORS[i])
+		_color_menu.add_icon_item(ImageTexture.create_from_image(img), "", i)
+	_color_menu.id_pressed.connect(func(i: int) -> void:
+		if _menu_clip:
+			doc.set_clip_color(_menu_clip, AWProject.CLIP_COLORS[i]))
+	_menu.add_child(_color_menu)
+	_rename_edit = LineEdit.new()
+	_rename_edit.visible = false
+	_rename_edit.text_submitted.connect(func(_t: String) -> void: _finish_rename(true))
+	_rename_edit.focus_exited.connect(func() -> void: _finish_rename(true))
+	_rename_edit.gui_input.connect(func(e: InputEvent) -> void:
+		var k := e as InputEventKey
+		if k and k.pressed and k.keycode == KEY_ESCAPE:
+			_finish_rename(false)
+			_rename_edit.accept_event())
+	add_child(_rename_edit)
 	resized.connect(func() -> void: view.set_view_width(size.x))
 	view.changed.connect(queue_redraw)
 	doc.project_changed.connect(func(_s: bool) -> void: _update_height(); queue_redraw())
@@ -144,9 +169,13 @@ func _gui_input(event: InputEvent) -> void:
 			if mb.pressed:
 				if mb.double_click:
 					var c := clip_at(mb.position)
-					if c:
+					if c and mb.position.y <= clip_rect(c).position.y + 13.0:
+						start_rename(c)
+					elif c:
 						doc.engine.audition_clip(c)
 						doc.message.emit("Audition \"%s\"" % c.name)
+					else:
+						doc.import_requested.emit(row_at(mb.position.y), maxf(0.0, doc.snap(view.x_to_time(mb.position.x))))
 				else:
 					_press(mb)
 			else:
@@ -174,8 +203,19 @@ func _press(mb: InputEventMouseButton) -> void:
 		_drag = Drag.CLICK
 		_marquee_base = doc.selection.duplicate() if (mb.shift_pressed or mb.ctrl_pressed) else ([] as Array[AWClip])
 		return
+	if mb.ctrl_pressed and mb.alt_pressed:
+		# Ctrl+Alt+drag: slip the audio inside the clip(s), always unsnapped.
+		if not doc.is_selected(c):
+			doc.select_clip(c)
+		_drag = Drag.SLIP
+		for s in doc.selection:
+			_items.append([s, {"source_offset_sec": s.source_offset_sec}])
+		_press_warp = c.warp()
+		return
 	if mb.ctrl_pressed:
-		doc.select_clip(c, "toggle")
+		# Ctrl+click toggles the selection on release; Ctrl+vertical drag changes clip gain.
+		_drag = Drag.CTRL_PENDING
+		return
 	elif mb.shift_pressed:
 		doc.select_clip(c, "add")
 	elif not doc.is_selected(c):
@@ -222,6 +262,21 @@ func _motion(mm: InputEventMouseMotion) -> void:
 			queue_redraw()
 		Drag.MOVE:
 			_move_selection(pos, mm.alt_pressed)
+		Drag.CTRL_PENDING:
+			var d := pos - _press_pos
+			if absf(d.y) > 4.0 and absf(d.y) > absf(d.x):
+				_start_gain_drag()
+				_motion(mm)
+		Drag.GAIN:
+			var delta := -(pos.y - _press_pos.y) * (0.05 if mm.shift_pressed else 0.25)
+			for it: Array in _items:
+				var p: Dictionary = (it[1].params as Dictionary).duplicate()
+				p["gain_db"] = clampf(float(p.get("gain_db", 0.0)) + delta, -60.0, 24.0)
+				doc.preview_set(it[0], {"params": p})
+			_gain_readout = "%+.1f dB" % delta if _items.size() > 1 else "%.1f dB" % float(_gain_clip.chain.effects[0].get_param("gain_db"))
+			queue_redraw()
+		Drag.SLIP:
+			_slip(pos)
 		Drag.TRIM_L, Drag.TRIM_R, Drag.FADE_IN, Drag.FADE_OUT:
 			_edit_edge(pos)
 
@@ -243,6 +298,54 @@ func _move_selection(pos: Vector2, free_time: bool) -> void:
 	drow = maxi(drow, -min_row)
 	for it: Array in _items:
 		doc.preview_set(it[0], {"start_sec": it[1].start_sec + dt, "row": it[1].row + drow})
+
+
+## Ctrl+vertical drag: gain of the pressed clip, or of every selected clip (relative) if it's selected.
+func _start_gain_drag() -> void:
+	_drag = Drag.GAIN
+	_gain_clip = _press_clip
+	var targets: Array[AWClip] = doc.selection if doc.is_selected(_press_clip) else ([_press_clip] as Array[AWClip])
+	_items.clear()
+	for c in targets:
+		var src: AWEffect = c.chain.effects[0]
+		_items.append([src, {"params": src.params.duplicate()}])
+	if _press_clip.chain.get_curve(_press_clip.chain.effects[0].id, "gain_db"):
+		doc.message.emit("This clip's Gain has a curve, which overrides the gain set here.")
+
+
+## Ctrl+Alt+drag: moves the audio under the clip; the clip, its fades and curves stay put.
+func _slip(pos: Vector2) -> void:
+	var c := _press_clip
+	var start := c.start_sec
+	var w := _press_warp
+	var d_audio := w.unwarp(view.x_to_time(pos.x) - start) - w.unwarp(_press_t - start)
+	for it: Array in _items:
+		var clip: AWClip = it[0]
+		var src_len := doc.engine.get_source_length(clip.source_path)
+		var max_off := maxf(0.0, src_len - clip.length_sec) if src_len > 0.0 else INF
+		var off: float = it[1].source_offset_sec + (d_audio if clip.reversed else -d_audio)
+		doc.preview_set(clip, {"source_offset_sec": clampf(off, 0.0, max_off)})
+
+
+func start_rename(c: AWClip) -> void:
+	_rename_clip = c
+	var r := clip_rect(c)
+	_rename_edit.text = c.name
+	_rename_edit.position = Vector2(maxf(r.position.x, 0.0), r.position.y - 2.0)
+	_rename_edit.size = Vector2(clampf(r.size.x, 120.0, 320.0), 0)
+	_rename_edit.visible = true
+	_rename_edit.grab_focus()
+	_rename_edit.select_all()
+
+
+func _finish_rename(apply: bool) -> void:
+	if _rename_clip == null:
+		return
+	var c := _rename_clip
+	_rename_clip = null
+	_rename_edit.visible = false
+	if apply:
+		doc.rename_clip(c, _rename_edit.text)
 
 
 ## Edge drags: the mouse is in project time; the warp captured at press converts it to clip
@@ -292,6 +395,14 @@ func _release(mb: InputEventMouseButton) -> void:
 			doc.commit_drags(_items, "Trim Clip")
 		Drag.FADE_IN, Drag.FADE_OUT:
 			doc.commit_drags(_items, "Edit Fade")
+		Drag.CTRL_PENDING:
+			doc.select_clip(_press_clip, "toggle")
+		Drag.GAIN:
+			doc.commit_drags(_items, "Clip Gain")
+			_gain_readout = ""
+			_gain_clip = null
+		Drag.SLIP:
+			doc.commit_drags(_items, "Slip Clip")
 	_drag = Drag.NONE
 	_items.clear()
 	queue_redraw()
@@ -324,6 +435,8 @@ func _open_menu(pos: Vector2) -> void:
 		_menu.add_item("Split Here", 3)
 		_menu.add_item("Duplicate", 4)
 		_menu.add_item("Unmute" if _menu_clip.muted else "Mute", 5)
+		_menu.add_item("Rename  (F2)", 14)
+		_menu.add_submenu_node_item("Colour", _color_menu)
 		_menu.add_separator()
 		_menu.add_item("Delete", 6)
 		if doc.is_clip_missing(_menu_clip):
@@ -351,12 +464,13 @@ func _on_menu(id: int) -> void:
 		2: doc.split_clip(_menu_clip, doc.playhead_sec)
 		3: doc.split_clip(_menu_clip, _menu_t)
 		4: doc.duplicate_selected()
-		5: doc.set_props(_menu_clip, {"muted": not _menu_clip.muted}, "Mute Clip")
+		5: doc.toggle_mute_clips(_menu_clip)
 		6: doc.delete_selected_clips()
 		7: doc.relink_requested.emit(_menu_clip, "file")
 		8: doc.relink_requested.emit(_menu_clip, "folder")
 		9: doc.copy_clip_into_project(_menu_clip)
 		13: doc.import_requested.emit(row_at(_menu_pos.y), _menu_t)
+		14: start_rename(_menu_clip)
 		10: doc.select_all_clips()
 		11: doc.clear_selection()
 		12: doc.seek(_menu_t)
@@ -424,6 +538,14 @@ func _draw() -> void:
 		var w := font.get_string_size(msg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 		draw_string(font, Vector2((size.x - w) * 0.5, minf(size.y * 0.5, row_h * 1.5)), msg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(c_text, 0.5))
 
+	if _gain_readout != "" and _gain_clip:
+		var gr := clip_rect(_gain_clip)
+		var font := get_theme_default_font()
+		var fs := get_theme_default_font_size()
+		var tw := font.get_string_size(_gain_readout, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		var box := Rect2(Vector2(clampf(gr.get_center().x - tw * 0.5 - 6.0, 0.0, size.x - tw - 12.0), gr.position.y + gr.size.y * 0.5 - fs * 0.5 - 4.0), Vector2(tw + 12.0, fs + 8.0))
+		draw_rect(box, Color(0, 0, 0, 0.75))
+		draw_string(font, box.position + Vector2(6, fs + 2), _gain_readout, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color.WHITE)
 	if _drop_ghost.size != Vector2.ZERO:
 		draw_rect(_drop_ghost, Color(c_acc, 0.2))
 		draw_rect(_drop_ghost, c_acc, false, 1.0)

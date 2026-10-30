@@ -29,6 +29,10 @@ extends Resource
 @export var fade_out_sec: float = 0.0
 @export var color: Color = Color("#4f9edb")
 @export var muted: bool = false
+## Plays the covered part of the source backwards (source_offset_sec + length_sec down to source_offset_sec).
+@export var reversed: bool = false
+## Clips sharing a non-zero group id are selected (and so moved, trimmed, muted) together.
+@export var group_id: int = 0
 @export var chain: AWChain
 
 
