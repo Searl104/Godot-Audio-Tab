@@ -3,7 +3,7 @@ class_name AWProject
 extends Resource
 ## The saved sound-effect document. All times are in seconds.
 
-const FORMAT_VERSION := 5 # 5: markers; 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
+const FORMAT_VERSION := 6 # 6: shared effect chains (clips' own effects move into "<clip> FX" chains); 5: markers; 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
 const CLIP_COLORS := [
 	Color("#4f7fd9"), Color("#d9b63f"), Color("#6fae4f"), Color("#e07a3f"),
 	Color("#a77fd9"), Color("#d95f7a"), Color("#3fb8b0"),
@@ -19,6 +19,8 @@ const CLIP_COLORS := [
 @export var master_chain: AWChain
 ## Row (layer) settings by row index; null or missing = defaults.
 @export var rows: Array[AWRow] = []
+## Shared effect chains; clips point at one through AWClip.fx_chain.
+@export var chains: Array[AWChain] = []
 ## Named points on the timeline, kept sorted by time.
 @export var markers: Array[AWMarker] = []
 
@@ -72,7 +74,7 @@ func export_end_resolved() -> float:
 	var end := 0.0
 	for c in clips:
 		if not c.muted:
-			end = maxf(end, c.start_sec + c.play_length() + (AUTO_TAIL_SEC if AWEngine.chain_rings(c.chain) else 0.0))
+			end = maxf(end, c.start_sec + c.play_length() + (AUTO_TAIL_SEC if AWEngine.chain_rings(c.chain) or AWEngine.chain_rings(c.fx_chain) else 0.0))
 	if AWEngine.chain_rings(master_chain):
 		end += AUTO_TAIL_SEC
 	return end

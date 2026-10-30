@@ -31,6 +31,8 @@ var like_effect := ""
 var like_param := ""
 ## Extra help shown in the control's tooltip.
 var tooltip := ""
+## False: edits only this effect even with several clips selected (the Clips card rows).
+var spread := true
 ## Property mode: shown (and typed) as value * unit_factor, e.g. 1000 to show Hz/s as mHz/s.
 var unit_factor := 1.0
 ## Bipolar ranges only: > 1 spreads the knob so the middle is fine and the ends coarse
@@ -156,7 +158,7 @@ func preview(v: float) -> void:
 	if is_property():
 		doc.preview_set(target, {prop: v})
 	else:
-		doc.preview_param(effect, param, v)
+		doc.preview_param(effect, param, v, spread)
 
 
 ## Ends a drag: puts the original back and records the change as one undo step.
@@ -169,8 +171,8 @@ func commit() -> void:
 		doc.preview_set(target, {prop: _orig})
 		doc.set_props(target, {prop: now}, "Edit " + label)
 	else:
-		doc.preview_param(effect, param, _orig)
-		doc.set_param(effect, param, now)
+		doc.preview_param(effect, param, _orig, spread)
+		doc.set_param(effect, param, now, spread)
 
 
 func set_value(v: float) -> void:
@@ -178,7 +180,7 @@ func set_value(v: float) -> void:
 	if is_property():
 		doc.set_props(target, {prop: v}, "Edit " + label)
 	else:
-		doc.set_param(effect, param, v)
+		doc.set_param(effect, param, v, spread)
 
 
 func reset() -> void:

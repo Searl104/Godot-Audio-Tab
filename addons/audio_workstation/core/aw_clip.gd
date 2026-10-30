@@ -37,7 +37,10 @@ const FADE_SHAPE_NAMES := ["Linear", "Fast", "Slow", "S-Curve", "Equal Power"]
 @export var reversed: bool = false
 ## Clips sharing a non-zero group id are selected (and so moved, trimmed, muted) together.
 @export var group_id: int = 0
+## The clip's own chain: its Clip card (Gain, Pitch, Pan) and their curves.
 @export var chain: AWChain
+## The shared effect chain the clip plays through (one of AWProject.chains), or null (dry).
+@export var fx_chain: AWChain
 
 
 var _warp: AWClipWarp = null
@@ -115,7 +118,12 @@ func source_time(local: float) -> float:
 
 
 func duplicate_clip() -> AWClip:
-	return duplicate(true) as AWClip
+	var shared := fx_chain
+	fx_chain = null # a deep copy would copy the shared chain too
+	var c := duplicate(true) as AWClip
+	fx_chain = shared
+	c.fx_chain = shared
+	return c
 
 
 static func create(p_name: String, start: float, length: float, p_row: int, p_color: Color) -> AWClip:

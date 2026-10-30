@@ -31,7 +31,8 @@ signal export_finished(result: Dictionary)
 ## The effect shown in the detail panel dock changed (or was closed).
 signal detail_changed
 
-enum ChainTab { MASTER, CLIP }
+## MASTER: the master chain. CLIP: the focused clip on its own (no shared chain). CHAIN: a shared chain.
+enum ChainTab { MASTER, CLIP, CHAIN }
 enum CurveTime { CLIP, PROJECT }
 
 const AUDIO_EXTENSIONS := ["wav", "ogg", "mp3"]
@@ -68,6 +69,11 @@ var selection: Array[AWClip] = []
 ## The clip whose chain the Clip tab shows. Stays set when the grid selection is cleared.
 var focus_clip: AWClip = null
 var chain_tab := ChainTab.CLIP
+## The shared chain shown when chain_tab is CHAIN.
+var tab_chain: AWChain = null
+## On a chain tab: the curve view shows the focused clip's own curves (Gain, Pitch, Pan) instead
+## of the chain's.
+var curve_on_clip := false
 
 # Curves (view state)
 var curve_time := CurveTime.CLIP
@@ -1067,11 +1073,13 @@ func is_selected(clip: AWClip) -> bool:
 
 
 func _focus(clip: AWClip) -> void:
-	var tab_changed := chain_tab != ChainTab.CLIP
-	if focus_clip == clip and not tab_changed:
+	var want_tab := ChainTab.CHAIN if clip and clip.fx_chain else ChainTab.CLIP
+	var want_chain: AWChain = clip.fx_chain if clip else null
+	if focus_clip == clip and chain_tab == want_tab and tab_chain == want_chain:
 		return
 	focus_clip = clip
-	chain_tab = ChainTab.CLIP
+	chain_tab = want_tab
+	tab_chain = want_chain
 	_reset_curve_focus()
 	chain_target_changed.emit()
 
@@ -1082,20 +1090,200 @@ func set_chain_tab(tab: ChainTab) -> void:
 	if chain_tab == tab:
 		return
 	chain_tab = tab
+	if tab != ChainTab.CHAIN:
+		tab_chain = null
 	_reset_curve_focus()
 	chain_target_changed.emit()
 
 
+## Shows a shared chain's tab. The focused clip stays if it uses the chain, else the first clip
+## that does becomes the curves' clock.
+func open_chain_tab(chain: AWChain) -> void:
+	if chain == null:
+		return
+	if chain_tab == ChainTab.CHAIN and tab_chain == chain:
+		return
+	chain_tab = ChainTab.CHAIN
+	tab_chain = chain
+	_reset_curve_focus()
+	chain_target_changed.emit()
+
+
+## The chain whose cards and curves are shown.
 func active_chain() -> AWChain:
-	if chain_tab == ChainTab.MASTER:
-		return project.master_chain
+	match chain_tab:
+		ChainTab.MASTER:
+			return project.master_chain
+		ChainTab.CHAIN:
+			var vc := view_clip()
+			if curve_on_clip and vc:
+				return vc.chain
+			return tab_chain
 	return focus_clip.chain if focus_clip else null
 
 
 func active_chain_name() -> String:
-	if chain_tab == ChainTab.MASTER:
-		return "Master"
+	match chain_tab:
+		ChainTab.MASTER:
+			return "Master"
+		ChainTab.CHAIN:
+			var vc := view_clip()
+			if curve_on_clip and vc:
+				return vc.name
+			return tab_chain.name if tab_chain else ""
 	return focus_clip.name if focus_clip else ""
+
+
+## The clip whose clock the curves run on: the focused clip (on a chain tab, if it uses the chain;
+## otherwise the chain's first clip). Null on the master.
+func view_clip() -> AWClip:
+	match chain_tab:
+		ChainTab.CLIP:
+			return focus_clip
+		ChainTab.CHAIN:
+			if focus_clip and focus_clip.fx_chain == tab_chain:
+				return focus_clip
+			for c in project.clips:
+				if c.fx_chain == tab_chain:
+					return c
+	return null
+
+
+## On a chain tab: show the chain's curves (false) or the view clip's own (true).
+func set_curve_on_clip(on: bool) -> void:
+	if curve_on_clip == on:
+		return
+	curve_on_clip = on
+	_reset_curve_focus()
+	chain_target_changed.emit()
+
+
+# --- Shared chains --------------------------------------------------------------------
+
+## Clips using a chain, in timeline order.
+func chain_clips(chain: AWChain) -> Array[AWClip]:
+	var out: Array[AWClip] = []
+	for c in project.clips:
+		if c.fx_chain == chain:
+			out.append(c)
+	out.sort_custom(func(a: AWClip, b: AWClip) -> bool: return a.start_sec < b.start_sec or (a.start_sec == b.start_sec and a.row < b.row))
+	return out
+
+
+## The clips an assignment applies to: the selection (groups included) if it holds `clip`, else
+## `clip` and its group.
+func _assign_targets(clip: AWClip) -> Array[AWClip]:
+	if clip == null:
+		return selection.duplicate()
+	if selection.has(clip):
+		return selection.duplicate()
+	return group_members(clip)
+
+
+## Makes a new, empty shared chain for the selected clips (or `clip` and its group) and opens it.
+## One undo step.
+func new_chain_for(clip: AWClip = null) -> AWChain:
+	var targets := _assign_targets(clip)
+	if targets.is_empty():
+		message.emit("Select one or more clips (or a group) first; the new chain is attached to them.")
+		return null
+	var ch := AWChain.new()
+	ch.name = _unique_chain_name("Chain %d" % (project.chains.size() + 1))
+	_begin("New Chain")
+	_add_do(_apply_add_chain.bind(ch, project.chains.size()))
+	_add_undo(_apply_remove_chain_raw.bind(ch))
+	for c in targets:
+		_add_do(_apply_props.bind(c, {"fx_chain": ch}))
+		_add_undo(_apply_props.bind(c, {"fx_chain": c.fx_chain}))
+	_commit()
+	open_chain_tab(ch)
+	message.emit("%s is attached to %d clip%s. Add effects with +." % [ch.name, targets.size(), "" if targets.size() == 1 else "s"])
+	return ch
+
+
+## Puts the selected clips (or `clip` and its group) on `chain` (null = no chain). One undo step.
+func set_clip_chain(clip: AWClip, chain: AWChain) -> void:
+	var targets := _assign_targets(clip)
+	if targets.is_empty():
+		return
+	_begin("Use Chain" if chain else "Remove Chain")
+	for c in targets:
+		_add_do(_apply_props.bind(c, {"fx_chain": chain}))
+		_add_undo(_apply_props.bind(c, {"fx_chain": c.fx_chain}))
+	_commit()
+	if focus_clip and targets.has(focus_clip):
+		_focus_refresh()
+
+
+func rename_chain(chain: AWChain, new_name: String) -> void:
+	new_name = new_name.strip_edges()
+	if chain and new_name != "" and new_name != chain.name:
+		set_props(chain, {"name": _unique_chain_name(new_name, chain)}, "Rename Chain")
+
+
+## Deletes a shared chain; its clips play dry. One undo step.
+func delete_chain(chain: AWChain) -> void:
+	if chain == null or not project.chains.has(chain):
+		return
+	var users := chain_clips(chain)
+	_begin("Delete Chain")
+	for c in users:
+		_add_do(_apply_props.bind(c, {"fx_chain": null}))
+	_add_do(_apply_remove_chain_raw.bind(chain))
+	_add_undo(_apply_add_chain.bind(chain, project.chains.find(chain)))
+	for c in users:
+		_add_undo(_apply_props.bind(c, {"fx_chain": chain}))
+	_commit()
+	if tab_chain == chain:
+		_focus_refresh()
+
+
+## A copy of a chain (effects and curves) as a new chain on the same clips' selection. One undo step.
+func duplicate_chain(chain: AWChain) -> AWChain:
+	var ch := chain.duplicate(true) as AWChain
+	ch.name = _unique_chain_name(chain.name + " copy")
+	_do_undo("Duplicate Chain", _apply_add_chain.bind(ch, project.chains.size()), _apply_remove_chain_raw.bind(ch))
+	return ch
+
+
+func _apply_add_chain(ch: AWChain, index: int) -> void:
+	if not project.chains.has(ch):
+		project.chains.insert(clampi(index, 0, project.chains.size()), ch)
+	project_changed.emit(true)
+
+
+func _apply_remove_chain_raw(ch: AWChain) -> void:
+	project.chains.erase(ch)
+	if tab_chain == ch:
+		tab_chain = null
+		chain_tab = ChainTab.CLIP
+		chain_target_changed.emit()
+	project_changed.emit(true)
+
+
+func _unique_chain_name(base: String, except: AWChain = null) -> String:
+	var taken := {}
+	for c in project.chains:
+		if c != except:
+			taken[c.name] = true
+	if not taken.has(base):
+		return base
+	var n := 2
+	while taken.has("%s %d" % [base, n]):
+		n += 1
+	return "%s %d" % [base, n]
+
+
+## Re-runs the tab choice for the focused clip (after its chain changed).
+func _focus_refresh() -> void:
+	var c := focus_clip
+	focus_clip = null
+	if c and project.clips.has(c):
+		_focus(c)
+	else:
+		chain_tab = ChainTab.CLIP
+		tab_chain = null
+		chain_target_changed.emit()
 
 
 func _reset_curve_focus() -> void:
@@ -1111,7 +1299,7 @@ func _reset_curve_focus() -> void:
 # project time. The graph shows either clip time or project time; the warp converts.
 
 func _clip_view() -> bool:
-	return chain_tab == ChainTab.CLIP and focus_clip != null
+	return view_clip() != null
 
 
 func is_clip_local_view() -> bool:
@@ -1120,8 +1308,11 @@ func is_clip_local_view() -> bool:
 
 ## Project time -> the time a chain's curves are evaluated at.
 func chain_local_time(chain: AWChain, project_t: float) -> float:
+	var vc := view_clip()
+	if vc and (vc.chain == chain or vc.fx_chain == chain):
+		return vc.project_to_local(project_t)
 	for c in project.clips:
-		if c.chain == chain:
+		if c.chain == chain or c.fx_chain == chain:
 			return c.project_to_local(project_t)
 	return project_t
 
@@ -1137,23 +1328,23 @@ func set_curve_time(mode: CurveTime) -> void:
 ## View time -> curve-local time.
 func view_to_local(v: float) -> float:
 	if _clip_view() and curve_time == CurveTime.PROJECT:
-		return focus_clip.project_to_local(v)
+		return view_clip().project_to_local(v)
 	return v
 
 
 func local_to_view(t: float) -> float:
 	if _clip_view() and curve_time == CurveTime.PROJECT:
-		return focus_clip.local_to_project(t)
+		return view_clip().local_to_project(t)
 	return t
 
 
 ## View time -> project time (for the playhead and seeking).
 func view_to_project(v: float) -> float:
-	return focus_clip.local_to_project(v) if is_clip_local_view() else v
+	return view_clip().local_to_project(v) if is_clip_local_view() else v
 
 
 func project_to_view(p: float) -> float:
-	return focus_clip.project_to_local(p) if is_clip_local_view() else p
+	return view_clip().project_to_local(p) if is_clip_local_view() else p
 
 
 ## How far a key may be placed, in the chain's local time. Curves are not limited to the clip:
@@ -1165,8 +1356,8 @@ func curve_domain_len() -> float:
 ## Where a new curve or LFO ends by default: the clip's own length (the master's content).
 ## Keys can be moved or added past it; beyond the last key a curve holds its value.
 func curve_owner_len() -> float:
-	if chain_tab == ChainTab.CLIP and focus_clip != null:
-		return focus_clip.length_sec
+	if view_clip() != null:
+		return view_clip().length_sec
 	return project.content_end_sec() if project != null else 10.0
 
 
@@ -1179,7 +1370,7 @@ func curve_span_len() -> float:
 	if chain_tab == ChainTab.CLIP and focus_clip != null:
 		var own := focus_clip.length_sec
 		if end > focus_clip.end_sec():
-			own = maxf(own, focus_clip.project_to_local(end))
+			own = maxf(own, view_clip().project_to_local(end))
 		return own
 	return maxf(project.content_end_sec(), end)
 
@@ -1198,10 +1389,32 @@ func frame_curves() -> void:
 # --- Curve display (view state, not undoable) ---------------------------------
 
 func set_active_curve(c: AWCurve) -> void:
+	if c != null:
+		_show_curve_owner(c)
 	if active_curve == c:
 		return
 	active_curve = c
 	curve_view_changed.emit()
+
+
+## On a chain tab, switches the curve view between the chain and the clip's own curves so `c`
+## (just made, selected or given an LFO) is visible.
+func _show_curve_owner(c: AWCurve) -> void:
+	if chain_tab != ChainTab.CHAIN:
+		return
+	var ch := active_chain()
+	if ch and ch.curves.has(c):
+		return
+	if tab_chain and tab_chain.curves.has(c):
+		curve_on_clip = false
+		chain_target_changed.emit()
+		return
+	for clip in chain_clips(tab_chain):
+		if clip.chain and clip.chain.curves.has(c):
+			focus_clip = clip
+			curve_on_clip = true
+			chain_target_changed.emit()
+			return
 
 
 func is_curve_visible(c: AWCurve) -> bool:
@@ -1377,10 +1590,19 @@ func paste() -> void:
 		base = minf(base, c.start_sec)
 	var pasted: Array[AWClip] = []
 	var gids := _fresh_group_ids(clipboard)
+	var foreign := {} # chains from another sound -> their copy here
 	_begin("Paste Clips")
 	for c in clipboard:
 		var copy := c.duplicate_clip()
 		copy.group_id = gids.get(c.group_id, 0)
+		if copy.fx_chain and not project.chains.has(copy.fx_chain):
+			if not foreign.has(copy.fx_chain):
+				var dup := copy.fx_chain.duplicate(true) as AWChain
+				dup.name = _unique_chain_name(dup.name)
+				foreign[copy.fx_chain] = dup
+				_add_do(_apply_add_chain.bind(dup, project.chains.size() + foreign.size() - 1))
+				_add_undo(_apply_remove_chain_raw.bind(dup))
+			copy.fx_chain = foreign[copy.fx_chain]
 		copy.start_sec = playhead_sec + (c.start_sec - base)
 		pasted.append(copy)
 		_add_do(_apply_insert_clip.bind(copy, project.clips.size() + pasted.size() - 1))
@@ -1676,7 +1898,7 @@ func _apply_remove_clip(clip: AWClip) -> void:
 
 func add_effect(chain: AWChain, type: String, index := -1) -> AWEffect:
 	var e := AWEffect.create(type, chain.new_effect_id())
-	var idx := chain.effects.size() if index < 0 else clampi(index, 1, chain.effects.size())
+	var idx := chain.effects.size() if index < 0 else clampi(index, chain.first_movable(), chain.effects.size())
 	_do_undo("Add Effect", _apply_insert_effect.bind(chain, e, idx, []), _apply_remove_effect.bind(chain, e))
 	return e
 
@@ -1696,7 +1918,7 @@ func move_effect(chain: AWChain, e: AWEffect, new_index: int) -> void:
 	if e.is_fixed():
 		return
 	var old := chain.effects.find(e)
-	var target := clampi(new_index, 1, chain.effects.size() - 1)
+	var target := clampi(new_index, chain.first_movable(), chain.effects.size() - 1)
 	if old == target:
 		return
 	_do_undo("Reorder Effect", _apply_move_effect.bind(chain, e, target), _apply_move_effect.bind(chain, e, old))
@@ -1720,8 +1942,10 @@ func reset_effect(chain: AWChain, e: AWEffect) -> void:
 
 
 ## Static parameter value (used when the parameter has no curve).
-func set_param(e: AWEffect, key: String, value: float) -> void:
-	var others := _relative_targets(e, key)
+## `spread`: with several clips selected, a Clip-card change reaches them all (relatively). The Clips
+## card's rows edit one clip each and pass false.
+func set_param(e: AWEffect, key: String, value: float, spread := true) -> void:
+	var others := _relative_targets(e, key) if spread else ([] as Array[AWEffect])
 	var p := e.params.duplicate()
 	p[key] = value
 	if others.is_empty():
@@ -1738,12 +1962,12 @@ func set_param(e: AWEffect, key: String, value: float) -> void:
 	_commit()
 
 
-func preview_param(e: AWEffect, key: String, value: float) -> void:
+func preview_param(e: AWEffect, key: String, value: float, spread := true) -> void:
 	var delta := value - float(e.get_param(key))
 	var p := e.params.duplicate()
 	p[key] = value
 	preview_set(e, {"params": p})
-	for o in _relative_targets(e, key):
+	for o in (_relative_targets(e, key) if spread else ([] as Array[AWEffect])):
 		preview_set(o, {"params": _shifted_params(o, key, delta)})
 
 
@@ -1798,6 +2022,13 @@ func _apply_move_effect(chain: AWChain, e: AWEffect, index: int) -> void:
 func make_curve(chain: AWChain, e: AWEffect, param: String) -> AWCurve:
 	if chain.get_curve(e.id, param):
 		return chain.get_curve(e.id, param)
+	if chain_tab == ChainTab.CHAIN and chain != tab_chain:
+		# A clip's Gain / Pitch / Pan on a chain tab: show that clip's curves.
+		for clip in chain_clips(tab_chain):
+			if clip.chain == chain:
+				focus_clip = clip
+				curve_on_clip = true
+				chain_target_changed.emit()
 	var c := AWCurve.new()
 	c.effect_id = e.id
 	c.param = param
@@ -1879,6 +2110,7 @@ const BAKE_EDGE := 0.0005
 
 ## Opens the LFO panel for a curve, adding a default LFO first if it has none.
 func open_lfo(chain: AWChain, c: AWCurve) -> void:
+	_show_curve_owner(c)
 	if c.lfo == null:
 		add_lfo(chain, c)
 	if c.display != AWCurve.Display.ON:
@@ -1901,6 +2133,9 @@ func show_lfo_list() -> void:
 func all_lfos() -> Array:
 	var out := []
 	_collect_lfos(out, project.master_chain, null, "Master")
+	for ch in project.chains:
+		var users := chain_clips(ch)
+		_collect_lfos(out, ch, users[0] if not users.is_empty() else null, ch.name)
 	for clip in project.clips:
 		_collect_lfos(out, clip.chain, clip, clip.name)
 	return out
@@ -1928,9 +2163,19 @@ func _collect_lfos(out: Array, ch: AWChain, clip: AWClip, owner_name: String) ->
 ## Jumps to an LFO from all_lfos(): selects its clip (or the Master tab) and opens it.
 func goto_lfo(entry: Dictionary) -> void:
 	var clip: AWClip = entry["clip"]
-	if clip != null:
-		if focus_clip != clip or chain_tab != ChainTab.CLIP:
+	var ch: AWChain = entry["chain"]
+	if project.chains.has(ch):
+		if clip and focus_clip != clip:
 			select_clip(clip)
+		curve_on_clip = false
+		open_chain_tab(ch)
+		chain_target_changed.emit()
+	elif clip != null:
+		if focus_clip != clip:
+			select_clip(clip)
+		_focus(clip)
+		if chain_tab == ChainTab.CHAIN:
+			set_curve_on_clip(true)
 	else:
 		set_chain_tab(ChainTab.MASTER)
 	open_lfo(entry["chain"], entry["curve"])

@@ -70,6 +70,20 @@ func _ready() -> void:
 	add_child(_clock)
 	add_child(VSeparator.new())
 
+	# Editing shortcuts (the keys still work).
+	for sc: Array in [["Marker", &"Marker", "Add a marker at the playhead (M)", doc.add_marker.bind(-1.0, "")],
+			["TrimStart", &"PageFirst", "Trim the selected clips' start to the playhead (Q)", doc.trim_selected_to_playhead.bind("start")],
+			["TrimEnd", &"PageLast", "Trim the selected clips' end to the playhead (W)", doc.trim_selected_to_playhead.bind("end")],
+			["Reverse", &"PlayBackwards", "Reverse the selected clips", _reverse_selection],
+			["Crossfade", &"CurveInOut", "Crossfade overlapping selected clips", doc.crossfade_selected],
+			["Group", &"Group", "Group the selected clips (Ctrl+G); with a group selected: ungroup (Ctrl+Shift+G)", _group_toggle]]:
+		var b := AWTheme.button(self, sc[0], sc[1], sc[2])
+		b.name = "Edit" + String(sc[0])
+		var cb: Callable = sc[3]
+		b.pressed.connect(func() -> void: cb.call())
+		add_child(b)
+	add_child(VSeparator.new())
+
 	add_child(AWTheme.dim_label("Snap", 0.7))
 	_snap = MenuButton.new()
 	_snap.name = "SnapMenu"
@@ -135,6 +149,20 @@ func update_cpu() -> void:
 	var hot := float(l[1]) >= 0.9
 	var warm := float(l[1]) >= 0.6
 	_cpu.add_theme_color_override("font_color", Color("#e5484d") if hot else (Color("#f0b840") if warm else Color(1, 1, 1, 0.55)))
+
+
+func _reverse_selection() -> void:
+	if doc.selection.is_empty():
+		doc.message.emit("Select clips to reverse them.")
+		return
+	doc.toggle_reverse_clips(doc.selection[0])
+
+
+func _group_toggle() -> void:
+	if doc.selection.size() >= 2 and doc.selection.all(func(c: AWClip) -> bool: return c.group_id != 0 and c.group_id == doc.selection[0].group_id):
+		doc.ungroup_selected()
+	else:
+		doc.group_selected()
 
 
 ## Small status chip: is the native audio engine loaded?

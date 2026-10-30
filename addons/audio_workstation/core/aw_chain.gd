@@ -10,6 +10,8 @@ extends Resource
 ## Use sample() for the real parameter value. Keys are exchanged with the UI as
 ## Dictionaries: {t, v (0..1), in: Vector2, out: Vector2, mode}.
 
+## Shared chains (in AWProject.chains) have a name and no fixed first card.
+@export var name: String = ""
 @export var effects: Array[AWEffect] = []
 @export var curves: Array[AWCurve] = []
 @export var automation: Animation
@@ -32,6 +34,11 @@ static func create(fixed_type: String) -> AWChain:
 	var c := AWChain.new()
 	c.effects.append(AWEffect.create(fixed_type, 0))
 	return c
+
+
+## Index of the first card that can move (1 after a fixed Clip / Output card, else 0).
+func first_movable() -> int:
+	return 1 if not effects.is_empty() and effects[0].is_fixed() else 0
 
 
 func new_effect_id() -> int:
