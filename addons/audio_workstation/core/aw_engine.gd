@@ -298,7 +298,7 @@ func _rebuild_plan() -> void:
 		return
 	var voices: Array = []
 	for clip in _project.clips:
-		if clip.muted:
+		if not _project.is_clip_audible(clip):
 			continue
 		var v := _voice_for(clip, int(round(clip.start_sec * _rate())))
 		if not v.is_empty():

@@ -5,6 +5,7 @@ extends VBoxContainer
 
 var doc: AWDocument
 var grid: AWClipGrid
+var headers: AWRowHeaders
 
 var _ruler: AWTimeRuler
 var _hbar: HScrollBar
@@ -29,17 +30,41 @@ func _ready() -> void:
 	header.add_child(fit)
 	add_child(header)
 
+	var ruler_row := HBoxContainer.new()
+	ruler_row.add_theme_constant_override("separation", 0)
+	var corner := Button.new()
+	corner.flat = true
+	corner.focus_mode = Control.FOCUS_NONE
+	corner.name = "HeadersToggle"
+	corner.tooltip_text = "Narrow or widen the row headers"
+	ruler_row.add_child(corner)
 	_ruler = AWTimeRuler.new()
 	_ruler.setup(doc, doc.timeline_view, true)
-	add_child(_ruler)
+	_ruler.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ruler_row.add_child(_ruler)
+	add_child(ruler_row)
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var body := HBoxContainer.new()
+	body.add_theme_constant_override("separation", 0)
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	grid = AWClipGrid.new()
 	grid.setup(doc)
-	scroll.add_child(grid)
+	headers = AWRowHeaders.new()
+	headers.setup(doc, grid)
+	headers.tooltip_text = " "
+	body.add_child(headers)
+	body.add_child(grid)
+	scroll.add_child(body)
 	add_child(scroll)
+	var sync_corner := func() -> void:
+		corner.custom_minimum_size.x = AWRowHeaders.COLLAPSED_WIDTH if headers.collapsed else AWRowHeaders.WIDTH
+		corner.text = "▸ Rows" if headers.collapsed else "◂ Rows"
+	corner.pressed.connect(func() -> void: headers.set_collapsed(not headers.collapsed))
+	headers.collapsed_changed.connect(sync_corner)
+	sync_corner.call()
 
 	_hbar = HScrollBar.new()
 	_hbar.value_changed.connect(doc.timeline_view.scroll_to)

@@ -1236,6 +1236,48 @@ func crossfade_selected() -> int:
 	return pairs.size()
 
 
+# --- Rows (layers) ----------------------------------------------------------------------
+
+## Sets a row setting ("name", "muted", "solo", "locked", "color") as one undo step.
+func set_row_prop(i: int, prop: String, value: Variant) -> void:
+	if i < 0:
+		return
+	var r := _ensure_row(i)
+	if r.get(prop) == value:
+		return
+	set_props(r, {prop: value}, {"name": "Rename Row", "muted": "Mute Row", "solo": "Solo Row", "locked": "Lock Row", "color": "Row Colour"}.get(prop, "Edit Row"))
+	if prop == "locked" and value:
+		var keep: Array[AWClip] = []
+		for c in selection:
+			if c.row != i:
+				keep.append(c)
+		if keep.size() != selection.size():
+			set_selection(keep)
+
+
+## Solo only this row (Ctrl+click on S): one undo step.
+func solo_only_row(i: int) -> void:
+	_ensure_row(i)
+	_begin("Solo Row Only")
+	for k in project.rows.size():
+		var r := project.rows[k]
+		if r == null:
+			continue
+		var want := k == i
+		if r.solo != want:
+			_add_do(_apply_props.bind(r, {"solo": want}))
+			_add_undo(_apply_props.bind(r, {"solo": r.solo}))
+	_commit()
+
+
+func _ensure_row(i: int) -> AWRow:
+	while project.rows.size() <= i:
+		project.rows.append(AWRow.new())
+	if project.rows[i] == null:
+		project.rows[i] = AWRow.new()
+	return project.rows[i]
+
+
 func rename_clip(c: AWClip, new_name: String) -> void:
 	new_name = new_name.strip_edges()
 	if c != null and new_name != "" and new_name != c.name:
@@ -1374,15 +1416,55 @@ func reset_effect(chain: AWChain, e: AWEffect) -> void:
 
 ## Static parameter value (used when the parameter has no curve).
 func set_param(e: AWEffect, key: String, value: float) -> void:
+	var others := _relative_targets(e, key)
 	var p := e.params.duplicate()
 	p[key] = value
-	set_props(e, {"params": p}, "Edit " + AWEffectLibrary.param_label(e.effect_type, key))
+	if others.is_empty():
+		set_props(e, {"params": p}, "Edit " + AWEffectLibrary.param_label(e.effect_type, key))
+		return
+	# Several clips selected: the same change (not the same value) reaches every one of them.
+	var delta := value - float(e.get_param(key))
+	_begin("Edit %s (%d clips)" % [AWEffectLibrary.param_label(e.effect_type, key), others.size() + 1])
+	_add_do(_apply_props.bind(e, {"params": p}))
+	_add_undo(_apply_props.bind(e, {"params": e.params.duplicate()}))
+	for o in others:
+		_add_do(_apply_props.bind(o, {"params": _shifted_params(o, key, delta)}))
+		_add_undo(_apply_props.bind(o, {"params": o.params.duplicate()}))
+	_commit()
 
 
 func preview_param(e: AWEffect, key: String, value: float) -> void:
+	var delta := value - float(e.get_param(key))
 	var p := e.params.duplicate()
 	p[key] = value
 	preview_set(e, {"params": p})
+	for o in _relative_targets(e, key):
+		preview_set(o, {"params": _shifted_params(o, key, delta)})
+
+
+## Clip-card values that change relatively on every selected clip when one is edited.
+const RELATIVE_KEYS := ["gain_db", "pitch_semitones", "pan"]
+
+
+## The other selected clips' Clip cards, when `e` is the focused clip's Clip card and several
+## clips are selected.
+func _relative_targets(e: AWEffect, key: String) -> Array[AWEffect]:
+	var out: Array[AWEffect] = []
+	if key not in RELATIVE_KEYS or focus_clip == null or selection.size() < 2 or not selection.has(focus_clip):
+		return out
+	if focus_clip.chain == null or focus_clip.chain.effects.is_empty() or focus_clip.chain.effects[0] != e:
+		return out
+	for c in selection:
+		if c != focus_clip and c.chain and not c.chain.effects.is_empty():
+			out.append(c.chain.effects[0])
+	return out
+
+
+static func _shifted_params(o: AWEffect, key: String, delta: float) -> Dictionary:
+	var spec := AWEffectLibrary.param_spec(o.effect_type, key)
+	var p := o.params.duplicate()
+	p[key] = clampf(float(o.get_param(key)) + delta, spec[0], spec[1])
+	return p
 
 
 func _apply_insert_effect(chain: AWChain, e: AWEffect, index: int, saved_curves: Array) -> void:

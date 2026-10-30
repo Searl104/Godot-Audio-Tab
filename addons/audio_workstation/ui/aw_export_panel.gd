@@ -17,6 +17,7 @@ var _end: SpinBox
 var _auto: Button
 var _path: LineEdit
 var _warn: Label
+var solo_note: Label
 var _format: OptionButton
 var _depth_row: Control
 var _quality_row: Control
@@ -125,6 +126,13 @@ func _ready() -> void:
 	_warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_warn.custom_minimum_size.x = 200
 	box.add_child(_warn)
+	solo_note = Label.new()
+	solo_note.name = "SoloNote"
+	solo_note.text = "Solo is on: only soloed rows are exported (muted rows never are)."
+	solo_note.add_theme_color_override("font_color", Color("#e5d84d"))
+	solo_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	solo_note.custom_minimum_size.x = 200
+	box.add_child(solo_note)
 
 	box.add_child(HSeparator.new())
 	var foot := HBoxContainer.new()
@@ -208,6 +216,7 @@ func _sync() -> void:
 		_path.text = p.export_path
 	var over := doc.export_will_overwrite()
 	_warn.visible = over
+	solo_note.visible = p.any_solo()
 	_path.tooltip_text = doc.export_target()
 	if over:
 		var s := StyleBoxFlat.new()

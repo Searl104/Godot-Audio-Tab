@@ -2092,6 +2092,124 @@ static func reverse_fade_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	d.new_project()
 
 
+static func _peak_l(r: PackedVector2Array) -> float:
+	var m := 0.0
+	for f in r:
+		m = maxf(m, absf(f.x))
+	return m
+
+
+static func row_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var e := d.engine
+	var hdr := screen.timeline.headers
+	var grid := screen.timeline.grid
+	write_wav("/tmp/aw_row_dc.wav", 0.5, func(_i: int, _rt: int) -> Vector2i: return Vector2i(8192, 8192))
+	d.new_project()
+	var a := d.add_clip_from_path("/tmp/aw_row_dc.wav", 0, 0.0) # row 0: 0.25
+	var b := d.add_clip_from_path("/tmp/aw_row_dc.wav", 1, 0.0) # row 1: 0.25
+	d.clear_selection()
+	await frames(tree, 2)
+	check(hdr != null and hdr.size.x >= AWRowHeaders.WIDTH - 1.0, "rows: headers sit left of the grid")
+	check(absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.5) < 0.01, "rows: both rows play (0.5)")
+
+	# Mute via the header's M button.
+	var bt := hdr.buttons(1)
+	click(hdr, (bt.mute as Rect2).get_center())
+	await frames(tree, 1)
+	check(d.project.row(1) != null and d.project.row(1).muted, "rows: M mutes the row")
+	check(absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.25) < 0.01, "rows: a muted row is silent")
+	d.undo()
+	check(not d.project.row(1).muted, "rows: mute undoes")
+
+	# Solo: only soloed rows play; Ctrl+click solos only that row; export follows.
+	click(hdr, (hdr.buttons(0).solo as Rect2).get_center())
+	await frames(tree, 1)
+	check(d.project.any_solo() and d.project.row_audible(0) and not d.project.row_audible(1), "rows: S solos the row")
+	check(absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.25) < 0.01, "rows: with a solo, other rows are silent")
+	check(screen.export_panel.solo_note.visible, "rows: the Export dock warns that Solo is on")
+	var path := ProjectSettings.globalize_path("user://aw_row_export.wav")
+	var r: Dictionary = await AWExporter.new().run(d.project, path, 32)
+	var w := _read_wav(path)
+	var pk := 0.0
+	if w.ok:
+		for i in range(0, (w.samples as PackedFloat32Array).size(), 2):
+			pk = maxf(pk, absf((w.samples as PackedFloat32Array)[i]))
+	check(r.ok and absf(pk - 0.25) < 0.01, "rows: the export follows Solo (peak %.3f)" % pk)
+	DirAccess.remove_absolute(path)
+	click(hdr, (hdr.buttons(1).solo as Rect2).get_center(), MOUSE_BUTTON_LEFT, true, false, false, true)
+	check(d.project.row(1).solo and not d.project.row(0).solo, "rows: Ctrl+click on S solos only that row")
+	d.undo()
+	d.undo()
+	check(not d.project.any_solo() and not screen.export_panel.solo_note.visible, "rows: solos undo, warning goes")
+
+	# Lock: clips on a locked row can't be selected or dragged.
+	d.select_clip(a)
+	click(hdr, (hdr.buttons(0).lock as Rect2).get_center())
+	check(d.project.row_locked(0) and not d.is_selected(a), "rows: L locks the row and drops its clips from the selection")
+	var ra := grid.clip_rect(a)
+	click(grid, ra.get_center())
+	click(grid, ra.get_center(), MOUSE_BUTTON_LEFT, false)
+	check(not d.is_selected(a), "rows: a click doesn't select a clip on a locked row")
+	drag(grid, Vector2(2, 2), Vector2(grid.size.x - 2, grid.row_h * 2.5))
+	check(not d.is_selected(a) and d.is_selected(b), "rows: box select skips locked rows")
+	d.undo()
+
+	# Header click selects the row's clips; double-click renames; colour.
+	click(hdr, Vector2(30, grid.row_h * 1.5))
+	check(d.selection.size() == 1 and d.is_selected(b), "rows: clicking a header selects its clips")
+	click(hdr, Vector2(30, grid.row_h * 1.5), MOUSE_BUTTON_LEFT, true, true)
+	check(hdr._edit.visible, "rows: double-click opens the name editor")
+	hdr._edit.text = "Debris"
+	hdr._edit.text_submitted.emit("Debris")
+	check(d.project.row_name(1) == "Debris" and d.project.row_name(0) == "Row 1", "rows: renamed (others keep their default name)")
+	d.set_row_prop(1, "color", AWProject.CLIP_COLORS[2])
+	check(d.project.row(1).color == AWProject.CLIP_COLORS[2], "rows: colour")
+
+	# Saved and reopened.
+	d.set_row_prop(0, "muted", true)
+	check(d.save_project("user://aw_rows.tres") and d.load_project("user://aw_rows.tres") and d.project.row_name(1) == "Debris" and d.project.row(0).muted, "rows: settings survive save and open")
+	if OS.get_environment("AW_SHOTS") != "":
+		d.add_clip_from_path("/tmp/aw_row_dc.wav", 2, 0.3)
+		d.set_row_prop(2, "solo", true)
+		d.set_row_prop(2, "name", "Sweetener")
+		d.set_row_prop(3, "locked", true)
+		await frames(tree, 3)
+		await shot(tree, "aw_row_headers.png")
+	d.new_project()
+
+
+static func multi_edit_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var clips := _grid_project(d)
+	var a := clips[0]
+	var b := clips[1]
+	var c := clips[2]
+	d.set_param(b.chain.effects[0], "gain_db", -6.0)
+	d.set_param(c.chain.effects[0], "pitch_semitones", 2.0)
+	d.set_selection([a, b, c] as Array[AWClip])
+	d._focus(a)
+	var src := a.chain.effects[0]
+	# A drag: previews, then restore + commit, as the Clip card does.
+	d.preview_param(src, "gain_db", 1.0)
+	d.preview_param(src, "gain_db", 3.0)
+	check(absf(float(b.chain.effects[0].get_param("gain_db")) + 3.0) < 1e-6, "multi-edit: the drag preview moves every selected clip by the same amount")
+	d.preview_param(src, "gain_db", 0.0)
+	d.set_param(src, "gain_db", 3.0)
+	check(absf(float(a.chain.effects[0].get_param("gain_db")) - 3.0) < 1e-6 and absf(float(b.chain.effects[0].get_param("gain_db")) + 3.0) < 1e-6 and absf(float(c.chain.effects[0].get_param("gain_db")) - 3.0) < 1e-6, "multi-edit: +3 dB on one adds 3 dB to each (balance kept)")
+	d.set_param(src, "pitch_semitones", -1.0)
+	check(absf(float(c.chain.effects[0].get_param("pitch_semitones")) - 1.0) < 1e-6 and absf(float(b.chain.effects[0].get_param("pitch_semitones")) + 1.0) < 1e-6, "multi-edit: pitch is relative too")
+	d.undo()
+	check(absf(float(c.chain.effects[0].get_param("pitch_semitones")) - 2.0) < 1e-6, "multi-edit: one undo restores every clip")
+	d.set_param(src, "gain_db", 24.0)
+	check(float(a.chain.effects[0].get_param("gain_db")) <= 24.0 + 1e-6 and float(c.chain.effects[0].get_param("gain_db")) <= 24.0 + 1e-6 and absf(float(b.chain.effects[0].get_param("gain_db")) - 18.0) < 1e-6, "multi-edit: each clip stays within the range")
+	d.set_selection([a] as Array[AWClip])
+	var bg := float(b.chain.effects[0].get_param("gain_db"))
+	d.set_param(src, "gain_db", -10.0)
+	check(is_equal_approx(float(b.chain.effects[0].get_param("gain_db")), bg), "multi-edit: one selected clip edits only itself")
+	d.new_project()
+
+
 static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	d.new_project()
@@ -3309,5 +3427,7 @@ static func run(screen: AWMainScreen) -> void:
 	await import_tests(tree, screen)
 	await grid_edit_tests(tree, screen)
 	await reverse_fade_tests(tree, screen)
+	await row_tests(tree, screen)
+	await multi_edit_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

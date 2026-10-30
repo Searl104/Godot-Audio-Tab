@@ -21,6 +21,9 @@ const PEAKS_PER_SEC := 120.0
 ## Height of one grid row. Alt+wheel changes it (taller rows show the waveform better).
 var row_h := ROW_H_DEFAULT
 
+## Row height changed (Alt+wheel), or the number of rows (the row headers follow).
+signal row_height_changed
+
 enum Drag { NONE, MOVE, TRIM_L, TRIM_R, FADE_IN, FADE_OUT, MARQUEE, CLICK, CTRL_PENDING, GAIN, SLIP }
 
 var doc: AWDocument
@@ -108,6 +111,7 @@ func set_row_height(h: float) -> void:
 	row_h = clampf(h, ROW_H_MIN, ROW_H_MAX)
 	_update_height()
 	queue_redraw()
+	row_height_changed.emit()
 
 
 func _update_height() -> void:
@@ -138,9 +142,12 @@ func row_at(y: float) -> int:
 	return maxi(0, floori(y / row_h))
 
 
+## The clip under `pos` (clips on locked rows are ignored).
 func clip_at(pos: Vector2) -> AWClip:
 	for i in range(doc.project.clips.size() - 1, -1, -1):
 		var c := doc.project.clips[i]
+		if doc.project.row_locked(c.row):
+			continue
 		if clip_rect(c).grow_individual(0, 0, 0, 0).has_point(pos):
 			return c
 	return null
@@ -268,7 +275,7 @@ func _motion(mm: InputEventMouseMotion) -> void:
 			_marquee_rect = Rect2(_press_pos, pos - _press_pos).abs()
 			var picked: Array[AWClip] = _marquee_base.duplicate()
 			for c in doc.project.clips:
-				if _marquee_rect.intersects(clip_rect(c)) and not picked.has(c):
+				if _marquee_rect.intersects(clip_rect(c)) and not picked.has(c) and not doc.project.row_locked(c.row):
 					picked.append(c)
 			doc.set_selection(picked)
 			queue_redraw()
@@ -553,6 +560,9 @@ func _draw() -> void:
 	for r in rows:
 		if r % 2 == 1:
 			draw_rect(Rect2(0, r * row_h, size.x, row_h), Color(1, 1, 1, 0.015))
+		var rr := doc.project.row(r)
+		if rr and rr.color.a > 0.0:
+			draw_rect(Rect2(0, r * row_h, size.x, row_h), Color(rr.color, 0.06))
 		draw_line(Vector2(0, (r + 1) * row_h - 0.5), Vector2(size.x, (r + 1) * row_h - 0.5), Color(0, 0, 0, 0.25))
 	AWTheme.draw_time_grid(self, view, 0.0, size.y)
 
@@ -600,7 +610,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	if r.end.x < -2.0 or r.position.x > size.x + 2.0:
 		return
 	var base := c.color
-	if c.muted:
+	if c.muted or not doc.project.row_audible(c.row):
 		base = base.lerp(Color(0.45, 0.45, 0.45), 0.75)
 	var body := base.darkened(0.45)
 	draw_rect(r, body)
@@ -663,7 +673,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 			draw_line(a, b, Color(red, 0.35), 1.0)
 			hx += 12.0
 	var external := not missing and doc.is_clip_external(c)
-	var label := ("◂ " if c.reversed else "") + c.name + ("  (muted)" if c.muted else "") + ("  (sound file missing)" if missing else "") + ("  ↗ outside project" if external else "")
+	var label := ("◂ " if c.reversed else "") + c.name + ("  (muted)" if c.muted else "") + ("  (locked)" if doc.project.row_locked(c.row) else "") + ("  (sound file missing)" if missing else "") + ("  ↗ outside project" if external else "")
 	draw_string(font, r.position + Vector2(5, 10), label, HORIZONTAL_ALIGNMENT_LEFT, maxf(r.size.x - 10.0, 0.0), fs, c_text)
 	var fx_count := c.chain.effects.size() - 1 if c.chain else 0
 	if fx_count > 0 and r.size.x > 90.0:
