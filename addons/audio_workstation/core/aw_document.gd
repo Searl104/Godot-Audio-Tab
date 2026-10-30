@@ -1263,7 +1263,7 @@ func bake_lfo(chain: AWChain, c: AWCurve) -> void:
 	if l == null:
 		return
 	var old_keys := chain.get_keys(c)
-	var fmax := maxf(l.freq_hz, maxf(l.freq_hz + l.freq_accel * l.span(), 0.05))
+	var fmax := maxf(l.freq_hz, maxf(l.freq_hz + l.freq_accel * l.span(), 0.05)) * (1.0 + 0.75 * l.jitter_rate)
 	var step := clampf(1.0 / (fmax * 16.0), 0.002, 0.05)
 	if l.span() / step > 4000.0:
 		step = l.span() / 4000.0
@@ -1283,10 +1283,10 @@ func bake_lfo(chain: AWChain, c: AWCurve) -> void:
 	match l.shape:
 		AWLfo.Shape.SQUARE: jump = 0.5
 		AWLfo.Shape.SAW, AWLfo.Shape.RANDOM: jump = 1.0
-	if jump > 0.0:
-		var cycles := jump
+	if jump > 0.0 and l.glide <= 0.0: # Glide has no hard edges
+		var cycles := ceilf((l.warped_phase(l.start_sec) + 1e-9) / jump) * jump
 		while true:
-			var edge := l.time_of_phase(cycles)
+			var edge := l.time_of_warped_phase(cycles)
 			if edge >= l.end_sec:
 				break
 			times.append(edge - BAKE_EDGE)

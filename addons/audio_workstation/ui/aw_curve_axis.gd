@@ -151,7 +151,7 @@ func _draw() -> void:
 		draw_string(font, Vector2(8, ty), t[1], HORIZONTAL_ALIGNMENT_LEFT, size.x - 10, fs, Color(c_text, 0.85))
 
 	# LFO Max / Min tags while its panel is open.
-	if doc.lfo_curve == c and c.lfo:
+	if doc.lfo_curve == c and c.lfo and c.lfo.mode == AWLfo.Mode.ABSOLUTE:
 		for v: float in [c.lfo.max_value, c.lfo.min_value]:
 			var ly := graph.val_to_y(c, ch.to_norm(c, v))
 			var lt := AWEffectLibrary.format_value(e.effect_type, c.param, v).replace(" " + unit, "") if unit != "" else AWEffectLibrary.format_value(e.effect_type, c.param, v)

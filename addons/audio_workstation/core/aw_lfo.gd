@@ -10,6 +10,8 @@ extends Resource
 
 enum Shape { SINE, TRIANGLE, SQUARE, SAW, RANDOM }
 const SHAPE_NAMES := ["Sine", "Triangle", "Square", "Saw", "Random"]
+## Absolute: swing between Min and Max. Relative: wobble ±Depth around the drawn curve.
+enum Mode { ABSOLUTE, RELATIVE }
 
 @export var enabled: bool = true
 @export var shape: Shape = Shape.SINE
@@ -27,8 +29,38 @@ const SHAPE_NAMES := ["Sine", "Triangle", "Square", "Saw", "Random"]
 ## Active span in curve time. Phase is anchored at start_sec.
 @export var start_sec: float = 0.0
 @export var end_sec: float = 1.0
-## Seed for the Random (sample-and-hold) shape.
+## Seed for the Random shape and for Jitter.
 @export var random_seed: int = 1
+@export var mode: Mode = Mode.ABSOLUTE
+## Relative mode: swing ± this share of the parameter's range (on the curve's scale; 0.1 = ±10%).
+@export_range(0.0, 1.0, 0.001) var depth: float = 0.1
+## Where the cycle starts at start_sec, in degrees.
+@export_range(0.0, 360.0, 0.1) var phase_deg: float = 0.0
+## Randomizes each cycle's length (0..1; 1 = cycles vary by about ±50%).
+@export_range(0.0, 1.0, 0.01) var jitter_rate: float = 0.0
+## Randomizes each cycle's height (0..1; 1 = some cycles nearly flat).
+@export_range(0.0, 1.0, 0.01) var jitter_depth: float = 0.0
+## Softens the jumps of Square, Saw and Random (0 = hard, 1 = Square becomes a sine, Random fully smooth).
+@export_range(0.0, 1.0, 0.01) var glide: float = 0.0
+## The swing halves every this many seconds (0 = off), dying away into the drawn curve.
+@export_range(0.0, 60.0, 0.01) var decay_sec: float = 0.0
+
+
+## Everything that changes the LFO's output, for caches.
+func signature() -> Array:
+	return [shape, max_value, min_value, freq_hz, fade_in_sec, fade_out_sec, start_sec, end_sec, random_seed,
+		freq_accel, fade_smoothing, mode, depth, phase_deg, jitter_rate, jitter_depth, glide, decay_sec]
+
+
+## Pseudo-random 0..1 for integer k (same formula in C++).
+static func hash01(k: float, seed: float) -> float:
+	var r := sin(k * 12.9898 + seed * 78.233) * 43758.5453
+	return r - floorf(r)
+
+
+static func _smooth(x: float) -> float:
+	x = clampf(x, 0.0, 1.0)
+	return x * x * (3.0 - 2.0 * x)
 
 
 func span() -> float:
@@ -56,21 +88,74 @@ func time_of_phase(cycles: float) -> float:
 	return start_sec + (-freq_hz + sqrt(disc)) / freq_accel
 
 
-## Oscillator position 0..1 at curve time t.
+## Phase as heard: Phase offset plus Jitter's per-cycle stretch (still increasing).
+func warped_phase(t: float) -> float:
+	var p := phase(t) + phase_deg / 360.0
+	if jitter_rate > 0.0:
+		var k := floorf(p)
+		var a := (hash01(k, random_seed + 17.0) - 0.5) * 0.5 * jitter_rate
+		var b := (hash01(k + 1.0, random_seed + 17.0) - 0.5) * 0.5 * jitter_rate
+		p += a + (b - a) * _smooth(p - k)
+	return p
+
+
+## Curve time in [start_sec, end_sec] where warped_phase reaches `cycles`, or INF (bisection;
+## warped_phase never decreases).
+func time_of_warped_phase(cycles: float) -> float:
+	if warped_phase(end_sec) < cycles:
+		return INF
+	var a := start_sec
+	var b := end_sec
+	for i in 48:
+		var m := (a + b) * 0.5
+		if warped_phase(m) < cycles:
+			a = m
+		else:
+			b = m
+	return b
+
+
+## Jitter's per-cycle height factor (1 = full), blended smoothly between cycles.
+func cycle_amp(p: float) -> float:
+	if jitter_depth <= 0.0:
+		return 1.0
+	var k := floorf(p)
+	var a := 1.0 - jitter_depth * hash01(k, random_seed + 31.0)
+	var b := 1.0 - jitter_depth * hash01(k + 1.0, random_seed + 31.0)
+	return a + (b - a) * _smooth(p - k)
+
+
+## Oscillator position 0..1 at curve time t (before Jitter's height factor).
 func wave(t: float) -> float:
-	var p := phase(t)
-	var ph := p - floorf(p)
+	return shape_at(warped_phase(t))
+
+
+func shape_at(p: float) -> float:
+	var fl := floorf(p)
+	var ph := p - fl
 	match shape:
 		Shape.TRIANGLE:
 			return 1.0 - absf(ph * 2.0 - 1.0)
 		Shape.SQUARE:
-			return 1.0 if ph < 0.5 else 0.0
+			if glide <= 0.0:
+				return 1.0 if ph < 0.5 else 0.0
+			return 0.5 + 0.5 * clampf(sin(TAU * p) / glide, -1.0, 1.0)
 		Shape.SAW:
-			return ph
+			if glide <= 0.0 or ph < 1.0 - glide * 0.5:
+				return ph / (1.0 - glide * 0.5)
+			return 1.0 - _smooth((ph - (1.0 - glide * 0.5)) / (glide * 0.5))
 		Shape.RANDOM:
-			var r := sin(floorf(p) * 12.9898 + random_seed * 78.233) * 43758.5453
-			return r - floorf(r)
+			var r := hash01(fl, random_seed)
+			if glide <= 0.0 or ph < 1.0 - glide:
+				return r
+			return r + (hash01(fl + 1.0, random_seed) - r) * _smooth((ph - (1.0 - glide)) / glide)
 	return 0.5 + 0.5 * sin(TAU * p)
+
+
+## Wave around its centre, -1..1, with Jitter's height applied.
+func swing(t: float) -> float:
+	var p := warped_phase(t)
+	return (shape_at(p) * 2.0 - 1.0) * cycle_amp(p)
 
 
 ## Effective fades (they never overlap: together at most the span).
@@ -91,7 +176,10 @@ func envelope(t: float) -> float:
 	if f.y > 0.0:
 		e = minf(e, (end_sec - t) / f.y)
 	e = clampf(e, 0.0, 1.0)
-	return e + fade_smoothing * (e * e * (3.0 - 2.0 * e) - e)
+	e = e + fade_smoothing * (e * e * (3.0 - 2.0 * e) - e)
+	if decay_sec > 0.0:
+		e *= pow(0.5, (t - start_sec) / decay_sec)
+	return e
 
 
 ## One-line description, e.g. "LFO sine 4.0 Hz · 0.20–0.80".
@@ -101,5 +189,7 @@ func summary(effect_type: String, param: String) -> String:
 	var spec := AWEffectLibrary.param_spec(effect_type, param)
 	var unit: String = spec[4]
 	var fmt := func(v: float) -> String: return AWEffectLibrary.format_value(effect_type, param, v).replace(" " + unit, "") if unit != "" else AWEffectLibrary.format_value(effect_type, param, v)
+	if mode == Mode.RELATIVE:
+		return "LFO %s %s Hz · ±%d%%" % [SHAPE_NAMES[shape].to_lower(), String.num(freq_hz, 2 if freq_hz < 1.0 else 1), int(round(depth * 100.0))]
 	return "LFO %s %s Hz · %s–%s%s" % [SHAPE_NAMES[shape].to_lower(), String.num(freq_hz, 2 if freq_hz < 1.0 else 1),
 		fmt.call(lo), fmt.call(hi), (" " + unit) if unit != "" else ""]

@@ -369,6 +369,17 @@ static inline double aw_clamp01(double x) {
 	return x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x);
 }
 
+// AWLfo.hash01 / _smooth.
+static inline double aw_hash01(double k, double seed) {
+	const double r = std::sin(k * 12.9898 + seed * 78.233) * 43758.5453;
+	return r - std::floor(r);
+}
+
+static inline double aw_smooth(double x) {
+	x = aw_clamp01(x);
+	return x * x * (3.0 - 2.0 * x);
+}
+
 static double aw_to_norm(int scale, double v, double lo, double hi) {
 	if (scale == 1) { // LOG
 		if (lo > 0.0 && hi > lo) {
@@ -436,6 +447,8 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 	const bool has_lfo = !lfo.is_empty();
 	int shape = 0;
 	double lmin = 0, lmax = 0, freq = 1, fade_in = 0, fade_out = 0, lstart = 0, lend = 1, seed = 1, accel = 0, smooth = 0;
+	int lmode = 0;
+	double depth = 0.1, phase0 = 0.0, jit_rate = 0.0, jit_depth = 0.0, glide = 0.0, decay = 0.0;
 	double lo_n = 0, hi_n = 0, f_in = 0, f_out = 0, span = 0;
 	if (has_lfo) {
 		shape = lfo.get("shape", 0);
@@ -449,6 +462,13 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 		seed = (double)(int64_t)lfo.get("seed", 1);
 		accel = lfo.get("accel", 0.0);
 		smooth = lfo.get("smooth", 0.0);
+		lmode = lfo.get("mode", 0);
+		depth = lfo.get("depth", 0.1);
+		phase0 = lfo.get("phase", 0.0); // cycles
+		jit_rate = lfo.get("jit_rate", 0.0);
+		jit_depth = lfo.get("jit_depth", 0.0);
+		glide = lfo.get("glide", 0.0);
+		decay = lfo.get("decay", 0.0);
 		lo_n = aw_to_norm(scale, std::min(lmin, lmax), lo, hi);
 		hi_n = aw_to_norm(scale, std::max(lmin, lmax), lo, hi);
 		span = std::max(lend - lstart, 0.0);
@@ -481,6 +501,9 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 				}
 				e = aw_clamp01(e);
 				e = e + smooth * (e * e * (3.0 - 2.0 * e) - e);
+				if (decay > 0.0) {
+					e *= std::pow(0.5, (t - lstart) / decay);
+				}
 			}
 			if (e > 0.0) {
 				double tau = t - lstart;
@@ -493,6 +516,15 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 					}
 					p = freq * tau + 0.5 * accel * tau * tau;
 				}
+				// AWLfo.warped_phase: Phase offset, then Jitter's per-cycle stretch.
+				p += phase0;
+				if (jit_rate > 0.0) {
+					const double k = std::floor(p);
+					const double ja = (aw_hash01(k, seed + 17.0) - 0.5) * 0.5 * jit_rate;
+					const double jb = (aw_hash01(k + 1.0, seed + 17.0) - 0.5) * 0.5 * jit_rate;
+					p += ja + (jb - ja) * aw_smooth(p - k);
+				}
+				// AWLfo.shape_at
 				const double fl = std::floor(p);
 				const double ph = p - fl;
 				double wv;
@@ -501,21 +533,45 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 						wv = 1.0 - std::fabs(ph * 2.0 - 1.0);
 						break;
 					case 2:
-						wv = ph < 0.5 ? 1.0 : 0.0;
+						if (glide <= 0.0) {
+							wv = ph < 0.5 ? 1.0 : 0.0;
+						} else {
+							wv = 0.5 + 0.5 * CLAMP(std::sin(6.283185307179586 * p) / glide, -1.0, 1.0);
+						}
 						break;
 					case 3:
-						wv = ph;
+						if (glide <= 0.0 || ph < 1.0 - glide * 0.5) {
+							wv = ph / (1.0 - glide * 0.5);
+						} else {
+							wv = 1.0 - aw_smooth((ph - (1.0 - glide * 0.5)) / (glide * 0.5));
+						}
 						break;
 					case 4: {
-						const double r = std::sin(fl * 12.9898 + seed * 78.233) * 43758.5453;
-						wv = r - std::floor(r);
+						const double r = aw_hash01(fl, seed);
+						if (glide <= 0.0 || ph < 1.0 - glide) {
+							wv = r;
+						} else {
+							wv = r + (aw_hash01(fl + 1.0, seed) - r) * aw_smooth((ph - (1.0 - glide)) / glide);
+						}
 						break;
 					}
 					default:
 						wv = 0.5 + 0.5 * std::sin(6.283185307179586 * p);
 				}
-				const double target = lo_n + (hi_n - lo_n) * wv;
-				n = aw_clamp01(b + (target - b) * e);
+				// AWLfo.cycle_amp, then AWChain.sample_norm
+				double amp = 1.0;
+				if (jit_depth > 0.0) {
+					const double aa = 1.0 - jit_depth * aw_hash01(fl, seed + 31.0);
+					const double ab = 1.0 - jit_depth * aw_hash01(fl + 1.0, seed + 31.0);
+					amp = aa + (ab - aa) * aw_smooth(ph);
+				}
+				const double sw = (wv * 2.0 - 1.0) * amp;
+				if (lmode == 1) {
+					n = aw_clamp01(b + depth * sw * e);
+				} else {
+					const double target = lo_n + (hi_n - lo_n) * (0.5 + 0.5 * sw);
+					n = aw_clamp01(b + (target - b) * e);
+				}
 			}
 		}
 		double v;
@@ -724,7 +780,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 9; // 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 10; // 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {

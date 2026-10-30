@@ -638,13 +638,34 @@ func _draw_lfo_overlay(ch: AWChain, c_text: Color) -> void:
 	var xb := local_to_x(l.end_sec)
 	var font := get_theme_default_font()
 	var fs := get_theme_default_font_size() - 3
-	for v: float in [l.max_value, l.min_value]:
-		var y := val_to_y(c, ch.to_norm(c, v))
-		draw_dashed_line(Vector2(xa, y), Vector2(xb, y), Color(col, 0.85 if l.enabled else 0.35), 1.0, 5.0)
-	var hi := maxf(l.max_value, l.min_value)
-	var lo := minf(l.max_value, l.min_value)
-	draw_string(font, Vector2(xa + 6, val_to_y(c, ch.to_norm(c, hi)) - 4), "Max", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, 0.9))
-	draw_string(font, Vector2(xa + 6, val_to_y(c, ch.to_norm(c, lo)) + fs + 2), "Min", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, 0.9))
+	if l.mode == AWLfo.Mode.RELATIVE:
+		# ±Depth around the drawn curve.
+		var x0 := maxf(xa, 0.0)
+		var x1 := minf(xb, size.x)
+		if x1 > x0:
+			var upper := PackedVector2Array()
+			var lower := PackedVector2Array()
+			var x := x0
+			while true:
+				var b := ch.base_norm(c, x_to_local(x))
+				upper.append(Vector2(x, val_to_y(c, clampf(b + l.depth, 0.0, 1.0))))
+				lower.append(Vector2(x, val_to_y(c, clampf(b - l.depth, 0.0, 1.0))))
+				if x >= x1:
+					break
+				x = minf(x + 4.0, x1)
+			for line: PackedVector2Array in [upper, lower]:
+				for i in range(0, line.size() - 1, 2):
+					draw_line(line[i], line[i + 1], Color(col, 0.85 if l.enabled else 0.35), 1.0, true)
+			draw_string(font, upper[0] + Vector2(6, -4), "+%d%%" % int(round(l.depth * 100.0)), HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, 0.9))
+			draw_string(font, lower[0] + Vector2(6, fs + 2), "−%d%%" % int(round(l.depth * 100.0)), HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, 0.9))
+	else:
+		for v: float in [l.max_value, l.min_value]:
+			var y := val_to_y(c, ch.to_norm(c, v))
+			draw_dashed_line(Vector2(xa, y), Vector2(xb, y), Color(col, 0.85 if l.enabled else 0.35), 1.0, 5.0)
+		var hi := maxf(l.max_value, l.min_value)
+		var lo := minf(l.max_value, l.min_value)
+		draw_string(font, Vector2(xa + 6, val_to_y(c, ch.to_norm(c, hi)) - 4), "Max", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, 0.9))
+		draw_string(font, Vector2(xa + 6, val_to_y(c, ch.to_norm(c, lo)) + fs + 2), "Min", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, 0.9))
 	if not l.enabled:
 		return
 	var f := l.fades()
