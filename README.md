@@ -224,6 +224,30 @@ The **Audio Export** dock bakes the whole sound (every clip, clip and master cha
 - Ogg encoding uses vendored libogg 1.3.5 and libvorbis 1.3.7 (BSD, `extension/thirdparty/`). Needs engine 0.8.0 or newer.
 
 
+## Timing and navigation (0.15, engine 0.11.0)
+
+- **Snap targets:** the Snap menu (toolbar) holds the time grid (ms steps, or 24 / 30 / 60 fps for syncing with
+  animation) and, under "Also snap to", **Clip Edges**, **Playhead**, **Markers** (on by default) and **Transients**
+  (off by default; ticks show on the clips while it's on). Targets attract within 8 pixels and win over the grid; a
+  guide line shows what a dragged clip snapped to. Both ends of a moved clip snap. Alt drags freely. Remembered.
+- **Transients** are found in each sound file (sharp rises above the recent level), so a layer's attack can be lined up
+  with another's.
+- **Markers:** M adds one at the playhead; Ctrl+Left / Ctrl+Right jump between them. On the ruler: drag to move,
+  double-click to rename, right-click to delete or add one there. They show as dashed lines on the grid.
+- **Exported WAVs carry the markers as named cue points, and the loop region (when Loop is on) as a sampler loop** that
+  Godot's WAV import picks up with Loop Mode "Detect From WAV". (Ogg files have neither.)
+- **Ruler:** click moves the playhead; **drag scrubs** like tape (speed and direction follow the mouse, backwards when
+  dragging left, silent when you hold still); **Shift+drag selects a time range**. Dragging on the loop strip at the top
+  sets the loop's start and end; its edges still adjust it.
+- **Time selection:** right-click the ruler for Loop Selection, Split Clips at Selection, Delete Inside Selection (cuts
+  the clips at the edges and removes the parts inside; nothing moves), Zoom to Selection, Clear. Delete with no clips
+  selected removes the audio inside; Esc clears it.
+- **Navigation:** Z zooms to the time selection or the selected clips; a zoom slider sits in the Timeline header; the
+  **overview** strip above the ruler shows the whole sound (click or drag to move the view, drag the box's edges to
+  zoom); hovering a clip shows its file, length, gain, pitch, pan, offset, fades and effects.
+
+Sounds saved by 0.15 use format 5 (markers).
+
 ## Grid editing (0.14, engine 0.10.0)
 
 | Do | How |

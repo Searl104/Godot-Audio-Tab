@@ -1,6 +1,7 @@
 #include "aw_core.h"
 
 #include <chrono>
+#include <thread>
 
 #include <algorithm>
 #include <cmath>
@@ -36,6 +37,11 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_api_level"), &AWCore::get_api_level);
 	ClassDB::bind_method(D_METHOD("get_load"), &AWCore::get_load);
 	ClassDB::bind_method(D_METHOD("get_fx_swaps"), &AWCore::get_fx_swaps);
+	ClassDB::bind_method(D_METHOD("scrub_begin", "frame"), &AWCore::scrub_begin);
+	ClassDB::bind_method(D_METHOD("scrub_to", "frame"), &AWCore::scrub_to);
+	ClassDB::bind_method(D_METHOD("scrub_end"), &AWCore::scrub_end);
+	ClassDB::bind_method(D_METHOD("is_scrubbing"), &AWCore::is_scrubbing);
+	ClassDB::bind_method(D_METHOD("scrub_simulate", "targets", "block"), &AWCore::scrub_simulate);
 	ClassDB::bind_method(D_METHOD("play", "from_frame"), &AWCore::play);
 	ClassDB::bind_method(D_METHOD("stop"), &AWCore::stop);
 	ClassDB::bind_method(D_METHOD("seek", "frame"), &AWCore::seek);
@@ -800,7 +806,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 11; // 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 12; // 12: scrub; 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
@@ -852,6 +858,102 @@ void AWCore::set_loop(bool p_enabled, int64_t p_start_frame, int64_t p_end_frame
 	loop_start.store(std::max<int64_t>(0, p_start_frame));
 	loop_end.store(p_end_frame);
 	loop_enabled.store(p_enabled);
+}
+
+// --- Scrub --------------------------------------------------------------------------
+
+void AWCore::Scrub::prepare(const std::shared_ptr<const Plan> &p_plan, double p_rate, double p_pos) {
+	buf.assign((size_t)CHUNK * 2, 0.0f);
+	buf_start = INT64_MIN;
+	pos = p_pos;
+	vel = 0.0;
+	fx.bind(p_plan, p_rate);
+	fx.scratch.reserve((size_t)CHUNK * 2 + 64);
+}
+
+void AWCore::Scrub::render(const std::shared_ptr<const Plan> &p_plan, double p_rate, double p_target, float *r_out, int64_t p_frames) {
+	std::memset(r_out, 0, sizeof(float) * (size_t)p_frames * 2);
+	if (!p_plan || buf.empty()) {
+		return;
+	}
+	const bool fx_ok = fx.plan == p_plan;
+	// Velocity follows the distance to the target (reaches it in ~50 ms), smoothed over ~20 ms.
+	const double reach = p_rate * 0.05;
+	const double k = 1.0 - std::exp(-1.0 / (p_rate * 0.02));
+	for (int64_t i = 0; i < p_frames; i++) {
+		double want = (p_target - pos) / reach;
+		want = want > 4.0 ? 4.0 : (want < -4.0 ? -4.0 : want);
+		vel += (want - vel) * k;
+		pos += vel;
+		const int64_t f0 = (int64_t)std::floor(pos);
+		if (f0 < 0) {
+			continue;
+		}
+		if (buf_start == INT64_MIN || f0 < buf_start || f0 + 1 >= buf_start + CHUNK) {
+			// Refill around the position: ahead of it when moving forward, behind it when backward.
+			int64_t start = vel >= 0.0 ? f0 - 16 : f0 - CHUNK + 16;
+			start = std::max<int64_t>(0, start);
+			std::fill(buf.begin(), buf.end(), 0.0f);
+			if (fx_ok && fx.next != start) {
+				fx.reset();
+			}
+			render_voices(*p_plan, start, CHUNK, buf.data(), fx_ok ? &fx : nullptr);
+			apply_master(*p_plan, start, CHUNK, buf.data(), fx_ok ? &fx : nullptr);
+			if (fx_ok) {
+				fx.next = start + CHUNK;
+			}
+			buf_start = start;
+		}
+		const int64_t j = f0 - buf_start;
+		const float f = (float)(pos - (double)f0);
+		const float g = (float)std::min(1.0, std::fabs(vel) * 3.0); // a stopped tape is silent
+		r_out[i * 2] = (buf[(size_t)j * 2] * (1.0f - f) + buf[(size_t)(j + 1) * 2] * f) * g;
+		r_out[i * 2 + 1] = (buf[(size_t)j * 2 + 1] * (1.0f - f) + buf[(size_t)(j + 1) * 2 + 1] * f) * g;
+	}
+}
+
+void AWCore::scrub_begin(double p_frame) {
+	playing.store(false);
+	scrubbing.store(false); // the audio thread leaves the state alone before it is rebuilt
+	while (scrub_rendering.load()) {
+		std::this_thread::yield();
+	}
+	scrub_target.store(p_frame);
+	scrub_state.prepare(current_plan(), sample_rate, p_frame);
+	scrubbing.store(true);
+}
+
+void AWCore::scrub_to(double p_frame) {
+	scrub_target.store(std::max(0.0, p_frame));
+}
+
+void AWCore::scrub_end() {
+	scrubbing.store(false);
+	position.store((int64_t)std::llround(scrub_target.load()));
+}
+
+bool AWCore::is_scrubbing() const {
+	return scrubbing.load();
+}
+
+PackedVector2Array AWCore::scrub_simulate(const PackedFloat64Array &p_targets, int64_t p_block) {
+	PackedVector2Array out;
+	if (p_targets.is_empty() || p_block <= 0) {
+		return out;
+	}
+	Scrub s;
+	const auto pl = current_plan();
+	s.prepare(pl, sample_rate, p_targets[0]);
+	std::vector<float> tmp((size_t)p_block * 2);
+	out.resize(p_targets.size() * p_block);
+	Vector2 *w = out.ptrw();
+	for (int64_t b = 0; b < p_targets.size(); b++) {
+		s.render(pl, sample_rate, p_targets[b], tmp.data(), p_block);
+		for (int64_t i = 0; i < p_block; i++) {
+			w[b * p_block + i] = Vector2(tmp[(size_t)i * 2], tmp[(size_t)i * 2 + 1]);
+		}
+	}
+	return out;
 }
 
 bool AWCore::is_playing() const {
@@ -937,7 +1039,15 @@ int32_t AWCore::mix(AudioFrame *p_buffer, int32_t p_frames) {
 	int32_t done = 0;
 	while (done < p_frames) {
 		const int32_t n = std::min(p_frames - done, 1024);
-		mix_transport(buf, n);
+		scrub_rendering.store(true);
+		if (scrubbing.load()) {
+			scrub_state.render(current_plan(), sample_rate, scrub_target.load(), buf, n);
+			position.store((int64_t)std::max(0.0, scrub_state.pos));
+			scrub_rendering.store(false);
+		} else {
+			scrub_rendering.store(false);
+			mix_transport(buf, n);
+		}
 		for (int32_t i = 0; i < n; i++) {
 			p_buffer[done + i].left = buf[i * 2];
 			p_buffer[done + i].right = buf[i * 2 + 1];

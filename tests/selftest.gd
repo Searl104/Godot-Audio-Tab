@@ -2210,6 +2210,290 @@ static func multi_edit_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 	d.new_project()
 
 
+static func timing_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var e := d.engine
+	var grid := screen.timeline.grid
+	var ruler: AWTimeRuler = screen.timeline._ruler
+	var saved := {}
+	for t: Array in AWDocument.SNAP_TARGETS:
+		saved[t[0]] = d.snap_target_on(t[0])
+	var clips := _grid_project(d)
+	var a := clips[0] # row 0, 0.0 .. 1.0
+	var b := clips[1] # row 1, 0.5 .. 1.3
+	d.set_snap(0.05)
+	d.seek(0.0)
+	# A close zoom, so "a few pixels" is a few milliseconds whatever the test window's width.
+	d.timeline_view.pixels_per_sec = 800.0
+	d.timeline_view.scroll_x = 0.0
+	d.timeline_view.changed.emit()
+	await frames(tree, 2)
+	var pps := d.timeline_view.pixels_per_sec
+
+	# Object snapping: a clip edge within a few pixels wins over the grid; far away the grid applies.
+	for k in ["edges", "playhead", "markers"]:
+		d.set_snap_target(k, true)
+	d.set_snap_target("transients", false)
+	var tg := d.snap_targets([b])
+	check(tg.has(0.0) and tg.has(1.0) and not tg.has(0.5), "snap: targets are the other clips' edges (not the dragged clip's)")
+	var near := 1.0 + 4.0 / pps # 4 px right of a's end
+	check(absf(d.snap_span(near, b.play_length(), tg) - 1.0) < 1e-9, "snap: a start 4 px from a clip end snaps onto it")
+	var near_end := 1.0 - b.play_length() - 3.0 / pps # b's END 3 px before a's end
+	check(absf(d.snap_span(near_end, b.play_length(), tg) + b.play_length() - 1.0) < 1e-9, "snap: the end of a moved clip snaps too")
+	check(absf(d.snap_span(1.4321, b.play_length(), tg) - 1.45) < 1e-9, "snap: away from targets the grid applies (1.45)")
+	d.set_snap_target("edges", false)
+	check(absf(d.snap_span(near, b.play_length(), d.snap_targets([b])) - d.snap(near)) < 1e-9, "snap: Clip Edges off ignores edges")
+	d.set_snap_target("edges", true)
+	d.seek(2.2)
+	check(absf(d.snap_to(2.2 + 5.0 / pps, d.snap_targets()) - 2.2) < 1e-9, "snap: the playhead attracts")
+	d.set_snap(0.0)
+	check(d.snap_targets().is_empty() and is_equal_approx(d.snap_to(1.234567, PackedFloat64Array([1.2345])), 1.234567), "snap: nothing snaps with snap off")
+	d.set_snap(1.0 / 30.0)
+	check(absf(d.snap(0.51) - 15.0 / 30.0) < 1e-9, "snap: 30 fps grid (0.51 -> frame 15)")
+	d.set_snap(0.05)
+
+	# Dragging a clip on the grid snaps its edge onto another clip's end (and shows a guide).
+	d.select_clip(b)
+	var rb := grid.clip_rect(b)
+	var from := rb.get_center()
+	var to := from + Vector2((1.0 + 3.0 / pps - b.start_sec) * pps, 0)
+	click(grid, from)
+	move(grid, from.lerp(to, 0.5))
+	move(grid, to)
+	var guide := grid._snap_hit
+	click(grid, to, MOUSE_BUTTON_LEFT, false)
+	check(absf(b.start_sec - 1.0) < 1e-9 and absf(guide - 1.0) < 1e-9, "snap: dragging a clip near another's end lands exactly on it (%.4f)" % b.start_sec)
+	d.undo()
+
+	# Transients: a click track yields onsets at its clicks; clips report them in project time.
+	write_wav("/tmp/aw_clicks.wav", 1.0, func(i: int, rt: int) -> Vector2i:
+		var t := float(i) / rt
+		var v := 0
+		for onset in [0.1, 0.35, 0.7]:
+			if t >= onset and t < onset + 0.05:
+				v = int(20000.0 * exp(-(t - onset) * 80.0) * sin(TAU * 900.0 * (t - onset)))
+		return Vector2i(v, v))
+	var ct := d.add_clip_from_path("/tmp/aw_clicks.wav", 3, 1.0)
+	var on := d.source_transients("/tmp/aw_clicks.wav")
+	var ok_on := on.size() == 3
+	for k in mini(on.size(), 3):
+		ok_on = ok_on and absf(on[k] - [0.1, 0.35, 0.7][k]) < 0.012
+	check(ok_on, "transients: three clicks found near 0.10, 0.35, 0.70 s (%s)" % str(on))
+	d.set_props(ct, {"source_offset_sec": 0.2, "length_sec": 0.7}, "setup")
+	var cp := d.clip_transients(ct)
+	check(cp.size() == 2 and absf(cp[0] - 1.15) < 0.012 and absf(cp[1] - 1.5) < 0.012, "transients: follow the clip's offset and position (%s)" % str(cp))
+	d.set_snap_target("transients", true)
+	check(d.snap_targets().has(cp[0]), "transients: are snap targets when switched on")
+	d.set_snap_target("transients", false)
+
+	# Snap menu: steps as radio items, targets as remembered checkboxes.
+	var sm: MenuButton = screen.find_child("SnapMenu", true, false)
+	var pop := sm.get_popup() if sm else null
+	check(pop != null and pop.get_item_index(100 + 3) >= 0 and not pop.is_item_checked(pop.get_item_index(103)), "snap menu: has the target checkboxes (Transients off)")
+	if pop:
+		pop.id_pressed.emit(103)
+		check(d.snap_target_on("transients") and pop.is_item_checked(pop.get_item_index(103)), "snap menu: ticking Transients turns it on")
+		pop.id_pressed.emit(103)
+		pop.id_pressed.emit(AWDocument.SNAP_OPTIONS.size() - 1)
+		check(is_equal_approx(d.snap_sec, 1.0 / 60.0) and sm.text.begins_with("60 fps"), "snap menu: picking 60 fps (%s)" % sm.text)
+		pop.id_pressed.emit(3)
+
+	# Markers: M adds at the playhead; sorted; jump with Ctrl+arrows; drag on the ruler; rename; delete.
+	d.seek(0.8)
+	key(screen, KEY_M)
+	d.seek(0.3)
+	key(screen, KEY_M)
+	check(d.project.markers.size() == 2 and d.project.markers[0].time_sec == 0.3 and d.project.markers[1].name == "Marker 1", "markers: M adds at the playhead, kept in time order")
+	d.seek(0.0)
+	key(screen, KEY_RIGHT, true)
+	check(is_equal_approx(d.playhead_sec, 0.3), "markers: Ctrl+Right jumps to the next marker")
+	key(screen, KEY_RIGHT, true)
+	key(screen, KEY_LEFT, true)
+	check(is_equal_approx(d.playhead_sec, 0.3), "markers: Ctrl+Left jumps back")
+	var m1: AWMarker = d.project.markers[1]
+	var mx := d.timeline_view.time_to_x(m1.time_sec)
+	var ry := ruler.size.y - 6.0
+	check(ruler.marker_at(Vector2(mx + 2, ry)) == m1, "markers: the ruler finds a marker under the mouse")
+	click(ruler, Vector2(mx, ry))
+	move(ruler, Vector2(d.timeline_view.time_to_x(1.0) + 3.0, ry))
+	click(ruler, Vector2(d.timeline_view.time_to_x(1.0) + 3.0, ry), MOUSE_BUTTON_LEFT, false)
+	check(absf(m1.time_sec - 1.0) < 1e-9, "markers: dragging on the ruler moves it (snapped to the clip end, %.4f)" % m1.time_sec)
+	d.undo()
+	check(absf(m1.time_sec - 0.8) < 1e-9, "markers: the move undoes")
+	ruler.start_marker_rename(m1)
+	ruler._rename.text = "Impact"
+	ruler._rename.text_submitted.emit("Impact")
+	check(m1.name == "Impact", "markers: renamed")
+
+	# WAV export writes cue points with names, and the loop as a sampler loop Godot detects.
+	d.set_props(d.project, {"loop_enabled": true, "loop_start_sec": 0.25, "loop_end_sec": 0.75}, "setup")
+	var path := ProjectSettings.globalize_path("user://aw_cues.wav")
+	var rx: Dictionary = await AWExporter.new().run(d.project, path, 16)
+	var by := FileAccess.get_file_as_bytes(path)
+	var chunks := {}
+	var pos := 12
+	while pos + 8 <= by.size():
+		var cid := by.slice(pos, pos + 4).get_string_from_ascii()
+		var clen := by.decode_u32(pos + 4)
+		chunks[cid] = by.slice(pos + 8, pos + 8 + clen)
+		pos += 8 + clen + (clen & 1)
+	var rate := int(AudioServer.get_mix_rate())
+	var cue: PackedByteArray = chunks.get("cue ", PackedByteArray())
+	check(rx.ok and by.decode_u32(4) == by.size() - 8, "wav cues: RIFF size covers the extra chunks")
+	check(cue.size() == 4 + 48 and cue.decode_u32(0) == 2 and cue.decode_u32(4 + 20) == int(round(0.3 * rate)) and cue.decode_u32(28 + 20) == int(round(0.8 * rate)), "wav cues: two cue points at the markers")
+	var lst: PackedByteArray = chunks.get("LIST", PackedByteArray())
+	check(lst.size() > 4 and lst.slice(0, 4).get_string_from_ascii() == "adtl" and lst.hex_encode().contains("Impact".to_utf8_buffer().hex_encode()), "wav cues: marker names as labels")
+	var smpl: PackedByteArray = chunks.get("smpl", PackedByteArray())
+	check(smpl.size() == 60 and smpl.decode_u32(28) == 1 and smpl.decode_u32(44) == int(round(0.25 * rate)), "wav cues: the loop as a smpl loop")
+	var lw := AudioStreamWAV.load_from_file(path, {"edit/loop_mode": 0})
+	check(lw != null and lw.loop_mode != AudioStreamWAV.LOOP_DISABLED and absi(lw.loop_begin - int(round(0.25 * rate))) <= 1 and absi(lw.loop_end - int(round(0.75 * rate))) <= 1, "wav cues: Godot's importer detects the loop (%s..%s)" % [str(lw.loop_begin if lw else -1), str(lw.loop_end if lw else -1)])
+	var w := _read_wav(path)
+	check(w.ok and absi(int(w.frames) - int(rx.frames)) <= 0, "wav cues: the audio data is unchanged")
+	d.set_props(d.project, {"loop_enabled": false}, "setup")
+	DirAccess.remove_absolute(path)
+	d.remove_marker(d.project.markers[0])
+	check(d.project.markers.size() == 1 and d.project.markers[0] == m1, "markers: deleted")
+	check(d.save_project("user://aw_markers.tres") and d.load_project("user://aw_markers.tres") and d.project.markers.size() == 1 and d.project.markers[0].name == "Impact", "markers: survive save and open")
+	clips = []
+	for cc in d.project.clips:
+		clips.append(cc)
+
+	# Time selection: Shift+drag on the ruler, then split / delete inside / loop.
+	a = d.project.clips[0]
+	var ya := ruler.size.y - 6.0
+	click(ruler, Vector2(d.timeline_view.time_to_x(0.2), ya), MOUSE_BUTTON_LEFT, true, false, true)
+	move(ruler, Vector2(d.timeline_view.time_to_x(0.6), ya))
+	click(ruler, Vector2(d.timeline_view.time_to_x(0.6), ya), MOUSE_BUTTON_LEFT, false)
+	check(d.has_time_selection() and absf(d.time_sel.x - 0.2) < 1e-6 and absf(d.time_sel.y - 0.6) < 1e-6, "time selection: Shift+drag on the ruler selects 0.2 to 0.6 s (%s)" % str(d.time_sel))
+	var n0 := d.project.clips.size()
+	var before := e.render_preview_range(0.0, 1.5)
+	check(d.split_at_time_selection() == 2, "time selection: split cuts the two clips it crosses")
+	check(d.project.clips.size() == n0 + 3, "time selection: a clip crossing both edges becomes three, one crossing one edge two")
+	var after := e.render_preview_range(0.0, 1.5)
+	var worst := 0.0
+	for i in range(0, mini(before.size(), after.size()), 23):
+		worst = maxf(worst, absf(before[i].x - after[i].x))
+	check(worst < 0.002, "time selection: splitting doesn't change the sound (worst %.4f)" % worst)
+	d.undo()
+	check(d.project.clips.size() == n0, "time selection: split undoes in one step")
+	d.clear_selection()
+	key(screen, KEY_DELETE)
+	var cut := e.render_preview_range(0.0, 1.5)
+	var inside := 0.0
+	var outside := 0.0
+	for i in range(int(0.22 * rate), int(0.58 * rate)):
+		inside = maxf(inside, absf(cut[i].x))
+	for i in range(int(0.62 * rate), int(0.95 * rate)):
+		outside = maxf(outside, absf(cut[i].x))
+	check(inside < 1e-4 and outside > 0.05, "time selection: Delete removes the audio inside, keeps the rest (inside %.5f, after %.3f)" % [inside, outside])
+	d.undo()
+	d.loop_time_selection()
+	check(d.project.loop_enabled and is_equal_approx(d.project.loop_start_sec, 0.2) and is_equal_approx(d.project.loop_end_sec, 0.6), "time selection: Loop Selection sets the loop")
+	key(screen, KEY_ESCAPE)
+	check(not d.has_time_selection(), "time selection: Esc clears it")
+
+	# Loop strip: dragging anywhere on it sets new loop bounds.
+	click(ruler, Vector2(d.timeline_view.time_to_x(1.1), 4))
+	move(ruler, Vector2(d.timeline_view.time_to_x(1.6), 4))
+	click(ruler, Vector2(d.timeline_view.time_to_x(1.6), 4), MOUSE_BUTTON_LEFT, false)
+	check(is_equal_approx(d.project.loop_start_sec, 1.1) and is_equal_approx(d.project.loop_end_sec, 1.6), "loop strip: a drag sets the loop bounds (%.2f..%.2f)" % [d.project.loop_start_sec, d.project.loop_end_sec])
+	click(ruler, Vector2(d.timeline_view.time_to_x(1.3), 4))
+	move(ruler, Vector2(d.timeline_view.time_to_x(1.4), 4))
+	click(ruler, Vector2(d.timeline_view.time_to_x(1.4), 4), MOUSE_BUTTON_LEFT, false)
+	check(is_equal_approx(d.project.loop_start_sec, 1.3) and is_equal_approx(d.project.loop_end_sec, 1.4), "loop strip: dragging inside the loop sets new bounds too")
+
+	# Scrub: a drag on the ruler scrubs and leaves the playhead where it ends.
+	click(ruler, Vector2(d.timeline_view.time_to_x(0.1), ya))
+	move(ruler, Vector2(d.timeline_view.time_to_x(0.3), ya))
+	check(d.scrubbing and e.core.call("is_scrubbing"), "scrub: dragging on the ruler scrubs")
+	move(ruler, Vector2(d.timeline_view.time_to_x(0.5), ya))
+	await frames(tree, 3)
+	click(ruler, Vector2(d.timeline_view.time_to_x(0.5), ya), MOUSE_BUTTON_LEFT, false)
+	check(not d.scrubbing and not e.core.call("is_scrubbing") and absf(d.playhead_sec - 0.5) < 0.01, "scrub: release ends it at the mouse (%.3f)" % d.playhead_sec)
+
+	# The scrub sound itself (same code as the audio thread, run directly): a ramp file played at
+	# tape speed forward, backwards, and silent when held still.
+	write_wav("/tmp/aw_scrub_ramp.wav", 2.0, func(i: int, rt: int) -> Vector2i: return Vector2i(int(16000.0 * float(i) / (rt * 2.0)), 0))
+	d.new_project()
+	d.add_clip_from_path("/tmp/aw_scrub_ramp.wav", 0, 0.0)
+	await frames(tree, 2)
+	var block := 512
+	var tgt := PackedFloat64Array()
+	for k in 80: # forward at normal speed: 0.4 s -> about 1.33 s
+		tgt.append(0.4 + float(k + 1) * block / rate)
+	var fw := e.scrub_simulate(tgt, block)
+	var mid_v := fw[int(fw.size() * 0.75)].x
+	check(fw.size() == 80 * block and mid_v > 0.2 and mid_v < 0.36, "scrub: moving forward plays the file around the target (%.3f)" % mid_v)
+	var rising := fw[int(fw.size() * 0.9)].x > fw[int(fw.size() * 0.5)].x
+	check(rising, "scrub: forward reads the ramp upwards")
+	var bk := PackedFloat64Array()
+	for k in 80:
+		bk.append(1.4 - float(k + 1) * block / rate)
+	var bw := e.scrub_simulate(bk, block)
+	check(bw[int(bw.size() * 0.9)].x < bw[int(bw.size() * 0.5)].x and bw[int(bw.size() * 0.5)].x > 0.05, "scrub: dragging left plays it backwards")
+	var still := PackedFloat64Array()
+	still.resize(120)
+	still.fill(1.0)
+	var st := e.scrub_simulate(still, block)
+	check(absf(st[st.size() - 1].x) < 0.01, "scrub: a still mouse is silent")
+
+	for k: String in saved:
+		d.set_snap_target(k, saved[k])
+	d.new_project()
+
+
+static func navigation_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var tl := screen.timeline
+	var clips := _grid_project(d)
+	await frames(tree, 2)
+	# Z zooms to the selected clips, or to the time selection.
+	d.select_clip(clips[1])
+	key(screen, KEY_Z)
+	var v := d.timeline_view
+	check(v.x_to_time(0.0) <= clips[1].start_sec and v.x_to_time(v.view_width) >= clips[1].end_sec() and v.x_to_time(v.view_width) - v.x_to_time(0.0) < clips[1].play_length() * 1.2, "zoom: Z frames the selected clip")
+	d.set_time_selection(0.1, 0.2)
+	key(screen, KEY_Z)
+	check(absf(v.x_to_time(v.view_width) - v.x_to_time(0.0) - 0.1 / 0.92) < 0.01, "zoom: Z frames the time selection")
+	d.clear_time_selection()
+	# The zoom slider follows and sets the zoom.
+	check(absf(tl.zoom_slider.value - log(v.pixels_per_sec)) < 0.001, "zoom slider: follows the zoom")
+	tl.zoom_slider.value = log(400.0)
+	check(absf(v.pixels_per_sec - 400.0) < 0.5, "zoom slider: sets the zoom")
+	# Overview: clicking moves the view there.
+	var ov := tl.overview
+	await frames(tree, 2)
+	var t_click := ov.total() * 0.8
+	click(ov, Vector2(ov.t_to_x(t_click), 10))
+	click(ov, Vector2(ov.t_to_x(t_click), 10), MOUSE_BUTTON_LEFT, false)
+	var mid_t := (v.x_to_time(0.0) + v.x_to_time(v.view_width)) * 0.5
+	check(absf(mid_t - t_click) < 0.1 or v.scroll_x >= v.scroll_range() - v.view_width - 1.0, "overview: a click centres the view there (%.2f vs %.2f)" % [mid_t, t_click])
+	# Hover info on a clip.
+	var grid := tl.grid
+	v.frame(0.0, 2.0)
+	await frames(tree, 1)
+	var tip := grid._get_tooltip(grid.clip_rect(clips[0]).get_center())
+	check(tip.contains(clips[0].name) and tip.contains("Gain") and tip.contains(clips[0].source_path), "hover: a clip's tooltip shows file, gain and more")
+	if OS.get_environment("AW_SHOTS") != "":
+		d.set_time_selection(0.35, 0.65)
+		d.seek(0.9)
+		d.add_marker(0.2, "Hit")
+		d.add_marker(1.2, "Tail")
+		d.set_snap_target("transients", true)
+		var hs := tl.get_parent() as HSplitContainer
+		var keep_off := hs.split_offset if hs else 0
+		if hs:
+			hs.split_offset = 420
+		await frames(tree, 3)
+		v.frame(0.0, 1.7)
+		await frames(tree, 3)
+		await shot(tree, "aw_timing.png")
+		if hs:
+			hs.split_offset = keep_off
+		d.set_snap_target("transients", false)
+	d.new_project()
+
+
 static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	d.new_project()
@@ -2672,8 +2956,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.10.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.10.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.11.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.11.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -3429,5 +3713,7 @@ static func run(screen: AWMainScreen) -> void:
 	await reverse_fade_tests(tree, screen)
 	await row_tests(tree, screen)
 	await multi_edit_tests(tree, screen)
+	await timing_tests(tree, screen)
+	await navigation_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

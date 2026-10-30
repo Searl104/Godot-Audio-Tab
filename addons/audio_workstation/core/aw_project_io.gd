@@ -80,6 +80,12 @@ static func sanitize(p: AWProject) -> Array:
 	for i in p.rows.size():
 		if p.rows[i] == null:
 			p.rows[i] = AWRow.new()
+	for i in range(p.markers.size() - 1, -1, -1):
+		var m := p.markers[i]
+		if m == null or not _fin(m.time_sec) or m.time_sec < 0.0:
+			p.markers.remove_at(i)
+			rep.append("Removed an invalid marker.")
+	p.markers.sort_custom(func(a: AWMarker, b: AWMarker) -> bool: return a.time_sec < b.time_sec)
 	if not _fin(p.length_sec) or p.length_sec <= 0.0:
 		p.length_sec = 4.0
 		rep.append("Project length was invalid; set to 4 s.")

@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 11:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 12:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -234,6 +234,38 @@ func get_fx_swaps() -> Array:
 	if core == null:
 		return [0, 0]
 	return core.call("get_fx_swaps")
+
+
+# --- Scrub ------------------------------------------------------------------------------
+
+func scrub_begin(sec: float) -> void:
+	if core == null:
+		return
+	if _plan_dirty:
+		_rebuild_plan()
+	core.call("scrub_begin", sec * _rate())
+
+
+func scrub_to(sec: float) -> void:
+	if core:
+		core.call("scrub_to", maxf(0.0, sec) * _rate())
+
+
+func scrub_end() -> void:
+	if core:
+		core.call("scrub_end")
+
+
+## Test helper: renders a scrub that chases one target (seconds) per block of `block` frames.
+func scrub_simulate(targets_sec: PackedFloat64Array, block: int) -> PackedVector2Array:
+	if core == null:
+		return PackedVector2Array()
+	if _plan_dirty:
+		_rebuild_plan()
+	var frames := PackedFloat64Array()
+	for t in targets_sec:
+		frames.append(t * _rate())
+	return core.call("scrub_simulate", frames, block)
 
 
 func render_preview_range(from_sec: float, length_sec: float) -> PackedVector2Array:

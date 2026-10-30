@@ -61,7 +61,8 @@ func run(project: AWProject, path: String, bits: int, format := "wav", quality :
 		e.export_end()
 		res.error = "Couldn't write %s (%s)." % [part, error_string(FileAccess.get_open_error())]
 		return res
-	var header := _header(rate, bits, total, total * 2 * (bits / 8)) if format == "wav" else PackedByteArray()
+	var trailer := cue_chunks(project, rate, total) if format == "wav" else PackedByteArray()
+	var header := _header(rate, bits, total, total * 2 * (bits / 8), trailer.size()) if format == "wav" else PackedByteArray()
 	f.store_buffer(header)
 	var tree := Engine.get_main_loop() as SceneTree
 	var chunk := maxi(1, int(CHUNK_SEC * rate))
@@ -82,6 +83,8 @@ func run(project: AWProject, path: String, bits: int, format := "wav", quality :
 			await tree.process_frame
 	if not cancelled and format != "wav":
 		f.store_buffer(e.export_finish())
+	if not cancelled and not trailer.is_empty():
+		f.store_buffer(trailer)
 	e.export_end()
 	var write_err := f.get_error()
 	var file_bytes := f.get_position()
@@ -141,14 +144,72 @@ static func tell_editor(path: String, reimport := true) -> void:
 	fs.reimport_files(PackedStringArray([local]))
 
 
+## Chunks after the audio: markers as cue points with names ("cue " + LIST/adtl/labl), and the
+## loop region (when on and inside the export) as a sampler loop ("smpl"), which Godot's WAV import
+## picks up with Loop Mode "Detect From WAV". Empty when there is nothing to write.
+static func cue_chunks(project: AWProject, rate: int, total: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	var cues: Array = []
+	for m in project.markers:
+		var fr := int(round(m.time_sec * rate))
+		if fr >= 0 and fr < total:
+			cues.append([cues.size() + 1, fr, m.name])
+	if not cues.is_empty():
+		var cue := PackedByteArray()
+		cue.resize(4 + 24 * cues.size())
+		cue.encode_u32(0, cues.size())
+		for i in cues.size():
+			var o := 4 + 24 * i
+			cue.encode_u32(o, cues[i][0])
+			cue.encode_u32(o + 4, cues[i][1])
+			cue.encode_u32(o + 8, 0x61746164) # "data"
+			cue.encode_u32(o + 12, 0)
+			cue.encode_u32(o + 16, 0)
+			cue.encode_u32(o + 20, cues[i][1])
+		out.append_array(_chunk("cue ", cue))
+		var adtl := "adtl".to_ascii_buffer()
+		for cp: Array in cues:
+			var labl := PackedByteArray()
+			labl.resize(4)
+			labl.encode_u32(0, cp[0])
+			labl.append_array((cp[2] as String).to_utf8_buffer())
+			labl.append(0)
+			adtl.append_array(_chunk("labl", labl))
+		out.append_array(_chunk("LIST", adtl))
+	var ls := int(round(project.loop_start_sec * rate))
+	var le := int(round(project.loop_end_sec * rate))
+	if project.loop_enabled and ls >= 0 and le > ls and le <= total:
+		var smpl := PackedByteArray()
+		smpl.resize(36 + 24)
+		smpl.encode_u32(8, int(1e9 / rate)) # sample period (ns)
+		smpl.encode_u32(12, 60) # MIDI unity note
+		smpl.encode_u32(28, 1) # one loop
+		smpl.encode_u32(36, 0) # cue id
+		smpl.encode_u32(40, 0) # forward
+		smpl.encode_u32(44, ls)
+		smpl.encode_u32(48, le - 1) # last frame of the loop (inclusive)
+		out.append_array(_chunk("smpl", smpl))
+	return out
+
+
+static func _chunk(id: String, body: PackedByteArray) -> PackedByteArray:
+	var c := id.to_ascii_buffer()
+	c.resize(8)
+	c.encode_u32(4, body.size())
+	c.append_array(body)
+	if body.size() % 2 == 1:
+		c.append(0)
+	return c
+
+
 ## RIFF/WAVE header: PCM for 16-bit, IEEE float (with the fact chunk the format asks for) for 32.
-static func _header(rate: int, bits: int, frames: int, data_bytes: int) -> PackedByteArray:
+static func _header(rate: int, bits: int, frames: int, data_bytes: int, trailer_bytes := 0) -> PackedByteArray:
 	var b := PackedByteArray()
 	var float_fmt := bits == 32
 	var header_size := 56 if float_fmt else 44
 	b.append_array("RIFF".to_ascii_buffer())
 	b.resize(b.size() + 4)
-	b.encode_u32(4, header_size - 8 + data_bytes)
+	b.encode_u32(4, header_size - 8 + data_bytes + trailer_bytes)
 	b.append_array("WAVE".to_ascii_buffer())
 	b.append_array("fmt ".to_ascii_buffer())
 	var o := b.size()

@@ -40,7 +40,12 @@ const MIN_LEN := 0.01
 const SNAP_OPTIONS := [
 	["Off", 0.0], ["1 ms", 0.001], ["10 ms", 0.01], ["50 ms", 0.05],
 	["100 ms", 0.1], ["250 ms", 0.25], ["500 ms", 0.5], ["1 s", 1.0],
+	["24 fps", 1.0 / 24.0], ["30 fps", 1.0 / 30.0], ["60 fps", 1.0 / 60.0],
 ]
+## Object snapping (while snap is on): which targets attract, and their remembered defaults.
+const SNAP_TARGETS := [["edges", "Clip Edges", true], ["playhead", "Playhead", true], ["markers", "Markers", true], ["transients", "Transients", false]]
+## How close (pixels) a target must be to win over the time grid.
+const SNAP_PX := 8.0
 
 var project: AWProject
 var engine: AWEngine
@@ -563,6 +568,32 @@ func seek(t: float) -> void:
 	playhead_changed.emit()
 
 
+# Scrubbing (drag on the ruler): the playhead follows the mouse, the audio follows like tape.
+var scrubbing := false
+
+
+func scrub_begin(t: float) -> void:
+	if playing:
+		stop()
+	scrubbing = true
+	engine.scrub_begin(playhead_sec)
+	scrub_to(t)
+
+
+func scrub_to(t: float) -> void:
+	playhead_sec = maxf(0.0, t)
+	engine.scrub_to(playhead_sec)
+	playhead_changed.emit()
+
+
+func scrub_end() -> void:
+	if not scrubbing:
+		return
+	scrubbing = false
+	engine.scrub_end()
+	seek(playhead_sec)
+
+
 func toggle_loop() -> void:
 	set_props(project, {"loop_enabled": not project.loop_enabled}, "Toggle Loop")
 
@@ -604,6 +635,280 @@ func set_snap(value: float) -> void:
 
 func toggle_snap() -> void:
 	set_snap(_last_snap if snap_sec <= 0.0 else 0.0)
+
+
+func snap_target_on(key: String) -> bool:
+	for t: Array in SNAP_TARGETS:
+		if t[0] == key:
+			return bool(AWImporter.get_pref("audio_workstation/snap/" + key, t[2]))
+	return false
+
+
+func set_snap_target(key: String, on: bool) -> void:
+	AWImporter.set_pref("audio_workstation/snap/" + key, on)
+	timeline_view.changed.emit()
+	transport_changed.emit()
+
+
+## Times that attract while snapping (project time), leaving out `exclude` clips' own edges.
+func snap_targets(exclude: Array = []) -> PackedFloat64Array:
+	var out := PackedFloat64Array()
+	if snap_sec <= 0.0:
+		return out
+	if snap_target_on("edges"):
+		for c in project.clips:
+			if not exclude.has(c):
+				out.append(c.start_sec)
+				out.append(c.end_sec())
+	if snap_target_on("playhead"):
+		out.append(playhead_sec)
+	if snap_target_on("markers"):
+		for m in project.markers:
+			out.append(m.time_sec)
+	if snap_target_on("transients"):
+		for c in project.clips:
+			if not exclude.has(c):
+				out.append_array(clip_transients(c))
+	return out
+
+
+## Snaps `t`: to the nearest target within SNAP_PX pixels, else to the time grid. `targets` from
+## snap_targets(). Returns t unchanged with snap off.
+func snap_to(t: float, targets: PackedFloat64Array) -> float:
+	if snap_sec <= 0.0:
+		return t
+	var reach := SNAP_PX / maxf(timeline_view.pixels_per_sec, 1e-6)
+	var best := INF
+	var hit := t
+	for x in targets:
+		var d := absf(x - t)
+		if d < best:
+			best = d
+			hit = x
+	return hit if best <= reach else snap(t)
+
+
+## Like snap_to for a span: moves `start` so that either its start or its end (start + length)
+## lands on a target; the time grid applies to the start otherwise. Returns the new start.
+func snap_span(start: float, length: float, targets: PackedFloat64Array) -> float:
+	if snap_sec <= 0.0:
+		return start
+	var reach := SNAP_PX / maxf(timeline_view.pixels_per_sec, 1e-6)
+	var best := INF
+	var shift := 0.0
+	for x in targets:
+		for edge in [start, start + length]:
+			var d := absf(x - edge)
+			if d < best:
+				best = d
+				shift = x - edge
+	return start + shift if best <= reach else snap(start)
+
+
+# --- Transients -----------------------------------------------------------------------
+
+const TRANSIENT_RATE := 200.0 # envelope frames per second
+var _transient_cache := {} # source path -> PackedFloat64Array of source times
+
+
+## Onsets in a sound file (seconds in the file): where the level jumps well above the recent average.
+func source_transients(path: String) -> PackedFloat64Array:
+	if _transient_cache.has(path):
+		return _transient_cache[path]
+	var out := PackedFloat64Array()
+	var env := engine.get_peaks(path, TRANSIENT_RATE)
+	var avg := 0.0
+	var last := -1e9
+	var top := 0.0
+	for v in env:
+		top = maxf(top, v)
+	var floor_level := maxf(top * 0.06, 0.003)
+	for i in env.size():
+		var v := env[i]
+		var t := i / TRANSIENT_RATE
+		if v > floor_level and v > avg * 2.2 + 0.01 and t - last > 0.06:
+			# The onset starts where the rise begins: step back while the level keeps falling.
+			var j := i
+			while j > 0 and env[j - 1] < env[j] and i - j < 4:
+				j -= 1
+			out.append(j / TRANSIENT_RATE)
+			last = t
+		avg = avg * 0.85 + v * 0.15
+	_transient_cache[path] = out
+	return out
+
+
+## A clip's transients in project time (only those inside the part that plays).
+func clip_transients(c: AWClip) -> PackedFloat64Array:
+	var out := PackedFloat64Array()
+	if c.source_path == "":
+		return out
+	for st in source_transients(c.source_path):
+		var local := (c.source_offset_sec + c.length_sec - st) if c.reversed else (st - c.source_offset_sec)
+		if local > 0.0005 and local < c.length_sec:
+			out.append(c.local_to_project(local))
+	return out
+
+
+# --- Time selection ---------------------------------------------------------------------
+
+## Selected time range (Shift+drag on the ruler), project time; x < 0 = none. Not saved.
+var time_sel := Vector2(-1.0, -1.0)
+signal time_selection_changed
+
+
+func has_time_selection() -> bool:
+	return time_sel.x >= 0.0 and time_sel.y > time_sel.x + 1e-6
+
+
+func set_time_selection(a: float, b: float) -> void:
+	time_sel = Vector2(maxf(0.0, minf(a, b)), maxf(0.0, maxf(a, b)))
+	time_selection_changed.emit()
+	timeline_view.changed.emit()
+
+
+func clear_time_selection() -> void:
+	if time_sel.x < 0.0:
+		return
+	time_sel = Vector2(-1.0, -1.0)
+	time_selection_changed.emit()
+	timeline_view.changed.emit()
+
+
+## A clip cut at project times `cuts` (inside it): [left props for the clip itself, right pieces].
+## Pieces keep their sound, curves and LFOs where they were.
+func _cut(clip: AWClip, cuts: Array) -> Array:
+	var work := clip.duplicate_clip()
+	var pieces: Array[AWClip] = []
+	var sorted := cuts.duplicate()
+	sorted.sort()
+	sorted.reverse() # cut from the right, so the left part keeps its start
+	for t: float in sorted:
+		var local := work.project_to_local(t)
+		if local <= MIN_LEN or local >= work.length_sec - MIN_LEN:
+			continue
+		var right := work.duplicate_clip()
+		right.start_sec = t
+		right.length_sec = work.length_sec - local
+		right.source_offset_sec = work.source_offset_sec if work.reversed else work.source_offset_sec + local
+		right.fade_in_sec = 0.0
+		for c in right.chain.curves:
+			right.chain.set_keys(c, _shifted(right.chain.get_keys(c), -local))
+			if c.lfo:
+				c.lfo.start_sec -= local
+				c.lfo.end_sec -= local
+		if work.reversed:
+			work.source_offset_sec += work.length_sec - local
+		work.length_sec = local
+		work.fade_out_sec = 0.0
+		work.invalidate_warp()
+		pieces.push_front(right)
+	return [{"length_sec": work.length_sec, "fade_out_sec": work.fade_out_sec, "source_offset_sec": work.source_offset_sec}, pieces]
+
+
+## Splits every clip (not on locked rows) at both edges of the time selection. One undo step.
+func split_at_time_selection() -> int:
+	return _cut_time_selection(false)
+
+
+## Removes the audio inside the time selection from every clip (not on locked rows): clips are cut
+## at the edges and the parts inside are deleted. Nothing moves. One undo step.
+func delete_in_time_selection() -> int:
+	return _cut_time_selection(true)
+
+
+func _cut_time_selection(remove_inside: bool) -> int:
+	if not has_time_selection():
+		message.emit("Shift+drag on the ruler to select a time range first.")
+		return 0
+	var a := time_sel.x
+	var b := time_sel.y
+	var touched := 0
+	_begin("Delete Inside Selection" if remove_inside else "Split at Selection")
+	for clip in project.clips.duplicate():
+		if project.row_locked(clip.row) or clip.end_sec() <= a + 1e-6 or clip.start_sec >= b - 1e-6:
+			continue
+		var cuts := []
+		for t in [a, b]:
+			if t > clip.start_sec + 1e-6 and t < clip.end_sec() - 1e-6:
+				cuts.append(t)
+		var res := _cut(clip, cuts)
+		var left: Dictionary = res[0]
+		var pieces: Array[AWClip] = res[1]
+		var old := {"length_sec": clip.length_sec, "fade_out_sec": clip.fade_out_sec, "source_offset_sec": clip.source_offset_sec}
+		var keep_left := true
+		if remove_inside and clip.start_sec >= a - 1e-6:
+			keep_left = false # the clip's first part lies inside
+		if not cuts.is_empty() or not keep_left:
+			touched += 1
+		if keep_left:
+			if not cuts.is_empty():
+				_add_do(_apply_props.bind(clip, left))
+				_add_undo(_apply_props.bind(clip, old))
+		else:
+			_add_do(_apply_remove_clip.bind(clip))
+			_add_undo(_apply_insert_clip.bind(clip, project.clips.find(clip)))
+		var idx := project.clips.find(clip) + 1
+		for p in pieces:
+			var inside := p.start_sec >= a - 1e-6 and p.start_sec < b - 1e-6
+			if remove_inside and inside:
+				continue
+			_add_do(_apply_insert_clip.bind(p, idx))
+			_add_undo(_apply_remove_clip.bind(p))
+			idx += 1
+	_commit()
+	message.emit(("Removed the audio inside the selection from %d clip%s." if remove_inside else "Split %d clip%s at the selection.") % [touched, "" if touched == 1 else "s"])
+	return touched
+
+
+## Loops the time selection.
+func loop_time_selection() -> void:
+	if has_time_selection():
+		set_props(project, {"loop_start_sec": time_sel.x, "loop_end_sec": time_sel.y, "loop_enabled": true}, "Loop Selection")
+
+
+# --- Markers ----------------------------------------------------------------------------
+
+## Adds a marker (at the playhead by default). One undo step. Returns it.
+func add_marker(t := -1.0, marker_name := "") -> AWMarker:
+	if t < 0.0:
+		t = playhead_sec
+	var m := AWMarker.create(t, marker_name if marker_name != "" else "Marker %d" % (project.markers.size() + 1))
+	_do_undo("Add Marker", _apply_add_marker.bind(m), _apply_remove_marker.bind(m))
+	message.emit("Added %s at %s (M). Drag it on the ruler; double-click to rename; right-click to delete." % [m.name, format_clock(t)])
+	return m
+
+
+func remove_marker(m: AWMarker) -> void:
+	_do_undo("Delete Marker", _apply_remove_marker.bind(m), _apply_add_marker.bind(m))
+
+
+func _apply_add_marker(m: AWMarker) -> void:
+	if not project.markers.has(m):
+		project.markers.append(m)
+	sort_markers()
+	project_changed.emit(false)
+
+
+func _apply_remove_marker(m: AWMarker) -> void:
+	project.markers.erase(m)
+	project_changed.emit(false)
+
+
+func sort_markers() -> void:
+	project.markers.sort_custom(func(a: AWMarker, b: AWMarker) -> bool: return a.time_sec < b.time_sec)
+
+
+## Moves the playhead to the next (dir = 1) or previous (dir = -1) marker.
+func jump_marker(dir: int) -> void:
+	var best := -1.0
+	for m in project.markers:
+		if dir > 0 and m.time_sec > playhead_sec + 1e-4 and (best < 0.0 or m.time_sec < best):
+			best = m.time_sec
+		elif dir < 0 and m.time_sec < playhead_sec - 1e-4 and (best < 0.0 or m.time_sec > best):
+			best = m.time_sec
+	if best >= 0.0:
+		seek(best)
 
 
 ## Adds clips for sound files from anywhere on disk, one row each, starting at `row` / `t`.
