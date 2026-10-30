@@ -118,6 +118,7 @@ func set_project(p: AWProject) -> void:
 
 func new_project() -> void:
 	_cancel_export_for_switch()
+	AWRecovery.discard()
 	project_path = ""
 	set_project(AWProject.create_default())
 	_reset_history()
@@ -146,6 +147,7 @@ func load_project(path: String) -> bool:
 		message.emit(str(r.error))
 		return false
 	_cancel_export_for_switch()
+	AWRecovery.discard()
 	set_project(r.project)
 	project_path = path
 	_reset_history()
@@ -267,9 +269,64 @@ func touch() -> void:
 
 
 func _mark_clean() -> void:
+	AWRecovery.discard()
+	_recovery_wait = -1.0
 	_touched = false
 	_saved_version = _history().get_version()
 	file_state_changed.emit()
+
+
+# --- Recovery copy ---------------------------------------------------------------
+
+## Seconds after the last change before the recovery copy is written.
+const RECOVERY_DELAY := 5.0
+var _recovery_wait := -1.0
+var _recovery_version := -1
+var recovery_enabled := true
+
+
+## Called every frame by the main screen. Writes the recovery copy once edits have been quiet for a moment.
+func tick_recovery(delta: float) -> void:
+	if not recovery_enabled or project == null:
+		return
+	if not is_dirty():
+		_recovery_wait = -1.0
+		return
+	var v := _history().get_version()
+	if v != _recovery_version:
+		_recovery_version = v
+		_recovery_wait = RECOVERY_DELAY
+		return
+	if _recovery_wait < 0.0:
+		return
+	_recovery_wait -= delta
+	if _recovery_wait <= 0.0:
+		_recovery_wait = -1.0
+		write_recovery()
+
+
+func write_recovery() -> bool:
+	return AWRecovery.write(project, project_path) == OK
+
+
+## Brings back the sound from the recovery copy. It counts as unsaved.
+func restore_recovery() -> bool:
+	var info := AWRecovery.info()
+	var r := AWProjectIO.open(AWRecovery.PATH)
+	if not r.ok:
+		message.emit("The recovery copy couldn't be opened: %s" % str(r.error))
+		AWRecovery.discard()
+		return false
+	_cancel_export_for_switch()
+	set_project(r.project)
+	project_path = str(info.original)
+	_reset_history()
+	_touched = true
+	_recovery_version = -1
+	last_repairs = r.repairs
+	file_state_changed.emit()
+	message.emit("Restored your unsaved work. Save it to keep it.")
+	return true
 
 
 func _reset_history() -> void:

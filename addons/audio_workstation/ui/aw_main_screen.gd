@@ -25,6 +25,8 @@ var _confirm: ConfirmationDialog
 var _pending_after_ask := Callable()
 var _after_save := Callable()
 var _relink_clip: AWClip
+var _recovery: ConfirmationDialog
+var recovery_prompt_in_tests := false
 
 
 func setup(plugin: EditorPlugin) -> void:
@@ -93,6 +95,7 @@ func _ready() -> void:
 		EditorInterface.get_resource_filesystem().filesystem_changed.connect(doc.refresh_sources)
 	add_child(_dialog)
 	_build_confirm()
+	_build_recovery_prompt()
 	set_process(true)
 
 
@@ -112,6 +115,7 @@ func _make_reserved_column() -> Control:
 
 func _process(delta: float) -> void:
 	engine.process(delta)
+	doc.tick_recovery(delta)
 	if is_visible_in_tree():
 		doc.tick_preview(delta)
 
@@ -191,6 +195,35 @@ func _build_confirm() -> void:
 				then.call())
 	_confirm.canceled.connect(func() -> void: _pending_after_ask = Callable())
 	add_child(_confirm)
+
+
+## Offers the sound that was being edited when the editor last closed without saving.
+func _build_recovery_prompt() -> void:
+	if not AWRecovery.exists() or (OS.get_environment("AW_TEST") != "" and not recovery_prompt_in_tests):
+		return
+	var info := AWRecovery.info()
+	var when := Time.get_datetime_string_from_unix_time(int(info.time), true) if info.time > 0.0 else "earlier"
+	var what: String = info.original.get_file() if info.original != "" else "an untitled sound"
+	_recovery = ConfirmationDialog.new()
+	_recovery.title = "Restore Unsaved Work?"
+	_recovery.dialog_text = "The editor closed before %s was saved (last change %s). Restore it?" % [what, when]
+	_recovery.ok_button_text = "Restore"
+	_recovery.cancel_button_text = "Discard"
+	_recovery.confirmed.connect(func() -> void: doc.restore_recovery())
+	_recovery.canceled.connect(AWRecovery.discard)
+	add_child(_recovery)
+	_recovery.popup_centered.call_deferred()
+
+
+## Opens a saved sound from the FileSystem dock (after asking about unsaved changes).
+func open_from_editor(path: String) -> void:
+	ask_discard(func() -> void: doc.load_project(path))
+
+
+## Saves for Ctrl+S in the editor: the open sound if it has a file, otherwise asks where.
+func save_from_editor() -> void:
+	if doc.is_dirty():
+		_on_request("save")
 
 
 func _on_request(action: String) -> void:

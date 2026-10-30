@@ -1351,6 +1351,61 @@ static func _render_project(p: AWProject, secs: float) -> PackedVector2Array:
 	return e.render_preview_range(0.0, secs)
 
 
+static func recovery_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	AWRecovery.discard()
+	d.new_project()
+	check(not AWRecovery.exists(), "recovery: none for a fresh sound")
+	d.tick_recovery(10.0)
+	check(not AWRecovery.exists(), "recovery: nothing written while clean")
+
+	# An edit starts the countdown; the copy appears after the quiet period, not before.
+	d.set_props(d.project.clips[0], {"name": "Recovered clip"}, "Rename")
+	check(d.is_dirty(), "recovery: edit makes it dirty")
+	d.tick_recovery(0.1)
+	d.tick_recovery(AWDocument.RECOVERY_DELAY - 1.0)
+	check(not AWRecovery.exists(), "recovery: not written before the delay")
+	d.tick_recovery(2.0)
+	check(AWRecovery.exists(), "recovery: written after the delay")
+	check(AWRecovery.info().original == "", "recovery: records no original for an unsaved sound")
+
+	# Restore into a different state.
+	d.new_project()
+	check(not AWRecovery.exists(), "recovery: a deliberate New discards it")
+	d.set_props(d.project.clips[0], {"name": "Recovered clip"}, "Rename")
+	d.write_recovery()
+	d.set_props(d.project.clips[0], {"name": "Something else"}, "Rename")
+	check(d.restore_recovery(), "recovery: restore succeeds")
+	check(d.project.clips[0].name == "Recovered clip" and d.is_dirty(), "recovery: restored content, marked unsaved")
+	d.tick_recovery(0.1)
+	d.tick_recovery(AWDocument.RECOVERY_DELAY + 1.0)
+	check(AWRecovery.exists(), "recovery: restored work is protected again")
+
+	# A save removes it.
+	check(d.save_project("user://aw_recovery_save.tres"), "recovery: save ok")
+	check(not AWRecovery.exists() and not d.is_dirty(), "recovery: removed by a clean save")
+
+	# Remembers the file the sound belongs to.
+	d.set_props(d.project.clips[0], {"name": "Edited again"}, "Rename")
+	d.tick_recovery(0.1)
+	d.tick_recovery(AWDocument.RECOVERY_DELAY + 1.0)
+	check(AWRecovery.info().original == "user://aw_recovery_save.tres", "recovery: remembers the original file")
+	d.new_project()
+	check(not AWRecovery.exists(), "recovery: discarded when the user starts over")
+
+	# Damaged recovery copy: handled, then removed.
+	var f := FileAccess.open(AWRecovery.PATH, FileAccess.WRITE)
+	f.store_string("junk")
+	f.close()
+	check(not d.restore_recovery() and not AWRecovery.exists(), "recovery: unreadable copy is refused and removed")
+
+	# Opening from the FileSystem dock.
+	d.new_project()
+	screen.open_from_editor("user://aw_recovery_save.tres")
+	check(d.project_path == "user://aw_recovery_save.tres", "recovery: open_from_editor opens the sound")
+	d.new_project()
+
+
 static func source_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	DirAccess.make_dir_recursive_absolute("/tmp/aw_src/a/deep")
@@ -2351,4 +2406,5 @@ static func run(screen: AWMainScreen) -> void:
 	print("--- save and open ---")
 	await save_open_tests(tree, screen)
 	await source_tests(tree, screen)
+	await recovery_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

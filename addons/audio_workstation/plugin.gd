@@ -65,6 +65,34 @@ func _exit_tree() -> void:
 		_main_screen = null
 
 
+## Ctrl+S in the editor saves the open sound too (when the Audio tab has unsaved changes).
+func _save_external_data() -> void:
+	if _main_screen and _main_screen.doc.is_dirty() and _main_screen.doc.project_path != "":
+		_main_screen.doc.save_project(_main_screen.doc.project_path)
+
+
+## Names the sound in the editor's "unsaved changes" list when closing.
+func _get_unsaved_status(for_scene: String) -> String:
+	if for_scene != "" or _main_screen == null or not _main_screen.doc.is_dirty():
+		return ""
+	return "Audio sound %s has unsaved changes.\nSave before closing?" % (
+		_main_screen.doc.project_path.get_file() if _main_screen.doc.project_path != "" else "(untitled)")
+
+
+## Double-clicking a saved sound in the FileSystem dock opens it in the Audio tab.
+func _handles(object: Object) -> bool:
+	return object is AWProject
+
+
+func _edit(object: Object) -> void:
+	var p := object as AWProject
+	if p == null or _main_screen == null or p.resource_path == "":
+		return
+	EditorInterface.set_main_screen_editor("Audio")
+	if p.resource_path != _main_screen.doc.project_path:
+		_main_screen.open_from_editor(p.resource_path)
+
+
 func _has_main_screen() -> bool:
 	return true
 
