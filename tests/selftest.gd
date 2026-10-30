@@ -149,7 +149,7 @@ static func dry_playback_tests(screen: AWMainScreen) -> void:
 		var expect_len := int(round(cl.play_length() * sr))
 		check(absi(r.x - int(round(0.5 * sr))) <= 1 and absi(got - expect_len) <= 3,
 			"%s: rendered %d frames, play_length() says %d, starts at %d" % [case[0], got, expect_len, r.x])
-	var ramp_clip: AWClip = AWProject.create_default().clips[3]
+	var ramp_clip: AWClip = AWProject.create_demo().clips[3]
 	ramp_clip.source_path = dc
 	ramp_clip.start_sec = 0.0
 	ramp_clip.fade_in_sec = 0.0
@@ -703,7 +703,7 @@ static func automation_tests(_screen: AWMainScreen) -> void:
 	mout.params["volume_db"] = 0.0
 
 	# 8. Rebuild cost with the demo's curves (4 curves incl. pitch), first build and cached rebuild.
-	var demo := AWProject.create_default()
+	var demo := AWProject.create_demo()
 	for c in demo.clips:
 		c.source_path = dc
 	var e3 := AWEngine.new()
@@ -1351,6 +1351,28 @@ static func _render_project(p: AWProject, secs: float) -> PackedVector2Array:
 	return e.render_preview_range(0.0, secs)
 
 
+static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	d.new_project()
+	check(d.project.clips.is_empty(), "empty start: a new sound has no clips")
+	check(d.project.master_chain != null and d.project.master_chain.effects.size() == 1, "empty start: master chain has only the Output card")
+	check(d.project.title == "Untitled" and not d.is_dirty(), "empty start: untitled and clean")
+	d.play_pause()
+	await frames(tree, 5)
+	d.stop()
+	await frames(tree, 3)
+	check(true, "empty start: playing an empty sound does not crash")
+	var sine := "/tmp/aw_empty_sine.wav"
+	write_wav(sine, 0.5, func(i: int, rt: int) -> Vector2i:
+		var v := int(8000.0 * sin(TAU * 300.0 * i / rt))
+		return Vector2i(v, v))
+	d.add_clip_from_path(sine, 0, 0.0)
+	await frames(tree, 3)
+	check(d.project.clips.size() == 1 and d.project.clips[0].source_path == sine, "empty start: a clip can be added to an empty sound")
+	check(d.save_project("user://aw_empty_start.tres") and d.load_project("user://aw_empty_start.tres"), "empty start: saves and reopens")
+	d.new_project()
+
+
 static func load_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	var e := d.engine
@@ -1359,7 +1381,7 @@ static func load_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 		var v := int(8000.0 * sin(TAU * 200.0 * i / rt))
 		return Vector2i(v, v))
 	# A busy project: 48 clips, each with Delay, Reverb and Chorus, plus a master chain.
-	var p := AWProject.create_default()
+	var p := AWProject.create_demo()
 	p.clips.clear()
 	for i in 48:
 		var c := AWClip.new()
@@ -1398,6 +1420,7 @@ static func recovery_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	AWRecovery.discard()
 	d.new_project()
+	d.set_project(AWProject.create_demo())
 	check(not AWRecovery.exists(), "recovery: none for a fresh sound")
 	d.tick_recovery(10.0)
 	check(not AWRecovery.exists(), "recovery: nothing written while clean")
@@ -1414,6 +1437,7 @@ static func recovery_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 
 	# Restore into a different state.
 	d.new_project()
+	d.set_project(AWProject.create_demo())
 	check(not AWRecovery.exists(), "recovery: a deliberate New discards it")
 	d.set_props(d.project.clips[0], {"name": "Recovered clip"}, "Rename")
 	d.write_recovery()
@@ -1434,6 +1458,7 @@ static func recovery_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 	d.tick_recovery(AWDocument.RECOVERY_DELAY + 1.0)
 	check(AWRecovery.info().original == "user://aw_recovery_save.tres", "recovery: remembers the original file")
 	d.new_project()
+	d.set_project(AWProject.create_demo())
 	check(not AWRecovery.exists(), "recovery: discarded when the user starts over")
 
 	# Damaged recovery copy: handled, then removed.
@@ -1444,9 +1469,11 @@ static func recovery_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 
 	# Opening from the FileSystem dock.
 	d.new_project()
+	d.set_project(AWProject.create_demo())
 	screen.open_from_editor("user://aw_recovery_save.tres")
 	check(d.project_path == "user://aw_recovery_save.tres", "recovery: open_from_editor opens the sound")
 	d.new_project()
+	d.set_project(AWProject.create_demo())
 
 
 static func source_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
@@ -1458,7 +1485,7 @@ static func source_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 		return Vector2i(v, v)
 	write_wav("/tmp/aw_src/a/deep/boom.wav", 0.5, gen)
 	write_wav("/tmp/aw_src/b/tick.wav", 0.5, gen)
-	var p := AWProject.create_default()
+	var p := AWProject.create_demo()
 	p.clips[0].source_path = "/tmp/aw_src/a/deep/boom.wav"
 	p.clips[1].source_path = "/tmp/aw_src/a/deep/boom.wav"
 	p.clips[2].source_path = "/tmp/aw_src/b/tick.wav"
@@ -1493,7 +1520,7 @@ static func source_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 	check(d.relink_in_folder("/tmp/aw_src/a") == 2 and d.missing_paths().is_empty(), "sources: folder search relinks by name, recursively")
 
 	# Moved files are followed by UID (only for files Godot knows; here, check the mechanism).
-	var q := AWProject.create_default()
+	var q := AWProject.create_demo()
 	q.clips[0].source_path = "/tmp/aw_src/a/deep/boom.wav"
 	q.clips[0].source_uid = "uid://notarealuid"
 	check(AWProjectIO.refresh_sources(q).is_empty() and q.clips[0].source_path == "/tmp/aw_src/a/deep/boom.wav", "sources: unknown uid leaves path alone")
@@ -1520,7 +1547,7 @@ static func save_open_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	DirAccess.remove_absolute(abs_path)
 
 	# A project that uses most of the model: sources, chains, curves, an LFO, export settings.
-	var p := AWProject.create_default()
+	var p := AWProject.create_demo()
 	for c in p.clips:
 		c.source_path = sine
 	var bed: AWClip = p.clips[3]
@@ -1701,7 +1728,7 @@ static func save_open_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(res_target))
 	for f in [abs_path, junk, other, newer_path, old_path]:
 		DirAccess.remove_absolute(f)
-	d.set_project(AWProject.create_default())
+	d.set_project(AWProject.create_demo())
 
 
 static func get_process_delta(tree: SceneTree) -> float:
@@ -1720,6 +1747,7 @@ static func run(screen: AWMainScreen) -> void:
 	EditorInterface.set_main_screen_editor("Audio")
 	await frames(tree, 20)
 	var d := screen.doc
+	d.set_project(AWProject.create_demo()) # most tests below use the sample sound; the app itself starts empty
 	var p := d.project
 	var c4 := p.clips[3]
 	var ch := c4.chain
@@ -2451,4 +2479,5 @@ static func run(screen: AWMainScreen) -> void:
 	await source_tests(tree, screen)
 	await recovery_tests(tree, screen)
 	await load_tests(tree, screen)
+	await empty_start_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

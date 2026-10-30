@@ -410,6 +410,12 @@ func _draw() -> void:
 
 	for c in p.clips:
 		_draw_clip(c, c_text, c_acc)
+	if p.clips.is_empty():
+		var font := get_theme_default_font()
+		var fs := get_theme_default_font_size()
+		var msg := "Drag audio files here from the FileSystem dock (WAV, Ogg, MP3)"
+		var w := font.get_string_size(msg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		draw_string(font, Vector2((size.x - w) * 0.5, minf(size.y * 0.5, row_h * 1.5)), msg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(c_text, 0.5))
 
 	if _drop_ghost.size != Vector2.ZERO:
 		draw_rect(_drop_ghost, Color(c_acc, 0.2))

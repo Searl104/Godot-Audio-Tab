@@ -89,7 +89,16 @@ func max_row() -> int:
 
 
 ## Placeholder content laid out like the sketch, so the UI has something to show.
+## A new, empty sound: no clips, and a master chain with just the Output card.
 static func create_default() -> AWProject:
+	var p := AWProject.new()
+	p.title = "Untitled"
+	p.master_chain = AWChain.create(AWEffectLibrary.MASTER_OUTPUT)
+	return p
+
+
+## The old sample sound (four clips, curves, reverb and chorus). Used by the tests.
+static func create_demo() -> AWProject:
 	var p := AWProject.new()
 	p.title = "Demo Impact"
 	p.master_chain = AWChain.create(AWEffectLibrary.MASTER_OUTPUT)
