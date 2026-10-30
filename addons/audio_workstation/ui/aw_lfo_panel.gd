@@ -1,19 +1,22 @@
 @tool
 class_name AWLfoPanel
-extends PanelContainer
-## The LFO panel, docked beside the curve graph while open (right-click a curve > LFO…).
-## Shape, Max, Min, Freq, Fade In, Fade Out. Every change is undoable; slider drags preview
-## live and commit as one step.
-
-const WIDTH := 300.0
+extends VBoxContainer
+## Content of the "Audio LFO" dock, laid out as one column so it suits a tall, narrow dock: the open
+## LFO (waveform preview, shape, knobs for Freq, Accel, Max, Min, Fade In, Fade Out and Smoothing),
+## then every LFO in the project as "Clip 2\\Low Pass\\Cutoff"; click one to jump to it. Every change is undoable; knob drags
+## preview live and commit as one step.
 
 var doc: AWDocument
 
-var _body: VBoxContainer
+var _editor: VBoxContainer
+var _list: VBoxContainer
 var _curve: AWCurve = null
 var _chain: AWChain = null
 var _refreshers: Array[Callable] = []
 var _rebuild_queued := false
+var _list_sig := ""
+var knobs := {}
+var list_buttons: Array[Button] = []
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -21,28 +24,38 @@ func setup(p_doc: AWDocument) -> void:
 
 
 func _ready() -> void:
-	custom_minimum_size.x = WIDTH
-	var style := StyleBoxFlat.new()
-	style.bg_color = AWTheme.color(self, &"base_color", Color(0.17, 0.19, 0.23))
-	style.border_color = Color(0, 0, 0, 0.45)
-	style.border_width_left = 1
-	style.set_content_margin_all(12)
-	add_theme_stylebox_override("panel", style)
+	custom_minimum_size = Vector2(250, 200)
 	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	add_child(scroll)
-	_body = VBoxContainer.new()
-	_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_body.add_theme_constant_override("separation", 10)
-	scroll.add_child(_body)
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_theme_constant_override("separation", 8)
+	scroll.add_child(col)
+	_editor = VBoxContainer.new()
+	_editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_editor.add_theme_constant_override("separation", 8)
+	col.add_child(_editor)
+	col.add_child(HSeparator.new())
+	_list = VBoxContainer.new()
+	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(_list)
 	doc.lfo_panel_changed.connect(_queue_rebuild)
 	doc.project_changed.connect(func(structural: bool) -> void:
-		if structural or (_curve and _curve.lfo == null):
+		if structural or (_curve and _curve.lfo == null) or _list_sig != _signature():
 			_queue_rebuild()
 		else:
 			for r in _refreshers:
 				r.call())
 	_rebuild()
+
+
+func _signature() -> String:
+	var parts := PackedStringArray()
+	for e: Dictionary in doc.all_lfos():
+		parts.append(e["label"])
+	return "|".join(parts)
 
 
 func _queue_rebuild() -> void:
@@ -54,20 +67,33 @@ func _queue_rebuild() -> void:
 func _rebuild() -> void:
 	_rebuild_queued = false
 	_refreshers.clear()
-	for c in _body.get_children():
-		_body.remove_child(c)
-		c.queue_free()
+	knobs.clear()
+	list_buttons.clear()
+	for box: Control in [_editor, _list]:
+		for c in box.get_children():
+			box.remove_child(c)
+			c.queue_free()
 	_curve = doc.lfo_curve
 	_chain = doc.active_chain()
-	visible = _curve != null and _chain != null and _chain.curves.has(_curve) and _curve.lfo != null
-	if not visible:
-		return
+	var editing := _curve != null and _chain != null and _chain.curves.has(_curve) and _curve.lfo != null
+	if editing:
+		_build_editor()
+	else:
+		_curve = null
+		var hint := AWTheme.dim_label("Pick an LFO from the list, or right-click a curve or parameter > LFO…", 0.6)
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hint.custom_minimum_size.x = 200
+		_editor.add_child(hint)
+	_build_list()
+
+
+func _build_editor() -> void:
 	var l := _curve.lfo
 	var e := _chain.effect_of(_curve)
 	var spec := AWEffectLibrary.param_spec(e.effect_type, _curve.param)
 	var col := _curve.color
 
-	# Header: wave mark, "LFO", curve name, On, close.
+	# Header: wave mark, "LFO", curve name, On.
 	var header := HBoxContainer.new()
 	header.add_theme_constant_override("separation", 6)
 	var mark := _ShapeIcon.new()
@@ -92,17 +118,33 @@ func _rebuild() -> void:
 	on.toggled.connect(func(v: bool) -> void: doc.set_props(l, {"enabled": v}, "Toggle LFO"))
 	_refreshers.append(func() -> void: on.set_pressed_no_signal(l.enabled))
 	header.add_child(on)
-	var close := Button.new()
-	close.text = "✕"
-	close.flat = true
-	close.tooltip_text = "Close the LFO panel (the LFO stays on)"
-	close.focus_mode = Control.FOCUS_NONE
-	close.pressed.connect(doc.close_lfo)
-	header.add_child(close)
-	_body.add_child(header)
+	_editor.add_child(header)
+	var actions := HBoxContainer.new()
+	var bake := Button.new()
+	bake.text = "Bake to Keys"
+	bake.tooltip_text = "Replace the LFO with ordinary keys you can edit"
+	bake.focus_mode = Control.FOCUS_NONE
+	bake.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bake.pressed.connect(func() -> void: doc.bake_lfo(_chain, _curve))
+	actions.add_child(bake)
+	var remove := Button.new()
+	remove.text = "Remove"
+	remove.tooltip_text = "Remove the LFO from this curve"
+	remove.focus_mode = Control.FOCUS_NONE
+	remove.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	remove.add_theme_color_override("font_color", Color("#f0a0a0"))
+	remove.pressed.connect(func() -> void: doc.remove_lfo(_curve))
+	actions.add_child(remove)
+	_editor.add_child(actions)
 
-	# Shape
-	_body.add_child(_section("SHAPE"))
+	# Waveform preview and shape buttons.
+	var left := _editor
+	var preview := _Preview.new()
+	preview.lfo = l
+	preview.color = col
+	preview.custom_minimum_size.y = 84
+	_refreshers.append(preview.queue_redraw)
+	left.add_child(preview)
 	var shapes := HBoxContainer.new()
 	shapes.add_theme_constant_override("separation", 4)
 	var group := ButtonGroup.new()
@@ -136,42 +178,73 @@ func _rebuild() -> void:
 			shape_buttons[i].set_pressed_no_signal(i == l.shape)
 	sync_shape.call()
 	_refreshers.append(sync_shape)
-	_body.add_child(shapes)
+	left.add_child(shapes)
 
-	# Values
-	var grid := GridContainer.new()
-	grid.columns = 3
-	grid.add_theme_constant_override("h_separation", 8)
-	grid.add_theme_constant_override("v_separation", 6)
-	var log_param := _curve.scale == AWCurve.Scale.LOG
-	var unit: String = spec[4]
-	_row(grid, "Max", l, "max_value", spec[0], spec[1], spec[3], unit, log_param)
-	_row(grid, "Min", l, "min_value", spec[0], spec[1], spec[3], unit, log_param)
-	_row(grid, "Freq", l, "freq_hz", 0.05, 20.0, 0.01, "Hz", true)
+	# Knobs wrap to the dock's width.
+	var flow := HFlowContainer.new()
+	flow.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	flow.alignment = FlowContainer.ALIGNMENT_CENTER
+	flow.add_theme_constant_override("h_separation", 2)
+	flow.add_theme_constant_override("v_separation", 2)
+	_editor.add_child(flow)
 	var span := maxf(l.span(), 0.01)
-	_row(grid, "Fade In", l, "fade_in_sec", 0.0, span, 0.01, "s", false)
-	_row(grid, "Fade Out", l, "fade_out_sec", 0.0, span, 0.01, "s", false)
-	_body.add_child(grid)
+	var vmax := AWParamBinding.for_property(doc, l, "max_value", "Max", spec[0], spec[1], spec[3], spec[1], spec[4], _curve.scale)
+	var vmin := AWParamBinding.for_property(doc, l, "min_value", "Min", spec[0], spec[1], spec[3], spec[0], spec[4], _curve.scale)
+	for b: AWParamBinding in [vmax, vmin]:
+		b.like_effect = e.effect_type
+		b.like_param = _curve.param
+	var freq := AWParamBinding.for_property(doc, l, "freq_hz", "Freq", 0.05, 20.0, 0.01, 4.0, "Hz", AWCurve.Scale.LOG)
+	var accel := AWParamBinding.for_property(doc, l, "freq_accel", "Accel", -5.0, 5.0, 0.001, 0.0, "mHz/s")
+	accel.unit_factor = 1000.0
+	accel.power = 3.0
+	var fin := AWParamBinding.for_property(doc, l, "fade_in_sec", "Fade In", 0.0, span, 0.01, 0.25, "s")
+	var fout := AWParamBinding.for_property(doc, l, "fade_out_sec", "Fade Out", 0.0, span, 0.01, 0.25, "s")
+	var smooth := AWParamBinding.for_property(doc, l, "fade_smoothing", "Smoothing", 0.0, 1.0, 0.01, 0.0)
+	smooth.tooltip = "0 = straight fade ramps, 1 = fully eased"
+	accel.tooltip = "How fast the frequency changes, in milli-Hz per second (1000 = 1 Hz every second). Fine near the middle, wide at the ends. Negative slows down and stops at 0 Hz."
+	for b: AWParamBinding in [freq, accel, vmax, vmin, fin, fout, smooth]:
+		var k := AWKnob.new()
+		k.setup(b, col, 48)
+		k.bipolar = b.prop == "freq_accel"
+		k.name = b.prop + "_knob"
+		knobs[b.prop] = k
+		flow.add_child(k)
+		_refreshers.append(func() -> void:
+			if b.prop.begins_with("fade_") and b.prop != "fade_smoothing":
+				b.hi = maxf(l.span(), 0.01)
+			k.refresh())
 
-	var note := AWTheme.dim_label("Freq runs on the clip's clock, so it slows down when Pitch drops. The fades blend from the drawn curve into the LFO and back.", 0.6)
+	var note := AWTheme.dim_label("Freq runs on the clip's clock, so it slows down when Pitch drops. Accel drifts the frequency over time. The fades blend from the drawn curve into the LFO and back; Smoothing eases them. Double-click a knob to type a value.", 0.6)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.custom_minimum_size.x = 200
 	note.add_theme_font_size_override("font_size", get_theme_default_font_size() - 2)
-	_body.add_child(note)
+	_editor.add_child(note)
 
-	var footer := HBoxContainer.new()
-	var bake := Button.new()
-	bake.text = "Bake to Keys"
-	bake.tooltip_text = "Replace the LFO with ordinary keys you can edit"
-	bake.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bake.pressed.connect(func() -> void: doc.bake_lfo(_chain, _curve))
-	var remove := Button.new()
-	remove.text = "Remove LFO"
-	remove.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	remove.add_theme_color_override("font_color", Color("#f0a0a0"))
-	remove.pressed.connect(func() -> void: doc.remove_lfo(_curve))
-	footer.add_child(bake)
-	footer.add_child(remove)
-	_body.add_child(footer)
+
+## "ALL LFOS": one line per LFO in the project, "Clip 2\\Low Pass\\Cutoff". Click to jump to it.
+func _build_list() -> void:
+	var all := doc.all_lfos()
+	_list_sig = _signature()
+	_list.add_child(_section("ALL LFOS (%d)" % all.size()))
+	if all.is_empty():
+		var none := AWTheme.dim_label("None yet. Right-click a parameter or curve > Add LFO…", 0.6)
+		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		none.custom_minimum_size.x = 200
+		_list.add_child(none)
+		return
+	for entry: Dictionary in all:
+		var b := AWPathButton.new()
+		b.set_path(entry["label"])
+		b.flat = true
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.focus_mode = Control.FOCUS_NONE
+		var c: AWCurve = entry["curve"]
+		b.add_theme_color_override("font_color", c.color.lightened(0.2))
+		b.toggle_mode = true
+		b.button_pressed = c == _curve
+		b.pressed.connect(func() -> void: doc.goto_lfo(entry))
+		list_buttons.append(b)
+		_list.add_child(b)
 
 
 func _section(t: String) -> Label:
@@ -180,56 +253,33 @@ func _section(t: String) -> Label:
 	return l
 
 
-## Label | slider | field, bound to an LFO property with live preview + one undo per drag.
-func _row(grid: GridContainer, label_text: String, l: AWLfo, prop: String, lo: float, hi: float,
-		step: float, unit: String, exp: bool) -> void:
-	var label := Label.new()
-	label.text = label_text
-	label.custom_minimum_size.x = 62
-	grid.add_child(label)
+## Waveform over the first few cycles, shaped by the fades (how much LFO is heard).
+class _Preview extends Control:
+	var lfo: AWLfo
+	var color := Color.WHITE
 
-	var slider := HSlider.new()
-	slider.min_value = lo
-	slider.max_value = hi
-	slider.step = step
-	slider.exp_edit = exp and lo > 0.0
-	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	slider.focus_mode = Control.FOCUS_NONE
-	slider.name = prop + "_slider"
-	var state := {"dragging": false, "orig": 0.0}
-	slider.drag_started.connect(func() -> void:
-		state.dragging = true
-		state.orig = l.get(prop))
-	slider.value_changed.connect(func(v: float) -> void:
-		if state.dragging:
-			doc.preview_set(l, {prop: v})
-		else:
-			doc.set_props(l, {prop: v}, "Edit LFO " + label_text))
-	slider.drag_ended.connect(func(_changed: bool) -> void:
-		state.dragging = false
-		doc.commit_drags([[l, {prop: state.orig}]], "Edit LFO " + label_text))
-	grid.add_child(slider)
-
-	var spin := SpinBox.new()
-	spin.min_value = lo
-	spin.max_value = hi
-	spin.step = step
-	spin.suffix = unit
-	spin.custom_minimum_size.x = 84
-	spin.select_all_on_focus = true
-	spin.name = prop + "_field"
-	spin.value_changed.connect(func(v: float) -> void: doc.set_props(l, {prop: v}, "Edit LFO " + label_text))
-	grid.add_child(spin)
-
-	var sync := func() -> void:
-		var v: float = l.get(prop)
-		if not state.dragging:
-			slider.set_value_no_signal(v)
-		if not spin.get_line_edit().has_focus():
-			spin.set_value_no_signal(v)
-	sync.call()
-	_refreshers.append(sync)
+	func _draw() -> void:
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0, 0, 0, 0.25), true)
+		if lfo == null or lfo.span() <= 0.0:
+			return
+		var t4 := lfo.time_of_phase(4.0) - lfo.start_sec # time to four cycles (INF if it never gets there)
+		var window := minf(lfo.span(), (t4 if is_finite(t4) else lfo.span()) + lfo.fade_in_sec + lfo.fade_out_sec)
+		window = maxf(window, 0.05)
+		var pad := 6.0
+		var h := size.y - pad * 2.0
+		draw_line(Vector2(0, size.y * 0.5), Vector2(size.x, size.y * 0.5), Color(1, 1, 1, 0.12), 1.0)
+		var pts := PackedVector2Array()
+		var n := 180
+		for i in n + 1:
+			var t := window * float(i) / n
+			var ts := lfo.start_sec + t
+			var amp := lfo.envelope(ts)
+			var y := 0.5 + (lfo.wave(ts) - 0.5) * amp
+			pts.append(Vector2(size.x * float(i) / n, pad + (1.0 - y) * h))
+		draw_polyline(pts, color, 1.6, true)
+		for fx: float in [lfo.fades().x, window - lfo.fades().y]:
+			if fx > 0.0 and fx < window:
+				draw_dashed_line(Vector2(size.x * fx / window, 0), Vector2(size.x * fx / window, size.y), Color(1, 1, 1, 0.25), 1.0, 3.0)
 
 
 ## Small wave drawing used for the shape buttons and the header mark.

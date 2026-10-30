@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 2:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 3:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -299,17 +299,6 @@ func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
 	return voice
 
 
-## Effects the native engine can run so far: card name -> [type id, parameter keys in the
-## order the engine expects, whether it rings on after its input stops (needs a tail)]. Cards of other types are skipped until they are ported.
-const NATIVE_EFFECTS := {
-	"Low Pass": [1, ["cutoff_hz", "resonance"], true],
-	"High Pass": [2, ["cutoff_hz", "resonance"], true],
-	"Band Pass": [3, ["cutoff_hz", "resonance"], true],
-	"EQ": [4, ["band_db/32_hz", "band_db/100_hz", "band_db/320_hz", "band_db/1000_hz", "band_db/3200_hz", "band_db/10000_hz"], true],
-	"Amplify": [5, ["volume_db"], false],
-}
-
-
 ## Where the sound ends (the export marker), in seconds.
 func _end_sec() -> float:
 	return _project.export_end_resolved() if _project != null else 0.0
@@ -321,7 +310,7 @@ static func chain_rings(chain: AWChain) -> bool:
 		return false
 	for i in range(1, chain.effects.size()):
 		var e: AWEffect = chain.effects[i]
-		if not e.bypass and NATIVE_EFFECTS.has(e.effect_type) and NATIVE_EFFECTS[e.effect_type][2]:
+		if not e.bypass and AWEffectLibrary.engine_rings(e.effect_type):
 			return true
 	return false
 
@@ -338,13 +327,12 @@ func _clip_effects(clip: AWClip, step_sec: float, tail_sec: float) -> Array:
 	var wsig := AWClipWarp.signature(clip)
 	for i in range(1, ch.effects.size()):
 		var e: AWEffect = ch.effects[i]
-		if e.bypass or not NATIVE_EFFECTS.has(e.effect_type):
+		if e.bypass or AWEffectLibrary.engine_id(e.effect_type) == 0:
 			continue
-		var info: Array = NATIVE_EFFECTS[e.effect_type]
 		var tables: Array = []
-		for key: String in info[1]:
+		for key: String in AWEffectLibrary.engine_keys(e.effect_type):
 			tables.append(_fx_table(ch, e, key, warp, wsig, n, step_sec))
-		out.append({"type": info[0], "params": tables, "step": RATE_STEP})
+		out.append({"type": AWEffectLibrary.engine_id(e.effect_type), "params": tables, "step": RATE_STEP})
 	return out
 
 
@@ -397,13 +385,12 @@ func _master_plan() -> Dictionary:
 	var length_sec := maxf(_project.content_end_sec(), _end_sec())
 	for i in range(1, mc.effects.size()):
 		var e: AWEffect = mc.effects[i]
-		if e.bypass or not NATIVE_EFFECTS.has(e.effect_type):
+		if e.bypass or AWEffectLibrary.engine_id(e.effect_type) == 0:
 			continue
-		var info: Array = NATIVE_EFFECTS[e.effect_type]
 		var tables: Array = []
-		for key: String in info[1]:
+		for key: String in AWEffectLibrary.engine_keys(e.effect_type):
 			tables.append(_table(mc, e, key, length_sec, step_sec, AWSampler.VALUE))
-		fx.append({"type": info[0], "params": tables, "step": RATE_STEP})
+		fx.append({"type": AWEffectLibrary.engine_id(e.effect_type), "params": tables, "step": RATE_STEP})
 	if not fx.is_empty():
 		plan["effects"] = fx
 	# The sound ends at the export marker, whatever the clips and tails add up to.
@@ -444,5 +431,5 @@ static func _curve_signature(chain: AWChain, curve: AWCurve, length_sec: float, 
 	var l := curve.lfo
 	var lfo: Array = []
 	if l != null and l.enabled:
-		lfo = [l.shape, l.max_value, l.min_value, l.freq_hz, l.fade_in_sec, l.fade_out_sec, l.start_sec, l.end_sec, l.random_seed]
+		lfo = [l.shape, l.max_value, l.min_value, l.freq_hz, l.fade_in_sec, l.fade_out_sec, l.start_sec, l.end_sec, l.random_seed, l.freq_accel, l.fade_smoothing]
 	return [hash(chain.get_keys(curve)), curve.scale, chain.curve_range(curve), snappedf(length_sec, 0.0001), step_sec, unit, lfo]

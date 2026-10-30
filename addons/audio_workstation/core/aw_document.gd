@@ -21,6 +21,8 @@ signal message(text: String)
 signal lfo_panel_changed
 ## Export bit depth, tail or file name changed (not a sound edit, so no plan rebuild).
 signal export_settings_changed
+## The effect shown in the detail panel dock changed (or was closed).
+signal detail_changed
 
 enum ChainTab { MASTER, CLIP }
 enum CurveTime { CLIP, PROJECT }
@@ -54,6 +56,8 @@ var active_curve: AWCurve = null
 var solo_curve: AWCurve = null
 ## Curve whose LFO panel is open (null = closed).
 var lfo_curve: AWCurve = null
+## True only while show_lfo_list() is announcing itself; the plugin reacts by showing the Audio LFO dock.
+var lfo_list_open := false
 
 # Views
 var timeline_view := AWTimeView.new()
@@ -740,6 +744,19 @@ func move_effect(chain: AWChain, e: AWEffect, new_index: int) -> void:
 	_do_undo("Reorder Effect", _apply_move_effect.bind(chain, e, target), _apply_move_effect.bind(chain, e, old))
 
 
+var detail_chain: AWChain
+var detail_effect: AWEffect
+
+
+## Shows an effect's custom panel in the Audio Effect dock (null closes it).
+func open_detail(chain: AWChain, e: AWEffect) -> void:
+	if detail_effect == e and detail_chain == chain:
+		return
+	detail_chain = chain
+	detail_effect = e
+	detail_changed.emit()
+
+
 func reset_effect(chain: AWChain, e: AWEffect) -> void:
 	set_props(e, {"params": AWEffectLibrary.default_params(e.effect_type)}, "Reset Effect")
 
@@ -874,6 +891,53 @@ func open_lfo(chain: AWChain, c: AWCurve) -> void:
 	curve_view_changed.emit()
 
 
+## Brings up the Audio LFO dock (the plugin shows it on lfo_panel_changed while lfo_list_open).
+func show_lfo_list() -> void:
+	lfo_list_open = true
+	lfo_panel_changed.emit()
+	lfo_list_open = false
+
+
+## Every LFO in the project, Master first then clips in timeline order:
+## [{chain, curve, clip (null for Master), label "Clip 2\\Low Pass\\Cutoff"}].
+func all_lfos() -> Array:
+	var out := []
+	_collect_lfos(out, project.master_chain, null, "Master")
+	for clip in project.clips:
+		_collect_lfos(out, clip.chain, clip, clip.name)
+	return out
+
+
+func _collect_lfos(out: Array, ch: AWChain, clip: AWClip, owner_name: String) -> void:
+	for c in ch.curves:
+		if c.lfo == null:
+			continue
+		var e := ch.effect_of(c)
+		if e == null:
+			continue
+		var same := 0
+		var nth := 0
+		for o in ch.effects:
+			if o.effect_type == e.effect_type:
+				same += 1
+				if o == e:
+					nth = same
+		var ename := e.effect_type + (" #%d" % nth if same > 1 else "")
+		out.append({"chain": ch, "curve": c, "clip": clip,
+			"label": "%s\\%s\\%s" % [owner_name, ename, AWEffectLibrary.param_label(e.effect_type, c.param)]})
+
+
+## Jumps to an LFO from all_lfos(): selects its clip (or the Master tab) and opens it.
+func goto_lfo(entry: Dictionary) -> void:
+	var clip: AWClip = entry["clip"]
+	if clip != null:
+		if focus_clip != clip or chain_tab != ChainTab.CLIP:
+			select_clip(clip)
+	else:
+		set_chain_tab(ChainTab.MASTER)
+	open_lfo(entry["chain"], entry["curve"])
+
+
 func close_lfo() -> void:
 	if lfo_curve == null:
 		return
@@ -915,7 +979,8 @@ func bake_lfo(chain: AWChain, c: AWCurve) -> void:
 	if l == null:
 		return
 	var old_keys := chain.get_keys(c)
-	var step := clampf(1.0 / (maxf(l.freq_hz, 0.05) * 16.0), 0.002, 0.05)
+	var fmax := maxf(l.freq_hz, maxf(l.freq_hz + l.freq_accel * l.span(), 0.05))
+	var step := clampf(1.0 / (fmax * 16.0), 0.002, 0.05)
 	if l.span() / step > 4000.0:
 		step = l.span() / 4000.0
 	var keys := []
@@ -928,17 +993,21 @@ func bake_lfo(chain: AWChain, c: AWCurve) -> void:
 		times.append(t)
 		t += step
 	times.append(l.end_sec)
-	# Jumps: Square every half cycle, Saw and Random every cycle.
+	# Jumps: Square every half cycle, Saw and Random every cycle (found through the phase, so a
+	# drifting frequency keeps sharp edges too).
 	var jump := 0.0
 	match l.shape:
-		AWLfo.Shape.SQUARE: jump = 0.5 / maxf(l.freq_hz, 0.05)
-		AWLfo.Shape.SAW, AWLfo.Shape.RANDOM: jump = 1.0 / maxf(l.freq_hz, 0.05)
+		AWLfo.Shape.SQUARE: jump = 0.5
+		AWLfo.Shape.SAW, AWLfo.Shape.RANDOM: jump = 1.0
 	if jump > 0.0:
-		var edge := l.start_sec + jump
-		while edge < l.end_sec:
+		var cycles := jump
+		while true:
+			var edge := l.time_of_phase(cycles)
+			if edge >= l.end_sec:
+				break
 			times.append(edge - BAKE_EDGE)
 			times.append(edge)
-			edge += jump
+			cycles += jump
 	times.sort()
 	var last := -INF
 	for tt in times:

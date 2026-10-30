@@ -17,6 +17,11 @@ const SHAPE_NAMES := ["Sine", "Triangle", "Square", "Saw", "Random"]
 @export var max_value: float = 1.0
 @export var min_value: float = 0.0
 @export_range(0.05, 20.0, 0.01, "exp") var freq_hz: float = 4.0
+## Frequency change per second (Hz/s; the panel shows mHz/s, positive speeds up, negative slows down). A slowing
+## LFO stops at 0 Hz and holds its last phase.
+@export_range(-5.0, 5.0, 0.001) var freq_accel: float = 0.0
+## How the fades are shaped: 0 = straight ramps, 1 = fully eased (smoothstep).
+@export_range(0.0, 1.0, 0.01) var fade_smoothing: float = 0.0
 @export var fade_in_sec: float = 0.25
 @export var fade_out_sec: float = 0.25
 ## Active span in curve time. Phase is anchored at start_sec.
@@ -30,9 +35,30 @@ func span() -> float:
 	return maxf(end_sec - start_sec, 0.0)
 
 
+## Cycles completed at curve time t (the phase), with the frequency drifting by freq_accel.
+func phase(t: float) -> float:
+	var tau := t - start_sec
+	if tau <= 0.0 or is_zero_approx(freq_accel):
+		return tau * freq_hz
+	if freq_accel < 0.0:
+		var tz := freq_hz / -freq_accel # the moment the frequency reaches 0
+		tau = minf(tau, tz)
+	return freq_hz * tau + 0.5 * freq_accel * tau * tau
+
+
+## Curve time at which the phase reaches `cycles`, or INF if it never does.
+func time_of_phase(cycles: float) -> float:
+	if is_zero_approx(freq_accel):
+		return start_sec + cycles / maxf(freq_hz, 1e-6)
+	var disc := freq_hz * freq_hz + 2.0 * freq_accel * cycles
+	if disc < 0.0:
+		return INF
+	return start_sec + (-freq_hz + sqrt(disc)) / freq_accel
+
+
 ## Oscillator position 0..1 at curve time t.
 func wave(t: float) -> float:
-	var p := (t - start_sec) * freq_hz
+	var p := phase(t)
 	var ph := p - floorf(p)
 	match shape:
 		Shape.TRIANGLE:
@@ -64,7 +90,8 @@ func envelope(t: float) -> float:
 		e = minf(e, (t - start_sec) / f.x)
 	if f.y > 0.0:
 		e = minf(e, (end_sec - t) / f.y)
-	return clampf(e, 0.0, 1.0)
+	e = clampf(e, 0.0, 1.0)
+	return e + fade_smoothing * (e * e * (3.0 - 2.0 * e) - e)
 
 
 ## One-line description, e.g. "LFO sine 4.0 Hz · 0.20–0.80".

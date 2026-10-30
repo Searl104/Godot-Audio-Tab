@@ -17,6 +17,7 @@ var _slider: HSlider
 var _spin: SpinBox
 var _curve_value: Label
 var _menu: PopupMenu
+var binding: AWParamBinding
 var _drag_orig := 0.0
 var _dragging := false
 
@@ -26,6 +27,7 @@ func setup(p_doc: AWDocument, p_chain: AWChain, p_effect: AWEffect, p_param: Str
 	chain = p_chain
 	effect = p_effect
 	param = p_param
+	binding = AWParamBinding.new(doc, chain, effect, param)
 
 
 func _ready() -> void:
@@ -90,7 +92,6 @@ func _ready() -> void:
 	add_child(_curve_value)
 
 	_menu = PopupMenu.new()
-	_menu.id_pressed.connect(_on_menu)
 	add_child(_menu)
 	refresh()
 
@@ -164,46 +165,8 @@ func _gui_input(event: InputEvent) -> void:
 
 
 func _open_menu(pos: Vector2) -> void:
-	var c := curve()
-	_menu.clear()
-	if c == null:
-		_menu.add_item("Make Curve", 1)
-		_menu.add_item("Add LFO…", 20)
-		_menu.add_item("Reset to Default", 3)
-	else:
-		_menu.add_item("Select Curve", 4)
-		_menu.add_radio_check_item("On", 10)
-		_menu.set_item_checked(-1, c.display == AWCurve.Display.ON)
-		_menu.add_radio_check_item("Dim", 11)
-		_menu.set_item_checked(-1, c.display == AWCurve.Display.DIM)
-		_menu.add_radio_check_item("Off", 12)
-		_menu.set_item_checked(-1, c.display == AWCurve.Display.OFF)
-		_menu.add_separator()
-		_menu.add_item("Unsolo" if doc.solo_curve == c else "Solo", 5)
-		_menu.add_item("Unmute" if c.display == AWCurve.Display.OFF else "Mute", 6)
-		_menu.add_item("Show All Curves", 7)
-		_menu.add_separator()
-		_menu.add_item("Edit LFO…" if c.lfo else "LFO…", 21)
-		if c.lfo:
-			_menu.add_item("Remove LFO", 22)
-		_menu.add_item("Remove Curve", 2)
-	AWTheme.popup_at(_menu, self, pos)
+	binding.open_menu(self, pos, _menu)
 
 
 func _on_menu(id: int) -> void:
-	var c := curve()
-	match id:
-		1: doc.make_curve(chain, effect, param)
-		2: doc.remove_curve(chain, c)
-		3: doc.set_param(effect, param, AWEffectLibrary.param_spec(effect.effect_type, param)[2])
-		4:
-			if c.display != AWCurve.Display.ON:
-				doc.set_curve_display(c, AWCurve.Display.ON)
-			doc.set_active_curve(c)
-		5: doc.toggle_solo(c)
-		6: doc.toggle_mute(c)
-		7: doc.show_all_curves()
-		10, 11, 12: doc.set_curve_display(c, (id - 10) as AWCurve.Display)
-		20: doc.open_lfo(chain, doc.make_curve(chain, effect, param))
-		21: doc.open_lfo(chain, c)
-		22: doc.remove_lfo(c)
+	binding.on_menu(id)

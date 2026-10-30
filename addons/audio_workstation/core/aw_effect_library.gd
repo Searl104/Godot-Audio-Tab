@@ -5,6 +5,9 @@ extends RefCounted
 ## AudioEffect class, so the logic phase can apply values with effect.set(key, value).
 ##
 ## params: key -> [min, max, default, step, unit, label]
+## "engine": present when the native engine can run the effect: its numeric type id (must match
+##   aw::EffectType in extension/src/aw_effects.h) and whether it rings on after its input stops
+##   (so it needs a tail). The engine receives parameters in the order of "params" below.
 ## "Clip" and "Output" are fixed source cards (always first, can't be removed):
 ##   Clip   = per-clip gain, pitch (applied as playback rate) and pan.
 ##   Output = master output volume.
@@ -73,28 +76,28 @@ const EFFECTS := {
 		},
 	},
 	"Low Pass": {
-		"godot_class": "AudioEffectLowPassFilter",
+		"godot_class": "AudioEffectLowPassFilter", "engine": {"id": 1, "rings": true}, "color": "#4f9edb",
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 2000.0, 1.0, "Hz", "Cutoff"],
 			"resonance": [0.0, 1.0, 0.5, 0.01, "", "Resonance"],
 		},
 	},
 	"High Pass": {
-		"godot_class": "AudioEffectHighPassFilter",
+		"godot_class": "AudioEffectHighPassFilter", "color": "#e08a4f", "engine": {"id": 2, "rings": true},
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 200.0, 1.0, "Hz", "Cutoff"],
 			"resonance": [0.0, 1.0, 0.5, 0.01, "", "Resonance"],
 		},
 	},
 	"Band Pass": {
-		"godot_class": "AudioEffectBandPassFilter",
+		"godot_class": "AudioEffectBandPassFilter", "color": "#b07fe0", "engine": {"id": 3, "rings": true},
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 1000.0, 1.0, "Hz", "Cutoff"],
 			"resonance": [0.0, 1.0, 0.5, 0.01, "", "Resonance"],
 		},
 	},
 	"EQ": {
-		"godot_class": "AudioEffectEQ6",
+		"godot_class": "AudioEffectEQ6", "engine": {"id": 4, "rings": true}, "color": "#5ec26a",
 		"params": {
 			"band_db/32_hz": [-60.0, 24.0, 0.0, 0.1, "dB", "32 Hz"],
 			"band_db/100_hz": [-60.0, 24.0, 0.0, 0.1, "dB", "100 Hz"],
@@ -124,7 +127,7 @@ const EFFECTS := {
 		},
 	},
 	"Amplify": {
-		"godot_class": "AudioEffectAmplify",
+		"godot_class": "AudioEffectAmplify", "color": "#d9b84a", "engine": {"id": 5, "rings": false},
 		"params": {
 			"volume_db": [-80.0, 24.0, 0.0, 0.1, "dB", "Volume"],
 		},
@@ -186,6 +189,21 @@ static func default_scale(effect: String, param: String) -> int:
 	return AWCurve.Scale.LINEAR
 
 
+## Native engine type id for an effect card, or 0 when the engine can't run it yet (skipped, no sound).
+static func engine_id(effect: String) -> int:
+	return int(EFFECTS.get(effect, {}).get("engine", {}).get("id", 0))
+
+
+## True when the effect keeps sounding after its input stops (it needs a tail).
+static func engine_rings(effect: String) -> bool:
+	return bool(EFFECTS.get(effect, {}).get("engine", {}).get("rings", false))
+
+
+## Parameter keys in the order the engine expects (the schema's order).
+static func engine_keys(effect: String) -> Array:
+	return param_schema(effect).keys()
+
+
 static func default_params(effect: String) -> Dictionary:
 	var out := {}
 	var schema := param_schema(effect)
@@ -206,5 +224,7 @@ static func format_value(effect: String, param: String, value: float) -> String:
 static func effect_color(effect: String) -> Color:
 	if is_fixed(effect):
 		return Color("#9aa4b2")
+	if EFFECTS.has(effect) and EFFECTS[effect].has("color"):
+		return Color(EFFECTS[effect]["color"])
 	var idx := EFFECTS.keys().find(effect)
 	return Color.from_hsv(fmod(float(maxi(idx, 0)) * 0.13, 1.0), 0.45, 0.85)

@@ -621,6 +621,8 @@ static func sampler_tests(_screen: AWMainScreen) -> void:
 			l.fade_in_sec = 0.3
 			l.fade_out_sec = 0.6
 			l.random_seed = shape * 7 + 1
+			l.freq_accel = [0.0, 2.5, -1.2, 4.0, -6.0][shape]
+			l.fade_smoothing = [0.0, 0.5, 1.0, 0.3, 0.8][shape]
 			var r := ch.curve_range(curve)
 			l.min_value = lerpf(r.x, r.y, 0.15)
 			l.max_value = lerpf(r.x, r.y, 0.85)
@@ -734,6 +736,230 @@ static func sampler_tests(_screen: AWMainScreen) -> void:
 	check(AWSampler.calls == calls1 + 1, "key edit re-samples only that curve, not the clip's other curves (%d call)" % [AWSampler.calls - calls1])
 
 
+static func _measured_db(core: Object, hz: float, effects: Array) -> float:
+	return 20.0 * log(maxf(_through(core, hz, effects), 1e-9) / 0.5) / log(10.0)
+
+
+## Screenshot with the Audio Effect dock showing the panel.
+static func _panel_shot(tree: SceneTree, _d: AWDocument, _ch: AWChain, _e: AWEffect, name: String) -> void:
+	await frames(tree, 3)
+	await shot(tree, name)
+
+
+static func panel_tests(screen: AWMainScreen) -> void:
+	var tree := screen.get_tree()
+	var d := screen.doc
+	var ch := d.project.clips[3].chain
+	var sr := AudioServer.get_mix_rate()
+
+	# The drawn response is the engine's response.
+	check(absf(AWFilterResponse.lowpass_db(1000.0, 1000.0, 0.5, sr) + 3.01) < 0.05, "response: low pass is -3 dB at the cutoff")
+	check(AWFilterResponse.lowpass_db(10000.0, 1000.0, 0.5, sr) < -35.0, "response: 12 dB/oct, 10x the cutoff is below -35 dB")
+	check(absf(AWFilterResponse.q_to_resonance(AWFilterResponse.resonance_to_q(0.8)) - 0.8) < 0.001, "response: resonance <-> Q round trip")
+	var gains := PackedFloat32Array([0, 0, 0, 6, 0, 0])
+	check(absf(AWFilterResponse.eq_db(1000.0, gains, sr) - 6.0) < 0.01, "response: EQ +6 dB reads +6 dB at its band")
+	var e := AWEngine.new()
+	e.set_project(AWProject.new())
+	if e.core != null:
+		var core: Object = e.core
+		core.call("set_sample_rate", float(sr))
+		var worst := 0.0
+		for hz: float in [300.0, 800.0, 1500.0, 3000.0]:
+			var want := AWFilterResponse.lowpass_db(hz, 1000.0, 0.8, sr)
+			worst = maxf(worst, absf(_measured_db(core, hz, [_fx(1, [1000.0, 0.8])]) - want))
+		check(worst < 0.5, "response vs engine: low pass within %.2f dB" % worst)
+		for kind: Array in [["High Pass", 2, [300.0, 800.0, 1500.0, 3000.0]], ["Band Pass", 3, [300.0, 800.0, 1500.0, 3000.0]]]:
+			worst = 0.0
+			for hz: float in kind[2]:
+				worst = maxf(worst, absf(_measured_db(core, hz, [_fx(kind[1], [1000.0, 0.8])]) - AWFilterResponse.filter_db(kind[0], hz, 1000.0, 0.8, sr)))
+			check(worst < 0.5, "response vs engine: %s within %.2f dB" % [kind[0], worst])
+		var g2 := [3.0, -4.0, 5.0, 8.0, -6.0, 2.0]
+		var g2p := PackedFloat32Array(g2)
+		worst = 0.0
+		for hz: float in [60.0, 200.0, 640.0, 2000.0, 6000.0]:
+			worst = maxf(worst, absf(_measured_db(core, hz, [_fx(4, g2)]) - AWFilterResponse.eq_db(hz, g2p, sr)))
+		check(worst < 0.5, "response vs engine: EQ within %.2f dB" % worst)
+
+	if e.core != null:
+		var ids: PackedInt32Array = e.core.call("get_effect_types")
+		var lib_ids := PackedInt32Array()
+		for t: String in AWEffectLibrary.EFFECTS:
+			if AWEffectLibrary.engine_id(t) != 0:
+				lib_ids.append(AWEffectLibrary.engine_id(t))
+		var a := Array(ids)
+		var b := Array(lib_ids)
+		a.sort()
+		b.sort()
+		check(a == b, "library engine ids match the engine's effect types %s" % str(a))
+		check(AWEffectLibrary.engine_keys("EQ").size() == 6 and AWEffectLibrary.engine_keys("Low Pass") == ["cutoff_hz", "resonance"], "engine parameter order comes from the schema")
+	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and AWPanelRegistry.has_panel("High Pass") and AWPanelRegistry.has_panel("Band Pass") and AWPanelRegistry.has_panel("Amplify") and not AWPanelRegistry.has_panel("Reverb"), "registry: panels for every engine-capable effect, none for Reverb")
+	check(AWPanelRegistry.create("Reverb") == null, "registry: no panel falls back to the generic rows")
+
+	# --- Low Pass ---
+	var undo_base := 0
+	var lp := d.add_effect(ch, "Low Pass")
+	undo_base += 1
+	await frames(tree, 4)
+	var card: AWEffectCard = screen.chain_panel._cards.back()
+	check(card.effect == lp and card.panel is AWFilterPanel and card.panel.compact and card.panel.plot.mini, "Low Pass card uses the compact panel")
+	check(card.rows.is_empty() and card.panel.cutoff_knob != null and card.panel.plot.response.size() > 0, "compact card: plot and knobs, no generic rows")
+	d.open_detail(ch, lp)
+	await frames(tree, 2)
+	if OS.get_environment("AW_SHOTS") != "":
+		d.set_param(lp, "resonance", 0.72)
+		await _panel_shot(tree, d, ch, lp, "aw_panel_lowpass.png")
+		d.undo()
+	var host := screen.detail_panel
+	var lpp := host.panel as AWFilterPanel
+	check(lpp != null and lpp.effect == lp and host._title.text == "Low Pass", "detail dock shows the Low Pass panel")
+	lpp.plot.size = Vector2(420, 260)
+	lpp.refresh()
+	check(lpp.plot.handles.size() == 1 and absf(lpp.plot.handles[0].f - 2000.0) < 0.5, "handle sits at the 2 kHz cutoff")
+	var h0: Dictionary = lpp.plot.handles[0]
+	var from := Vector2(lpp.plot.x_of(h0.f), lpp.plot.y_of(h0.db))
+	var to := Vector2(lpp.plot.x_of(4000.0), lpp.plot.y_of(12.0))
+	drag(lpp.plot, from, to)
+	check(absf(lp.get_param("cutoff_hz") - 4000.0) < 120.0, "dragging the handle sets the cutoff (%.0f Hz)" % lp.get_param("cutoff_hz"))
+	check(lp.get_param("resonance") > 0.7, "dragging the handle up raises resonance (%.2f)" % lp.get_param("resonance"))
+	d.undo()
+	check(lp.get_param("cutoff_hz") == 2000.0 and lp.get_param("resonance") == 0.5, "one undo restores cutoff and resonance together")
+	var k := lpp.cutoff_knob
+	k.size = k.custom_minimum_size
+	var c0 := lp.get_param("cutoff_hz")
+	click(k, Vector2(40, 40))
+	move(k, Vector2(40, -20))
+	click(k, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	var up := lp.get_param("cutoff_hz")
+	check(up > c0 * 2.0, "knob drag up raises the cutoff on a log scale (%.0f Hz)" % up)
+	d.undo()
+	click(k, Vector2(40, 40))
+	move(k, Vector2(40, -20), true)
+	click(k, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	var fine := lp.get_param("cutoff_hz")
+	check(fine > c0 and fine < up, "Shift drags finely (%.0f Hz vs %.0f Hz)" % [fine, up])
+	d.undo()
+	d.set_param(lp, "cutoff_hz", 6000.0)
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, false, false, true)
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, false)
+	check(lp.get_param("cutoff_hz") == 2000.0, "Ctrl+click resets to the default")
+	d.undo(); d.undo()
+	# Typed entry: double-click opens a field; "3k" sets 3000 Hz, Esc cancels.
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, true)
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, false)
+	check(k._entry != null and k._entry.visible and k._entry.text == "2000", "double-click opens the entry field with the current value")
+	k._entry.text = "3k"
+	k._entry.text_submitted.emit("3k")
+	check(lp.get_param("cutoff_hz") == 3000.0 and not k._entry.visible, "typing 3k sets 3000 Hz and closes the field")
+	check(is_nan(k.binding.parse_text("abc")) and k.binding.parse_text("-6 dB") == -6.0 and k.binding.parse_text(".5") == 0.5, "entry parsing: numbers, units and junk")
+	d.undo()
+	check(lp.get_param("cutoff_hz") == 2000.0, "the typed value is one undo step")
+	check(lp.get_param("cutoff_hz") == 2000.0, "undo walks back through the knob edits")
+
+	# A curve takes over the knob; the other axis of the handle still works.
+	var cc := d.make_curve(ch, lp, "cutoff_hz")
+	await frames(tree, 2)
+	lpp.refresh()
+	check(k.binding.has_curve(), "cutoff knob knows it is driven by a curve")
+	var before := lp.get_param("cutoff_hz")
+	click(k, Vector2(40, 40))
+	move(k, Vector2(40, -20))
+	click(k, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	check(lp.get_param("cutoff_hz") == before and d.active_curve == cc, "dragging a driven knob selects its curve instead of editing")
+	var hd: Dictionary = lpp.plot.handles[0]
+	check(hd.driven, "the handle shows it is driven")
+	var r0 := lp.get_param("resonance")
+	drag(lpp.plot, Vector2(lpp.plot.x_of(hd.f), lpp.plot.y_of(hd.db)), Vector2(lpp.plot.x_of(hd.f), lpp.plot.y_of(hd.db - 10.0)))
+	check(lp.get_param("cutoff_hz") == before and lp.get_param("resonance") != r0, "driven cutoff stays put while resonance is dragged")
+	d.undo()
+	d.remove_curve(ch, cc)
+	k.binding.on_menu(1)
+	check(k.binding.has_curve(), "menu > Make Curve works from a kit control")
+	d.undo()
+	d.remove_effect(ch, lp)
+	await frames(tree, 2)
+	check(d.detail_effect == null and host.panel == null, "removing the effect closes its panel")
+
+	# --- High Pass, Band Pass, Amplify ---
+	for t: String in ["High Pass", "Band Pass"]:
+		var fe := d.add_effect(ch, t)
+		await frames(tree, 3)
+		var fcard: AWEffectCard = screen.chain_panel._cards.back()
+		check(fcard.panel is AWFilterPanel and fcard.rows.is_empty() and fcard.panel.plot.response.size() > 0, "%s card is compact with a response plot" % t)
+		d.open_detail(ch, fe)
+		await frames(tree, 2)
+		var fp := host.panel as AWFilterPanel
+		fp.plot.size = Vector2(420, 260)
+		fp.refresh()
+		var fh: Dictionary = fp.plot.handles[0]
+		var fr0 := fe.get_param("resonance")
+		var fc0 := fe.get_param("cutoff_hz")
+		drag(fp.plot, Vector2(fp.plot.x_of(fh.f), fp.plot.y_of(fh.db)), Vector2(fp.plot.x_of(500.0), fp.plot.y_of(fh.db + 8.0)))
+		check(absf(fe.get_param("cutoff_hz") - 500.0) < 20.0 and fe.get_param("resonance") > fr0, "%s: handle drag sets cutoff and raises resonance" % t)
+		d.undo()
+		check(fe.get_param("cutoff_hz") == fc0 and fe.get_param("resonance") == fr0, "%s: one undo restores both" % t)
+		d.remove_effect(ch, fe)
+		await frames(tree, 2)
+	var amp := d.add_effect(ch, "Amplify")
+	await frames(tree, 3)
+	var acard: AWEffectCard = screen.chain_panel._cards.back()
+	check(acard.panel is AWAmplifyPanel and acard.rows.is_empty(), "Amplify card is a compact volume knob")
+	d.open_detail(ch, amp)
+	await frames(tree, 2)
+	var ap := host.panel as AWAmplifyPanel
+	ap.knob.size = ap.knob.custom_minimum_size
+	click(ap.knob, Vector2(60, 60))
+	move(ap.knob, Vector2(60, 20))
+	click(ap.knob, Vector2(60, 20), MOUSE_BUTTON_LEFT, false)
+	check(amp.get_param("volume_db") > 0.0, "Amplify knob raises the volume (%.1f dB)" % amp.get_param("volume_db"))
+	d.undo()
+	check(amp.get_param("volume_db") == 0.0, "undo restores the volume")
+	d.remove_effect(ch, amp)
+	await frames(tree, 2)
+
+	# --- EQ ---
+	var eq := d.add_effect(ch, "EQ")
+	await frames(tree, 4)
+	var eq_card: AWEffectCard = screen.chain_panel._cards.back()
+	check(eq_card.panel is AWEQPanel and eq_card.panel.knobs.size() == 6 and eq_card.rows.is_empty(), "EQ card is compact: preview plus six knobs")
+	d.open_detail(ch, eq)
+	await frames(tree, 2)
+	if OS.get_environment("AW_SHOTS") != "":
+		(screen.chain_panel._cards_box.get_parent() as ScrollContainer).scroll_horizontal = 5000
+		await _panel_shot(tree, d, ch, eq, "aw_panel_eq.png")
+	var ep := host.panel as AWEQPanel
+	check(ep != null and ep.knobs.size() == 6 and ep.plot.handles.size() == 6, "EQ panel has six knobs and six handles")
+	check(ep.knobs[0].bipolar and ep.knobs[0].view_min == -18.0, "EQ knobs are bipolar over -18..+18 dB")
+	ep.plot.size = Vector2(500, 200)
+	ep.refresh()
+	var hp := Vector2(ep.plot.x_of(1000.0), ep.plot.y_of(0.0))
+	drag(ep.plot, hp, Vector2(hp.x + 80.0, ep.plot.y_of(9.0)))
+	var g3 := eq.get_param("band_db/1000_hz")
+	check(absf(g3 - 9.0) < 0.6 and ep.selected == 3, "dragging a band handle sets only its gain (%.1f dB)" % g3)
+	check(eq.get_param("band_db/320_hz") == 0.0, "other bands are untouched")
+	check(absf(ep.plot.response[ep.plot.response.size() - 1] - AWFilterResponse.eq_db(20000.0, ep._gains(), sr)) < 0.01, "plot shows the live response")
+	d.undo()
+	check(eq.get_param("band_db/1000_hz") == 0.0, "undo restores the band")
+	var k1 := ep.knobs[1]
+	k1.size = k1.custom_minimum_size
+	click(k1, Vector2(40, 40))
+	move(k1, Vector2(40, -20))
+	click(k1, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	var kg := eq.get_param("band_db/100_hz")
+	check(kg > 4.0 and kg <= 18.0 and ep.selected == 1, "knob drag raises its band and selects it (%.1f dB)" % kg)
+	click(k1, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, false, false, true)
+	click(k1, Vector2(40, 40), MOUSE_BUTTON_LEFT, false)
+	check(eq.get_param("band_db/100_hz") == 0.0, "Ctrl+click resets a band knob")
+	var ec := d.make_curve(ch, eq, "band_db/320_hz")
+	await frames(tree, 2)
+	ep.refresh()
+	check(ep.knobs[2].binding.has_curve() and ep.plot.handles[2].driven, "a band with a curve is shown as driven")
+	d.undo()
+	d.remove_effect(ch, eq)
+	await frames(tree, 2)
+	check(not ch.effects.has(eq), "panel tests leave the chain as they found it")
+	d.open_detail(null, null)
+
+
 static func get_process_delta(tree: SceneTree) -> float:
 	return maxf(1.0 / 60.0, get_delta_guess(tree))
 
@@ -765,8 +991,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.4.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.4.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.4.2" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.4.2"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -965,7 +1191,21 @@ static func run(screen: AWMainScreen) -> void:
 	check(ch.get_keys(wet).size() == nkeys, "undo insert")
 	var chorus: AWCurve = ch.curves[3]
 	var ck := ch.get_keys(chorus).size()
-	var on_line := Vector2(g.local_to_x(1.5), g.val_to_y(chorus, ch.sample_norm(chorus, 1.5)))
+	# Pick the time where the chorus line is furthest from the other curves, so the test
+	# doesn't depend on how tall the graph happens to be.
+	var best_t := 1.5
+	var best_gap := -1.0
+	for ti in range(3, 25):
+		var tt := ti * 0.1
+		var yc := g.val_to_y(chorus, ch.sample_norm(chorus, tt))
+		var gap := INF
+		for oc: AWCurve in ch.curves:
+			if oc != chorus:
+				gap = minf(gap, absf(g.val_to_y(oc, ch.sample_norm(oc, tt)) - yc))
+		if gap > best_gap:
+			best_gap = gap
+			best_t = tt
+	var on_line := Vector2(g.local_to_x(best_t), g.val_to_y(chorus, ch.sample_norm(chorus, best_t)))
 	click(g, on_line, MOUSE_BUTTON_LEFT, true, true)
 	click(g, on_line, MOUSE_BUTTON_LEFT, false)
 	check(ch.get_keys(chorus).size() == ck + 1 and d.active_curve == chorus, "double-click on another curve's line inserts there")
@@ -1137,9 +1377,11 @@ static func run(screen: AWMainScreen) -> void:
 	d.remove_curve(ch, lpc)
 	await frames(tree, 4)
 	var lp_card: AWEffectCard = screen.chain_panel._cards.back()
-	check(lp_card.effect == lp and lp_card.rows[0]._slider.exp_edit, "cutoff slider is logarithmic")
+	check(lp_card.effect == lp and lp_card.panel.cutoff_knob.binding.scale == AWCurve.Scale.LOG, "cutoff knob is logarithmic")
 	d.undo(); d.undo(); d.undo(); d.undo()
 	check(not ch.effects.has(lp), "undo back to before Low Pass")
+	print("--- control kit and effect panels ---")
+	await panel_tests(screen)
 	if shots:
 		var lp2 := d.add_effect(ch, "Low Pass")
 		var c2v := d.make_curve(ch, lp2, "cutoff_hz")
@@ -1189,24 +1431,95 @@ static func run(screen: AWMainScreen) -> void:
 	g._menu_curve = wet2
 	g._on_menu(44)
 	await frames(tree, 4)
-	var panel := screen.curves.lfo_panel
-	check(panel.visible and d.lfo_curve == wet2 and d.active_curve == wet2, "right-click > Edit LFO opens the panel")
-	var fs := panel.find_child("freq_hz_slider", true, false) as HSlider
-	var ff := panel.find_child("freq_hz_field", true, false) as SpinBox
-	check(fs != null and ff != null and fs.exp_edit, "Freq has a log slider and a field")
+	var panel := screen.lfo_panel
+	check(panel._curve == wet2 and d.lfo_curve == wet2 and d.active_curve == wet2, "right-click > Edit LFO opens it in the LFO dock")
+	var fk := panel.find_child("freq_hz_knob", true, false) as AWKnob
+	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 7, "seven knobs; Freq is logarithmic")
 	var f0 := lf.freq_hz
-	fs.drag_started.emit()
-	fs.value = 7.5
-	fs.drag_ended.emit(true)
-	check(is_equal_approx(lf.freq_hz, 7.5), "Freq slider drag sets 7.5 Hz")
+	click(fk, Vector2(40, 40))
+	move(fk, Vector2(40, -20))
+	click(fk, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	check(lf.freq_hz > f0 * 2.0, "Freq knob drag raises the rate (%.2f Hz)" % lf.freq_hz)
 	d.undo()
-	check(is_equal_approx(lf.freq_hz, f0), "slider drag is one undo step")
-	var mf := panel.find_child("max_value_field", true, false) as SpinBox
-	mf.value = 0.95
-	check(is_equal_approx(lf.max_value, 0.95), "Max field sets the value")
-	await frames(tree, 2)
-	check(is_equal_approx((panel.find_child("max_value_slider", true, false) as HSlider).value, 0.95), "slider follows the field")
+	check(is_equal_approx(lf.freq_hz, f0), "knob drag is one undo step")
+	var mk := panel.find_child("max_value_knob", true, false) as AWKnob
+	mk.open_entry()
+	mk._entry.text_submitted.emit("0.95")
+	check(is_equal_approx(lf.max_value, 0.95), "typing 0.95 into Max sets the value")
+	check(mk.binding.text() == AWEffectLibrary.format_value("Reverb", "wet", 0.95), "Max shows like its parameter (%s)" % mk.binding.text())
 	d.undo()
+	var fadek := panel.find_child("fade_in_sec_knob", true, false) as AWKnob
+	check(is_equal_approx(fadek.binding.hi, maxf(lf.span(), 0.01)), "Fade In knob ranges over the LFO span")
+
+	# Freq acceleration and fade smoothing (model, then knobs).
+	var ml := AWLfo.new()
+	ml.freq_hz = 4.0
+	ml.start_sec = 0.0
+	ml.end_sec = 4.0
+	check(is_equal_approx(ml.phase(0.5), 2.0), "phase without acceleration is freq * time")
+	ml.freq_accel = 4.0
+	check(is_equal_approx(ml.phase(0.5), 2.5) and is_equal_approx(ml.time_of_phase(2.5), 0.5), "positive accel speeds the LFO up (phase 2.5 at 0.5 s)")
+	ml.freq_accel = -8.0
+	check(is_equal_approx(ml.phase(1.0), 1.0) and is_equal_approx(ml.phase(3.0), 1.0), "negative accel stops at 0 Hz and holds the phase")
+	check(is_inf(ml.time_of_phase(1.5)), "a stopped LFO never reaches a later phase")
+	ml.fade_in_sec = 1.0
+	ml.fade_out_sec = 0.0
+	check(is_equal_approx(ml.envelope(0.25), 0.25), "straight fade is linear")
+	ml.fade_smoothing = 1.0
+	check(is_equal_approx(ml.envelope(0.25), 0.15625) and is_equal_approx(ml.envelope(1.0), 1.0) and is_equal_approx(ml.envelope(0.5), 0.5), "smoothing eases the fade (0.156 at a quarter, ends unchanged)")
+	var ak := panel.find_child("freq_accel_knob", true, false) as AWKnob
+	var sk := panel.find_child("fade_smoothing_knob", true, false) as AWKnob
+	check(ak != null and ak.bipolar and sk != null, "Accel (bipolar) and Smoothing knobs exist")
+	ak.open_entry()
+	ak._entry.text_submitted.emit("-2500")
+	check(is_equal_approx(lf.freq_accel, -2.5) and ak.binding.text() == "-2500 mHz/s", "typing -2500 sets -2.5 Hz/s, shown as %s" % ak.binding.text())
+	var fine_a := ak.binding.from_norm(0.5 + 1.0 / 220.0)
+	var wide_a := ak.binding.from_norm(0.75)
+	check(absf(fine_a) <= 0.001 and absf(wide_a) > 0.5 and absf(ak.binding.to_norm(ak.binding.from_norm(0.8)) - 0.8) < 0.01, "Accel knob is fine near 0 and wide at the ends (1 px = %.3f Hz/s, 75%% = %.2f Hz/s)" % [fine_a, wide_a])
+	sk.open_entry()
+	sk._entry.text_submitted.emit("0.6")
+	check(is_equal_approx(lf.fade_smoothing, 0.6), "typing 0.6 sets the smoothing")
+	while lf.freq_accel != 0.0 or lf.fade_smoothing != 0.0:
+		d.undo()
+	check(lf.freq_accel == 0.0 and lf.fade_smoothing == 0.0, "both are undoable")
+
+	print("--- LFO list ---")
+	var mlim: AWEffect = p.master_chain.effects[1]
+	var mkey: String = AWEffectLibrary.param_schema(mlim.effect_type).keys()[0]
+	var mcurve := d.make_curve(p.master_chain, mlim, mkey)
+	d.add_lfo(p.master_chain, mcurve)
+	await frames(tree, 4)
+	var lfo_list := d.all_lfos()
+	var labels_now: Array = lfo_list.map(func(e: Dictionary) -> String: return e["label"])
+	var want_clip: String = c4.name + "\\Reverb\\Wet"
+	var want_master: String = "Master\\%s\\%s" % [mlim.effect_type, AWEffectLibrary.param_label(mlim.effect_type, mkey)]
+	check(labels_now.has(want_clip) and labels_now.has(want_master), "all_lfos lists clip and master LFOs: %s" % str(labels_now))
+	check(labels_now[0] == want_master, "Master comes first in the list")
+	check(panel.list_buttons.size() == lfo_list.size() and panel.list_buttons.any(func(b: Button) -> bool: return (b as AWPathButton).full_text == want_master), "the panel shows one button per LFO")
+	var pfont := panel.get_theme_default_font()
+	var pfs := panel.get_theme_default_font_size()
+	check(AWTheme.middle_truncate(pfont, pfs, want_clip, 10000.0) == want_clip, "paths that fit are left alone")
+	var narrow := AWTheme.middle_truncate(pfont, pfs, want_clip, 70.0)
+	check(narrow.contains("…") and narrow.begins_with(want_clip.left(2)) and narrow.ends_with(want_clip.right(2)) and pfont.get_string_size(narrow, HORIZONTAL_ALIGNMENT_LEFT, -1, pfs).x <= 70.0, "a narrow path keeps its start and end, middle becomes an ellipsis (%s)" % narrow)
+	var pb := panel.list_buttons[labels_now.find(want_clip)] as AWPathButton
+	var pb_w := pb.size.x
+	pb.size.x = 60.0
+	pb._fit()
+	check(pb.text.contains("…") and pb.tooltip_text == want_clip, "the list button truncates in the middle and keeps the full path as its tooltip (%s)" % pb.text)
+	pb.size.x = pb_w
+	pb._fit()
+	panel.list_buttons[labels_now.find(want_master)].pressed.emit()
+	await frames(tree, 4)
+	check(d.chain_tab == AWDocument.ChainTab.MASTER and d.lfo_curve == mcurve and panel.visible, "clicking a Master LFO jumps to the Master chain and opens it")
+	panel.list_buttons[labels_now.find(want_clip)].pressed.emit()
+	await frames(tree, 4)
+	check(d.chain_tab == AWDocument.ChainTab.CLIP and d.focus_clip == c4 and d.lfo_curve == wet2, "clicking a clip LFO selects that clip and opens it")
+	d.remove_curve(p.master_chain, mcurve)
+	await frames(tree, 3)
+	check(panel.list_buttons.size() == lfo_list.size() - 1, "the list follows LFOs being removed")
+	d.open_lfo(ch, wet2)
+	await frames(tree, 3)
+
 	var shape_btns: Array = panel.find_children("*", "Button", true, false).filter(func(b: Button) -> bool: return b.button_group != null)
 	check(shape_btns.size() == 5, "five shape buttons")
 	(shape_btns[1] as Button).pressed.emit()
@@ -1282,7 +1595,7 @@ static func run(screen: AWMainScreen) -> void:
 		await shot(tree, "aw_lfo_panel.png")
 	d.close_lfo()
 	await frames(tree, 4)
-	check(not screen.curves.lfo_panel.visible, "close hides the panel (LFO stays)")
+	check(screen.lfo_panel._curve == null and wet2.lfo == lf, "deselecting empties the editor, the LFO stays on its curve")
 	check(wet2.lfo == lf, "LFO kept after closing")
 
 	print("--- LFO sync ---")
@@ -1345,7 +1658,7 @@ static func run(screen: AWMainScreen) -> void:
 	d.undo()
 	check(wet2.lfo == lf, "undo remove LFO")
 	var guard := 0
-	while wet2.lfo != null and guard < 12:
+	while wet2.lfo != null and guard < 40:
 		d.undo()
 		guard += 1
 	check(wet2.lfo == null, "undo all the way back to no LFO")

@@ -110,7 +110,7 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
 
 ## Native engine (milestones 1 to 4)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
-`● Engine 0.4.1`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
+`● Engine 0.4.2`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
 than the plugin: rebuild it) and everything except sound still works. Build steps: `BUILDING.md`.
 
 **Dry playback (milestone 2).** Play, Stop, seek, loop and double-click audition now make sound.
@@ -180,3 +180,16 @@ than the plugin: rebuild it) and everything except sound still works. Build step
 - Undo and Redo are toolbar buttons. Ctrl+Z from this tab is not wired or tested.
 - Projects save as `.tres`/`.res`. A custom `.sfx`-style extension needs a ResourceFormatSaver/Loader.
 - The reserved column is a placeholder.
+
+## Effect panels and the control kit (v0.11)
+
+Effects can have a custom detail panel. It opens in the **Audio Effect** dock (bottom by default; double-click a card's header or use ⋮ > Open Panel). Every engine-capable effect has one (Low Pass, High Pass, Band Pass, EQ, Amplify), shown compactly on their cards (small response plot plus knobs); effects not yet ported keep their generic parameter rows.
+
+- `ui/kit/aw_binding.gd`: `AWParamBinding` is the only thing a control uses to edit a parameter (undo, live preview, curve dot state, right-click menu, one undo step for multi-parameter drags).
+- `ui/kit/`: `AWKnob` (optional bipolar and view range), `AWResponsePlot` (log-frequency plot with draggable handles). Gestures: drag, Shift = fine, wheel, double-click = reset, right-click = curve options. A driven parameter shows a yellow dotted ring and a click selects its curve.
+- `ui/kit/aw_panel_registry.gd`: effect type to panel. To add one, subclass `AWEffectPanel` (`ui/panels/`), register it there.
+- `core/aw_filter_response.gd`: the drawn response mirrors the engine's biquads; the self-test compares it with the engine's measured output.
+
+The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 (API level 3), which evaluates Accel and Smoothing natively.
+
+Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k` works, Enter applies, Esc cancels), **Ctrl+click to reset**, right-click for options.

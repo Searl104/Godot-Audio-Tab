@@ -6,12 +6,12 @@ extends HBoxContainer
 
 var doc: AWDocument
 var graph: AWCurveGraph
-var lfo_panel: AWLfoPanel
 
 var _owner_label: Label
 var _clip_time: Button
 var _project_time: Button
 var _hbar: HScrollBar
+var _lfos_btn: Button
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -24,9 +24,6 @@ func _ready() -> void:
 	col.add_theme_constant_override("separation", 0)
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(col)
-	lfo_panel = AWLfoPanel.new()
-	lfo_panel.setup(doc)
-	add_child(lfo_panel)
 	var header := HBoxContainer.new()
 	var title := Label.new()
 	title.text = "  Timeline"
@@ -52,6 +49,9 @@ func _ready() -> void:
 	_clip_time.pressed.connect(func() -> void: doc.set_curve_time(AWDocument.CurveTime.CLIP))
 	_project_time.pressed.connect(func() -> void: doc.set_curve_time(AWDocument.CurveTime.PROJECT))
 	header.add_child(VSeparator.new())
+	_lfos_btn = AWTheme.button(self, "LFOs", &"", "Open the Audio LFO dock: every LFO in the project, click one to edit it")
+	_lfos_btn.pressed.connect(doc.show_lfo_list)
+	header.add_child(_lfos_btn)
 	var frame := AWTheme.button(self, "Frame", &"", "Frame the curves (F)")
 	frame.pressed.connect(doc.frame_curves)
 	header.add_child(frame)

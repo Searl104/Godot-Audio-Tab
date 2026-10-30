@@ -426,7 +426,7 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 
 	const bool has_lfo = !lfo.is_empty();
 	int shape = 0;
-	double lmin = 0, lmax = 0, freq = 1, fade_in = 0, fade_out = 0, lstart = 0, lend = 1, seed = 1;
+	double lmin = 0, lmax = 0, freq = 1, fade_in = 0, fade_out = 0, lstart = 0, lend = 1, seed = 1, accel = 0, smooth = 0;
 	double lo_n = 0, hi_n = 0, f_in = 0, f_out = 0, span = 0;
 	if (has_lfo) {
 		shape = lfo.get("shape", 0);
@@ -438,6 +438,8 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 		lstart = lfo.get("start", 0.0);
 		lend = lfo.get("end", 1.0);
 		seed = (double)(int64_t)lfo.get("seed", 1);
+		accel = lfo.get("accel", 0.0);
+		smooth = lfo.get("smooth", 0.0);
 		lo_n = aw_to_norm(scale, std::min(lmin, lmax), lo, hi);
 		hi_n = aw_to_norm(scale, std::max(lmin, lmax), lo, hi);
 		span = std::max(lend - lstart, 0.0);
@@ -469,9 +471,19 @@ PackedFloat32Array AWCore::sample_curve_impl(const Ref<Animation> &p_anim, const
 					e = std::min(e, (lend - t) / f_out);
 				}
 				e = aw_clamp01(e);
+				e = e + smooth * (e * e * (3.0 - 2.0 * e) - e);
 			}
 			if (e > 0.0) {
-				const double p = (t - lstart) * freq;
+				double tau = t - lstart;
+				double p;
+				if (tau <= 0.0 || accel == 0.0) {
+					p = tau * freq;
+				} else {
+					if (accel < 0.0) {
+						tau = std::min(tau, freq / -accel);
+					}
+					p = freq * tau + 0.5 * accel * tau * tau;
+				}
 				const double fl = std::floor(p);
 				const double ph = p - fl;
 				double wv;
@@ -650,7 +662,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 2; // 2: set_plan's master dictionary takes end_frame
+	return 3; // 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
