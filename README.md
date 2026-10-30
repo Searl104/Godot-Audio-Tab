@@ -211,4 +211,24 @@ The **Audio Export** dock bakes the whole sound (every clip, clip and master cha
   existing one. The FileSystem dock refreshes afterwards.
 - **Report:** length, size, peak level, and a warning with the count of samples over full scale (WAV 16-bit and Ogg
   clip them; lower the Output volume or add a Limiter).
-- Ogg encoding uses vendored libogg 1.3.5 and libvorbis 1.3.7 (BSD, `extension/thirdparty/`). Needs engine 0.8.0.
+- Ogg encoding uses vendored libogg 1.3.5 and libvorbis 1.3.7 (BSD, `extension/thirdparty/`). Needs engine 0.8.0 or newer.
+
+
+## Saving and opening (milestone 6, engine 0.8.1)
+
+One sound is open at a time. **File > Save / Save As** writes a Godot resource (`.tres`, or `.res`); the sound's name
+and a star for unsaved changes show at the right of the toolbar. **Ctrl+S** works anywhere in the editor, double-clicking
+a saved sound in the FileSystem dock opens it in the Audio tab, and New / Open / closing the editor ask first when there
+are unsaved changes.
+- **Safe saves:** the file is written as a temporary copy and swapped in, so a failed save never damages the old file.
+- **Recovery:** a few seconds after any change, a copy goes to the editor's user data. After a crash or forced quit the
+  next start offers to restore it; saving, New or Open clears it.
+- **Damaged or old files:** opening checks everything (bad numbers, missing master chain, orphan curves, unknown effects)
+  and repairs what it can, saying how many things were fixed. A file from a newer version is refused with a message,
+  and files from older versions go through migration steps.
+- **Missing sound files:** clips whose file can't be found are marked in red and stay silent, but the sound still opens.
+  Clips remember the file's Godot UID, so renaming or moving it in the editor is followed. Right-click a missing clip for
+  **Relink Sound File...** or **Relink From Folder...** (searches a folder by file name; undoable).
+- **CPU meter:** the toolbar shows how much of the audio thread's time playback uses while playing; amber from 60%,
+  red from 90% (dropouts). Needs engine 0.8.1 (API 8). Effect memory is now allocated on the main thread when the plan
+  changes, so the audio thread no longer allocates when you edit during playback.
