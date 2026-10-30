@@ -51,6 +51,15 @@ func scroll_by(px: float) -> void:
 	scroll_to(scroll_x + px)
 
 
+## Shows exactly [t0, t1] across the view (no margin).
+func frame_exact(t0: float, t1: float) -> void:
+	var span := maxf(t1 - t0, 0.001)
+	pixels_per_sec = clampf(view_width / span, MIN_PPS, MAX_PPS)
+	scroll_x = (t0 - min_time) * pixels_per_sec
+	_clamp()
+	changed.emit()
+
+
 ## Fits [t0, t1] in the view with a small margin.
 func frame(t0: float, t1: float) -> void:
 	var span := maxf(t1 - t0, 0.01)

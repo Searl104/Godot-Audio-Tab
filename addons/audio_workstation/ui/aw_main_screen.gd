@@ -142,6 +142,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	var ctrl := k.ctrl_pressed or k.meta_pressed
 	# Arrows repeat while held: nudge the selection (Shift = 10 steps; Up/Down = rows).
+	if ctrl and k.keycode in [KEY_LEFT, KEY_RIGHT]:
+		doc.jump_marker(1 if k.keycode == KEY_RIGHT else -1)
+		get_viewport().set_input_as_handled()
+		return
 	if not ctrl and not k.alt_pressed and k.keycode in [KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN] and not doc.selection.is_empty():
 		var mul := 10.0 if k.shift_pressed else 1.0
 		match k.keycode:
@@ -180,6 +184,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				doc.trim_selected_to_playhead("end")
 			else:
 				handled = false
+		KEY_M:
+			if not ctrl:
+				doc.add_marker()
+			else:
+				handled = false
+		KEY_Z:
+			if not ctrl:
+				zoom_to_selection()
+			else:
+				handled = false
 		KEY_F2:
 			if doc.selection.size() == 1:
 				timeline.grid.start_rename(doc.selection[0])
@@ -211,8 +225,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				doc.select_all_clips()
 			else:
 				handled = false
-		KEY_DELETE, KEY_BACKSPACE: doc.delete_selected_clips()
-		KEY_ESCAPE: doc.clear_selection()
+		KEY_DELETE, KEY_BACKSPACE:
+			if doc.selection.is_empty() and doc.has_time_selection():
+				doc.delete_in_time_selection()
+			else:
+				doc.delete_selected_clips()
+		KEY_ESCAPE:
+			if doc.has_time_selection():
+				doc.clear_time_selection()
+			else:
+				doc.clear_selection()
 		KEY_F: timeline.fit_all()
 		_: handled = false
 	if handled:
@@ -272,6 +294,21 @@ func _build_recovery_prompt() -> void:
 	_recovery.canceled.connect(AWRecovery.discard)
 	add_child(_recovery)
 	_recovery.popup_centered.call_deferred()
+
+
+## Z: frames the time selection, else the selected clips, else everything.
+func zoom_to_selection() -> void:
+	if doc.has_time_selection():
+		doc.timeline_view.frame(doc.time_sel.x, doc.time_sel.y)
+	elif not doc.selection.is_empty():
+		var a := INF
+		var b := -INF
+		for c in doc.selection:
+			a = minf(a, c.start_sec)
+			b = maxf(b, c.end_sec())
+		doc.timeline_view.frame(a, b)
+	else:
+		timeline.fit_all()
 
 
 ## Opens the Import Sound browser; chosen sounds land on `row` (one row each) at `t`.

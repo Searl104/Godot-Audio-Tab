@@ -122,6 +122,28 @@ private:
 	// pointers (the swap hands the old runtime back here, to be freed on the main thread).
 	std::unique_ptr<FxRuntime> staged_fx; // guarded by plan_mutex
 
+public:
+	// Tape-style scrubbing: the read position chases a target with a smoothed velocity, so slow
+	// drags sound slow and low, and dragging left plays backwards. The mix is rendered in short
+	// chunks around the position (effects restart when it jumps) and read with interpolation.
+	struct Scrub {
+		static constexpr int64_t CHUNK = 2048;
+		std::vector<float> buf; // CHUNK interleaved frames
+		int64_t buf_start = INT64_MIN;
+		double pos = 0.0; // frames
+		double vel = 0.0; // frames per output frame
+		FxRuntime fx;
+		void prepare(const std::shared_ptr<const Plan> &p_plan, double p_rate, double p_pos);
+		// Writes `frames` interleaved frames chasing `target`. No allocation.
+		void render(const std::shared_ptr<const Plan> &p_plan, double p_rate, double p_target, float *r_out, int64_t p_frames);
+	};
+
+private:
+	Scrub scrub_state; // audio thread while scrubbing; prepared on the main thread
+	std::atomic<bool> scrubbing{ false };
+	std::atomic<double> scrub_target{ 0.0 };
+	std::atomic<bool> scrub_rendering{ false }; // the audio thread is inside a scrub render
+
 	// An offline render in progress (export): the plan it started with, its effect state and position.
 	std::shared_ptr<const Plan> off_plan;
 	FxRuntime off_rt;
@@ -213,6 +235,14 @@ public:
 	void seek(int64_t p_frame);
 	void set_loop(bool p_enabled, int64_t p_start_frame, int64_t p_end_frame);
 	bool is_playing() const;
+	// Tape scrub: begin at a frame (stops playback), move the target, end (position = last target).
+	void scrub_begin(double p_frame);
+	void scrub_to(double p_frame);
+	void scrub_end();
+	bool is_scrubbing() const;
+	// Test helper: the same scrub on its own state, without the audio thread. `targets` holds one
+	// target frame per block of `block` frames, starting from targets[0]. Returns stereo frames.
+	PackedVector2Array scrub_simulate(const PackedFloat64Array &p_targets, int64_t p_block);
 	int64_t get_position() const;
 
 	// Renders the next `frames` frames from the transport (silence when stopped) plus the

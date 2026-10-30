@@ -3,7 +3,7 @@ class_name AWProject
 extends Resource
 ## The saved sound-effect document. All times are in seconds.
 
-const FORMAT_VERSION := 4 # 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
+const FORMAT_VERSION := 5 # 5: markers; 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
 const CLIP_COLORS := [
 	Color("#4f7fd9"), Color("#d9b63f"), Color("#6fae4f"), Color("#e07a3f"),
 	Color("#a77fd9"), Color("#d95f7a"), Color("#3fb8b0"),
@@ -19,6 +19,8 @@ const CLIP_COLORS := [
 @export var master_chain: AWChain
 ## Row (layer) settings by row index; null or missing = defaults.
 @export var rows: Array[AWRow] = []
+## Named points on the timeline, kept sorted by time.
+@export var markers: Array[AWMarker] = []
 
 @export_group("Export")
 ## 16 or 32 (32 = float).

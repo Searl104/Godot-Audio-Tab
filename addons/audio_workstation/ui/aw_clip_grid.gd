@@ -50,6 +50,8 @@ var _rename_edit: LineEdit
 var _rename_clip: AWClip = null
 var _gain_readout := ""
 var _gain_clip: AWClip = null
+var _targets := PackedFloat64Array() # snap targets for the drag in progress
+var _snap_hit := -1.0 # target the drag is snapped to (drawn as a guide), or -1
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -59,6 +61,7 @@ func setup(p_doc: AWDocument) -> void:
 
 func _ready() -> void:
 	clip_contents = true
+	tooltip_text = " "
 	focus_mode = Control.FOCUS_CLICK
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -250,6 +253,7 @@ func _press(mb: InputEventMouseButton) -> void:
 		"trim_l": _drag = Drag.TRIM_L
 		"trim_r": _drag = Drag.TRIM_R
 		_: _drag = Drag.MOVE
+	_targets = doc.snap_targets(doc.selection if _drag == Drag.MOVE else [c])
 	if _drag == Drag.MOVE:
 		for s in doc.selection:
 			_items.append([s, {"start_sec": s.start_sec, "row": s.row}])
@@ -306,7 +310,9 @@ func _move_selection(pos: Vector2, free_time: bool) -> void:
 		if it[0] == _press_clip:
 			anchor = it[1]
 	var raw: float = anchor.start_sec + (view.x_to_time(pos.x) - _press_t)
-	var dt: float = (raw if free_time else doc.snap(raw)) - anchor.start_sec
+	var snapped := raw if free_time else doc.snap_span(raw, _press_clip.play_length(), _targets)
+	_snap_hit = _guide_for([snapped, snapped + _press_clip.play_length()]) if not free_time else -1.0
+	var dt: float = snapped - anchor.start_sec
 	var drow := row_at(pos.y) - row_at(_press_pos.y)
 	var min_start := INF
 	var min_row := 1 << 30
@@ -376,6 +382,9 @@ func _edit_edge(pos: Vector2) -> void:
 	var start: float = o.start_sec
 	var length: float = o.length_sec
 	var t := doc.snap(view.x_to_time(pos.x))
+	if _drag == Drag.TRIM_L or _drag == Drag.TRIM_R:
+		t = doc.snap_to(view.x_to_time(pos.x), _targets)
+		_snap_hit = _guide_for([t])
 	match _drag:
 		Drag.TRIM_L:
 			# Can't reveal audio past the file's edge, or cross the right edge. A reversed clip
@@ -407,12 +416,22 @@ func _edit_edge(pos: Vector2) -> void:
 			doc.preview_set(c, {"fade_out_sec": clampf(length - w.unwarp(t - start), 0.0, c.length_sec - c.fade_in_sec)})
 
 
+## The target one of `times` landed on (for the guide line), or -1.
+func _guide_for(times: Array) -> float:
+	for t: float in times:
+		for x in _targets:
+			if absf(x - t) < 1e-6:
+				return x
+	return -1.0
+
+
 func _release(mb: InputEventMouseButton) -> void:
+	_snap_hit = -1.0
 	match _drag:
 		Drag.CLICK:
 			if not (mb.shift_pressed or mb.ctrl_pressed):
 				doc.clear_selection()
-			doc.seek(maxf(0.0, doc.snap(view.x_to_time(mb.position.x))))
+			doc.seek(maxf(0.0, doc.snap_to(view.x_to_time(mb.position.x), doc.snap_targets())))
 		Drag.MARQUEE:
 			_marquee_rect = Rect2()
 		Drag.MOVE:
@@ -571,6 +590,18 @@ func _draw() -> void:
 		var xs := view.time_to_x(p.loop_start_sec)
 		draw_rect(Rect2(xs, 0, view.time_to_x(p.loop_end_sec) - xs, size.y), Color(c_acc, 0.06))
 
+	# Time selection (Shift+drag on the ruler) and markers, under the clips.
+	if doc.has_time_selection():
+		var sx0 := view.time_to_x(doc.time_sel.x)
+		var sx1 := view.time_to_x(doc.time_sel.y)
+		draw_rect(Rect2(sx0, 0, sx1 - sx0, size.y), Color(c_acc, 0.10))
+		draw_line(Vector2(sx0, 0), Vector2(sx0, size.y), Color(c_acc, 0.6))
+		draw_line(Vector2(sx1, 0), Vector2(sx1, size.y), Color(c_acc, 0.6))
+	for m in p.markers:
+		var mx := view.time_to_x(m.time_sec)
+		if mx >= -1.0 and mx <= size.x + 1.0:
+			draw_dashed_line(Vector2(mx, 0), Vector2(mx, size.y), Color(AWTimeRuler.MARKER_COLOR, 0.45), 1.0, 4.0)
+
 	for c in p.clips:
 		_draw_clip(c, c_text, c_acc)
 	if p.clips.is_empty():
@@ -580,6 +611,9 @@ func _draw() -> void:
 		var w := font.get_string_size(msg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 		draw_string(font, Vector2((size.x - w) * 0.5, minf(size.y * 0.5, row_h * 1.5)), msg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(c_text, 0.5))
 
+	if _snap_hit >= 0.0:
+		var gx := view.time_to_x(_snap_hit)
+		draw_line(Vector2(gx, 0), Vector2(gx, size.y), Color(c_acc, 0.9), 1.0)
 	if _gain_readout != "" and _gain_clip:
 		var gr := clip_rect(_gain_clip)
 		var font := get_theme_default_font()
@@ -675,6 +709,10 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	var external := not missing and doc.is_clip_external(c)
 	var label := ("◂ " if c.reversed else "") + c.name + ("  (muted)" if c.muted else "") + ("  (locked)" if doc.project.row_locked(c.row) else "") + ("  (sound file missing)" if missing else "") + ("  ↗ outside project" if external else "")
 	draw_string(font, r.position + Vector2(5, 10), label, HORIZONTAL_ALIGNMENT_LEFT, maxf(r.size.x - 10.0, 0.0), fs, c_text)
+	if doc.snap_sec > 0.0 and doc.snap_target_on("transients") and r.size.y > 20.0:
+		for tt in doc.clip_transients(c):
+			var tx := view.time_to_x(tt)
+			draw_line(Vector2(tx, r.end.y - 6.0), Vector2(tx, r.end.y), Color(1, 1, 1, 0.75), 1.0)
 	var fx_count := c.chain.effects.size() - 1 if c.chain else 0
 	if fx_count > 0 and r.size.x > 90.0:
 		var badge := "fx %d" % fx_count + ("  ~%d" % c.chain.curves.size() if not c.chain.curves.is_empty() else "")
@@ -688,3 +726,25 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	if selected and r.size.x > 24.0:
 		draw_rect(Rect2(r.position.x + fi - 3, r.position.y, 6, 6), c_text)
 		draw_rect(Rect2(r.end.x - fo - 3, r.position.y, 6, 6), c_text)
+
+
+## Hover info: file, length, gain, pitch, offset, fades.
+func _get_tooltip(at: Vector2) -> String:
+	var c := clip_at(at)
+	if c == null:
+		return "Double-click to import a sound here. Drag to box-select."
+	var src: AWEffect = c.chain.effects[0] if c.chain and not c.chain.effects.is_empty() else null
+	var lines := PackedStringArray()
+	lines.append(c.name + ("  (reversed)" if c.reversed else ""))
+	lines.append(c.source_path if c.source_path != "" else "(no sound file)")
+	lines.append("Start %s · Length %.3f s on the timeline (%.3f s of audio)" % [doc.format_clock(c.start_sec), c.play_length(), c.length_sec])
+	if src:
+		lines.append("Gain %.1f dB · Pitch %+.2f st · Pan %+.2f" % [float(src.get_param("gain_db")), float(src.get_param("pitch_semitones")), float(src.get_param("pan"))])
+	lines.append("File offset %.3f s · Fades %.3f / %.3f s (%s / %s)" % [c.source_offset_sec, c.fade_in_sec, c.fade_out_sec,
+		AWClip.FADE_SHAPE_NAMES[c.fade_in_shape], AWClip.FADE_SHAPE_NAMES[c.fade_out_shape]])
+	var fx := c.chain.effects.size() - 1 if c.chain else 0
+	if fx > 0:
+		lines.append("%d effect%s, %d curve%s" % [fx, "" if fx == 1 else "s", c.chain.curves.size(), "" if c.chain.curves.size() == 1 else "s"])
+	if c.group_id != 0:
+		lines.append("Grouped (Ctrl+Shift+G ungroups)")
+	return "\n".join(lines)

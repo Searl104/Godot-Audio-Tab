@@ -13,7 +13,7 @@ var _redo: Button
 var _play: Button
 var _loop: Button
 var _clock: Label
-var _snap: OptionButton
+var _snap: MenuButton
 var _file: Label
 var _cpu: Label
 var _cpu_wait := 0.0
@@ -71,13 +71,26 @@ func _ready() -> void:
 	add_child(VSeparator.new())
 
 	add_child(AWTheme.dim_label("Snap", 0.7))
-	_snap = OptionButton.new()
+	_snap = MenuButton.new()
+	_snap.name = "SnapMenu"
 	_snap.flat = true
 	_snap.focus_mode = Control.FOCUS_NONE
-	_snap.tooltip_text = "Snap (G toggles). Hold Alt while dragging to ignore snap."
-	for opt: Array in AWDocument.SNAP_OPTIONS:
-		_snap.add_item(opt[0])
-	_snap.item_selected.connect(func(i: int) -> void: doc.set_snap(AWDocument.SNAP_OPTIONS[i][1]))
+	_snap.tooltip_text = "Snap (G toggles). Hold Alt while dragging to ignore snap. The checked targets attract too, within a few pixels."
+	var sp := _snap.get_popup()
+	sp.hide_on_checkable_item_selection = false
+	for i in AWDocument.SNAP_OPTIONS.size():
+		sp.add_radio_check_item(AWDocument.SNAP_OPTIONS[i][0], i)
+	sp.add_separator("Also snap to")
+	for i in AWDocument.SNAP_TARGETS.size():
+		sp.add_check_item(AWDocument.SNAP_TARGETS[i][1], 100 + i)
+	sp.id_pressed.connect(func(id: int) -> void:
+		if id >= 100:
+			var key: String = AWDocument.SNAP_TARGETS[id - 100][0]
+			doc.set_snap_target(key, not doc.snap_target_on(key))
+		else:
+			doc.set_snap(AWDocument.SNAP_OPTIONS[id][1])
+			sp.hide()
+		_sync())
 	add_child(_snap)
 
 	var spacer := Control.new()
@@ -164,6 +177,14 @@ func _sync() -> void:
 	else:
 		_play.text = "Pause" if doc.playing else "Play"
 	_loop.set_pressed_no_signal(doc.project.loop_enabled)
+	var sp := _snap.get_popup()
+	_snap.text = "Off"
 	for i in AWDocument.SNAP_OPTIONS.size():
-		if is_equal_approx(AWDocument.SNAP_OPTIONS[i][1], doc.snap_sec):
-			_snap.select(i)
+		var on := is_equal_approx(AWDocument.SNAP_OPTIONS[i][1], doc.snap_sec)
+		sp.set_item_checked(sp.get_item_index(i), on)
+		if on:
+			_snap.text = AWDocument.SNAP_OPTIONS[i][0] + "  ▾"
+	for i in AWDocument.SNAP_TARGETS.size():
+		var idx := sp.get_item_index(100 + i)
+		sp.set_item_checked(idx, doc.snap_target_on(AWDocument.SNAP_TARGETS[i][0]))
+		sp.set_item_disabled(idx, doc.snap_sec <= 0.0)
