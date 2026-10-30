@@ -1495,7 +1495,19 @@ static func run(screen: AWMainScreen) -> void:
 	var want_master: String = "Master\\%s\\%s" % [mlim.effect_type, AWEffectLibrary.param_label(mlim.effect_type, mkey)]
 	check(labels_now.has(want_clip) and labels_now.has(want_master), "all_lfos lists clip and master LFOs: %s" % str(labels_now))
 	check(labels_now[0] == want_master, "Master comes first in the list")
-	check(panel.list_buttons.size() == lfo_list.size() and panel.list_buttons.any(func(b: Button) -> bool: return b.text == want_master), "the panel shows one button per LFO")
+	check(panel.list_buttons.size() == lfo_list.size() and panel.list_buttons.any(func(b: Button) -> bool: return (b as AWPathButton).full_text == want_master), "the panel shows one button per LFO")
+	var pfont := panel.get_theme_default_font()
+	var pfs := panel.get_theme_default_font_size()
+	check(AWTheme.middle_truncate(pfont, pfs, want_clip, 10000.0) == want_clip, "paths that fit are left alone")
+	var narrow := AWTheme.middle_truncate(pfont, pfs, want_clip, 70.0)
+	check(narrow.contains("…") and narrow.begins_with(want_clip.left(2)) and narrow.ends_with(want_clip.right(2)) and pfont.get_string_size(narrow, HORIZONTAL_ALIGNMENT_LEFT, -1, pfs).x <= 70.0, "a narrow path keeps its start and end, middle becomes an ellipsis (%s)" % narrow)
+	var pb := panel.list_buttons[labels_now.find(want_clip)] as AWPathButton
+	var pb_w := pb.size.x
+	pb.size.x = 60.0
+	pb._fit()
+	check(pb.text.contains("…") and pb.tooltip_text == want_clip, "the list button truncates in the middle and keeps the full path as its tooltip (%s)" % pb.text)
+	pb.size.x = pb_w
+	pb._fit()
 	panel.list_buttons[labels_now.find(want_master)].pressed.emit()
 	await frames(tree, 4)
 	check(d.chain_tab == AWDocument.ChainTab.MASTER and d.lfo_curve == mcurve and panel.visible, "clicking a Master LFO jumps to the Master chain and opens it")

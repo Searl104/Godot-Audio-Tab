@@ -135,3 +135,16 @@ static func draw_lfo_badge(ctrl: Control, center: Vector2, radius: float) -> voi
 static func popup_at(menu: PopupMenu, ctrl: Control, local_pos: Vector2) -> void:
 	menu.reset_size()
 	menu.popup(Rect2i(Vector2i(ctrl.get_screen_position() + local_pos), Vector2i.ZERO))
+
+
+## Middle truncation for paths, as in macOS: the start and the end stay, the middle becomes "…".
+## "Clip 2\Low Pass\Cutoff" in a narrow space reads "Clip 2\Lo…\Cutoff".
+static func middle_truncate(font: Font, font_size: int, s: String, max_width: float) -> String:
+	if font.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x <= max_width:
+		return s
+	for keep in range(s.length() - 1, 0, -1):
+		var head := ceili(keep / 2.0)
+		var cand := s.left(head) + "…" + s.right(keep - head)
+		if font.get_string_size(cand, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x <= max_width:
+			return cand
+	return "…"

@@ -233,13 +233,11 @@ func _build_list() -> void:
 		_list.add_child(none)
 		return
 	for entry: Dictionary in all:
-		var b := Button.new()
-		b.text = entry["label"]
+		var b := AWPathButton.new()
+		b.set_path(entry["label"])
 		b.flat = true
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.clip_text = true
 		b.focus_mode = Control.FOCUS_NONE
-		b.tooltip_text = "Jump to this LFO"
 		var c: AWCurve = entry["curve"]
 		b.add_theme_color_override("font_color", c.color.lightened(0.2))
 		b.toggle_mode = true
