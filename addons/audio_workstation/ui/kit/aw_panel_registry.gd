@@ -10,6 +10,10 @@ const PANELS := {
 	"High Pass": preload("../panels/aw_filter_panel.gd"),
 	"Band Pass": preload("../panels/aw_filter_panel.gd"),
 	"Amplify": preload("../panels/aw_amplify_panel.gd"),
+	"Distortion": preload("../panels/aw_distortion_panel.gd"),
+	"Delay": preload("../panels/aw_delay_panel.gd"),
+	"Compressor": preload("../panels/aw_compressor_panel.gd"),
+	"Limiter": preload("../panels/aw_limiter_panel.gd"),
 	"EQ": preload("../panels/aw_eq_panel.gd"),
 }
 

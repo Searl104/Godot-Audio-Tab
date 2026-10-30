@@ -368,6 +368,10 @@ static func effects_tests(screen: AWMainScreen) -> void:
 	check(absf(_through(core, 440.0, [_fx(8, [-12.0, 4.0, 0.0, 20.0, 250.0, 0.0])]) - 0.5) < 0.005, "compressor: mix 0 is the dry signal")
 	check(absf(_through(core, 440.0, [_fx(8, [-12.0, 4.0, 6.0206, 20.0, 250.0, 1.0])]) - cp * 2.0) < 0.05, "compressor: +6 dB makeup doubles the output")
 
+	check(absf(AWFxCurves.distortion(0.5, 1.0, 0.0, 0.0) - d1) < 0.002 and absf(AWFxCurves.distortion(0.5, 0.0, 0.0, 0.0) - d0) < 0.003, "plot curve equals the engine: distortion")
+	var cp_db := 20.0 * log(cp / 0.5) / log(10.0)
+	check(absf(AWFxCurves.compressor_db(-6.0206, -12.0, 4.0, 0.0, 1.0) - (-6.0206 + cp_db)) < 0.3, "plot curve equals the engine: compressor (%.2f dB vs %.2f dB)" % [AWFxCurves.compressor_db(-6.0206, -12.0, 4.0, 0.0, 1.0), -6.0206 + cp_db])
+
 	# Limiter: nothing passes the ceiling.
 	var lm := _through(core, 440.0, [_fx(9, [12.0, -6.0206, 0.1])])
 	check(lm <= 0.2502 * 2.0 + 0.002 and lm > 0.45, "limiter: +12 dB into a -6 dB ceiling holds at %.4f" % lm)
@@ -952,6 +956,48 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	d.remove_effect(ch, amp)
 	await frames(tree, 2)
 
+	# --- Distortion, Delay, Compressor, Limiter ---
+	var plot_cases := [["Distortion", 4], ["Delay", 4], ["Compressor", 6], ["Limiter", 3]]
+	for pc: Array in plot_cases:
+		var t: String = pc[0]
+		var pe := d.add_effect(ch, t)
+		await frames(tree, 3)
+		var pcard: AWEffectCard = screen.chain_panel._cards.back()
+		check(pcard.panel is AWPlotKnobPanel and pcard.panel.compact and pcard.rows.is_empty() and pcard.panel.knobs.size() == pc[1], "%s card is compact: plot and %d knobs" % [t, pc[1]])
+		d.open_detail(ch, pe)
+		await frames(tree, 2)
+		var pp := host.panel as AWPlotKnobPanel
+		check(pp != null and not pp.compact and pp.plot_control() != null, "%s dock panel has its plot" % t)
+		if OS.get_environment("AW_SHOTS") != "" and (t == "Compressor" or t == "Delay"):
+			(screen.chain_panel._cards_box.get_parent() as ScrollContainer).scroll_horizontal = 5000
+			await _panel_shot(tree, d, ch, pe, "aw_panel_%s.png" % t.to_lower())
+		var key: String = AWEffectLibrary.param_schema(t).keys()[0]
+		var kbefore := pe.get_param(key)
+		var pk := pp.knobs[0]
+		pk.size = pk.custom_minimum_size
+		click(pk, Vector2(40, 40))
+		move(pk, Vector2(40, -30))
+		click(pk, Vector2(40, -30), MOUSE_BUTTON_LEFT, false)
+		check(pe.get_param(key) != kbefore, "%s: the first knob edits %s (%.2f)" % [t, key, pe.get_param(key)])
+		d.undo()
+		check(pe.get_param(key) == kbefore, "%s: knob drag is one undo step" % t)
+		if t == "Compressor" or t == "Limiter":
+			var tp := pp.plot_control() as AWTransferPlot
+			tp.size = Vector2(400, 260)
+			pp.refresh()
+			var hx: float = tp.handle.x
+			var hy: float = tp.handle.y
+			var hfrom := Vector2(tp.px(hx), tp.py(hy))
+			if t == "Compressor":
+				drag(tp, hfrom, Vector2(tp.px(-30.0), tp.py(hy)))
+				check(absf(pe.get_param("threshold") + 30.0) < 1.0, "Compressor: dragging the handle sets the threshold (%.1f dB)" % pe.get_param("threshold"))
+			else:
+				drag(tp, hfrom, Vector2(hfrom.x, tp.py(-12.0)))
+				check(absf(pe.get_param("ceiling_db") + 12.0) < 1.0, "Limiter: dragging the handle sets the ceiling (%.1f dB)" % pe.get_param("ceiling_db"))
+			d.undo()
+		d.remove_effect(ch, pe)
+		await frames(tree, 2)
+
 	# --- EQ ---
 	var eq := d.add_effect(ch, "EQ")
 	await frames(tree, 4)
@@ -1265,25 +1311,25 @@ static func run(screen: AWMainScreen) -> void:
 	await frames(tree, 4)
 	var cards := screen.chain_panel._cards
 	check(cards.size() == ch.effects.size(), "one card per effect (%d)" % cards.size())
-	var lim_card: AWEffectCard = cards[1]
+	var lim_card: AWEffectCard = cards[2]
 	var row: AWParamRow = lim_card.rows[0]
 	check(row.curve() == null and row._slider.visible, "uncurved param shows slider + field")
 	var lim: AWEffect = row.effect
 	row._on_menu(1)
 	await frames(tree, 4)
-	check(ch.get_curve(lim.id, "pre_gain_db") != null, "right-click > Make Curve creates curve")
+	check(ch.get_curve(lim.id, "room_size") != null, "right-click > Make Curve creates curve")
 	cards = screen.chain_panel._cards
-	var row2: AWParamRow = (cards[1] as AWEffectCard).rows[0]
+	var row2: AWParamRow = (cards[2] as AWEffectCard).rows[0]
 	check(not row2._slider.visible and row2._curve_value.visible, "curved param shows curve value instead")
 	d.undo()
 	await frames(tree, 4)
-	var row3: AWParamRow = (screen.chain_panel._cards[1] as AWEffectCard).rows[0]
+	var row3: AWParamRow = (screen.chain_panel._cards[2] as AWEffectCard).rows[0]
 	row3._slider.drag_started.emit()
-	row3._slider.value = -6.0
+	row3._slider.value = 0.25
 	row3._slider.drag_ended.emit(true)
-	check(is_equal_approx(ch.effects[1].get_param("pre_gain_db"), -6.0), "slider drag sets value")
+	check(is_equal_approx(ch.effects[2].get_param("room_size"), 0.25), "slider drag sets value")
 	d.undo()
-	check(is_equal_approx(ch.effects[1].get_param("pre_gain_db"), 0.0), "slider drag is one undo step")
+	check(is_equal_approx(ch.effects[2].get_param("room_size"), 0.8), "slider drag is one undo step")
 
 	print("--- trim sync ---")
 	d.select_clip(c4)
