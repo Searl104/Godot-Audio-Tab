@@ -1351,6 +1351,37 @@ static func _render_project(p: AWProject, secs: float) -> PackedVector2Array:
 	return e.render_preview_range(0.0, secs)
 
 
+static func editor_resource_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	d.new_project()
+	d.set_project(AWProject.create_demo())
+	var path := "user://aw_editor_res.tres"
+	check(d.save_project(path), "editor resource: saved")
+	check(d.project.resource_path == path, "editor resource: the open sound is the resource for its path")
+	var cached := ResourceLoader.load(path) # what the editor / inspector holds
+	check(cached == d.project, "editor resource: the editor's copy is the open sound, not a stale one")
+
+	# An edit and another save reach the same object and the file.
+	d.set_props(d.project.clips[0], {"name": "After the edit"}, "Rename")
+	check(d.save_project(path), "editor resource: second save")
+	check((ResourceLoader.load(path) as AWProject).clips[0].name == "After the edit", "editor resource: loading the path returns the saved content")
+	var on_disk := AWProjectIO.open(path)
+	check(on_disk.ok and on_disk.project.clips[0].name == "After the edit", "editor resource: the file on disk has the edit")
+
+	# Saving the editor's own copy (inspector / Ctrl+S on a resource) can't revert our save.
+	check(ResourceSaver.save(cached, path) == OK, "editor resource: an editor save of the cached copy works")
+	var again := AWProjectIO.open(path)
+	check(again.ok and again.project.clips[0].name == "After the edit", "editor resource: and still has the edit")
+
+	# Save As moves the resource to the new path; the recovery copy never takes it over.
+	var path2 := "user://aw_editor_res2.tres"
+	check(d.save_project(path2) and d.project.resource_path == path2, "editor resource: save as follows the new path")
+	d.set_props(d.project.clips[0], {"name": "Dirty again"}, "Rename")
+	d.write_recovery()
+	check(d.project.resource_path == path2, "editor resource: the recovery copy does not take over the path")
+	d.new_project()
+
+
 static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	d.new_project()
@@ -2480,4 +2511,5 @@ static func run(screen: AWMainScreen) -> void:
 	await recovery_tests(tree, screen)
 	await load_tests(tree, screen)
 	await empty_start_tests(tree, screen)
+	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

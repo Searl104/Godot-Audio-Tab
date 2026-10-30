@@ -14,7 +14,8 @@ static var migrations := {}
 
 ## Writes the project. The file is written beside the target and moved into place, so a failed
 ## save never damages an existing file.
-static func save(project: AWProject, path: String) -> Error:
+## `adopt`: make `project` the cached resource for `path` (not for the recovery copy).
+static func save(project: AWProject, path: String, adopt := true) -> Error:
 	if path == "":
 		return ERR_FILE_BAD_PATH
 	project.format_version = AWProject.FORMAT_VERSION
@@ -32,7 +33,13 @@ static func save(project: AWProject, path: String) -> Error:
 	var mv := DirAccess.rename_absolute(tmp, path)
 	if mv != OK:
 		DirAccess.remove_absolute(tmp)
-	return mv
+		return mv
+	# The sound being edited becomes THE resource for this path. Otherwise the editor keeps an older
+	# cached copy (in the Inspector, or from a double-click) that a later editor save would write back
+	# over this one, and loading the path would return the stale copy.
+	if adopt and project.resource_path != path:
+		project.take_over_path(path)
+	return OK
 
 
 static func open(path: String) -> Dictionary:
@@ -40,7 +47,7 @@ static func open(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		res.error = "The file doesn't exist: %s" % path
 		return res
-	var loaded := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var loaded := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE)
 	if loaded == null:
 		res.error = "Couldn't read %s. It may be damaged or not a sound file." % path.get_file()
 		return res
