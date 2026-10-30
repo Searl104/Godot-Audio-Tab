@@ -156,6 +156,8 @@ static func dry_playback_tests(screen: AWMainScreen) -> void:
 	ramp_clip.fade_out_sec = 0.0
 	ramp_clip.source_offset_sec = 0.0
 	ramp_clip.length_sec = minf(ramp_clip.length_sec, 3.0)
+	for ri in range(1, ramp_clip.chain.effects.size()):
+		ramp_clip.chain.effects[ri].bypass = true # its Reverb would add a tail to the measured length
 	proj.clips.assign([ramp_clip])
 	e.project_edited(true)
 	var rb := e.render_preview_range(0.0, 6.0)
@@ -336,6 +338,132 @@ static func effects_tests(screen: AWMainScreen) -> void:
 
 	# Amplify.
 	check(absf(_through(core, 440.0, [_fx(5, [-6.0206])]) - 0.25) < 0.002, "amplify -6 dB halves the level")
+
+	# Distortion: tanh(k x) / k with k = 1 + 19 drive; keep_hf lets highs bypass it.
+	var d0 := _through(core, 440.0, [_fx(6, [0.0, 0.0, 0.0, 20000.0])])
+	check(absf(d0 - tanh(0.5) / 1.0) < 0.003, "distortion drive 0 is a gentle tanh (%.3f, want %.3f)" % [d0, tanh(0.5)])
+	var d1 := _through(core, 440.0, [_fx(6, [1.0, 0.0, 0.0, 20000.0])])
+	check(absf(d1 - tanh(10.0) / 20.0) < 0.002, "distortion drive 1 squashes the peak to 1/20 (%.3f)" % d1)
+	check(absf(_through(core, 440.0, [_fx(6, [1.0, 0.0, -6.0206, 20000.0])]) - d1 * 0.5) < 0.002, "distortion post gain scales the output")
+	check(_through(core, 10000.0, [_fx(6, [1.0, 0.0, 0.0, 1000.0])]) > 0.4, "distortion keep HF: a 10 kHz tone passes a 1 kHz split almost untouched")
+	check(_through(core, 10000.0, [_fx(6, [1.0, 0.0, 0.0, 20000.0])]) < 0.06, "distortion without the split squashes the same tone")
+
+	# Delay: a 0.3 s burst, a 250 ms tap and feedback.
+	core.call("clear_sources")
+	var dsrc := _sine_source(core, 1000.0, 0.3)
+	core.call("set_plan", [_fx_voice(dsrc, 0.3, float(sr), [_fx(7, [250.0, 0.0, -6.0206, 0.0])], int(0.5 * sr))])
+	var dbuf: PackedVector2Array = core.call("render_range", 0, int(0.8 * sr))
+	check(_peak(dbuf, int(0.01 * sr), int(0.24 * sr)) < 0.01, "delay: nothing before the first tap (dry 0)")
+	check(absf(_peak(dbuf, int(0.27 * sr), int(0.49 * sr)) - 0.5) < 0.02, "delay: first echo at full level, 250 ms late")
+	check(absf(_peak(dbuf, int(0.57 * sr), int(0.74 * sr)) - 0.25) < 0.02, "delay: feedback -6 dB makes the second echo half as loud (%.3f, echo1 %.3f)" % [_peak(dbuf, int(0.57 * sr), int(0.74 * sr)), _peak(dbuf, int(0.27 * sr), int(0.49 * sr))])
+	core.call("set_plan", [_fx_voice(dsrc, 0.3, float(sr), [_fx(7, [250.0, -60.0, -60.0, 1.0])], int(0.5 * sr))])
+	dbuf = core.call("render_range", 0, int(0.8 * sr))
+	check(absf(_peak(dbuf, int(0.02 * sr), int(0.28 * sr)) - 0.5) < 0.01 and _peak(dbuf, int(0.35 * sr), int(0.79 * sr)) < 0.01, "delay: dry 1 and a silent tap leave just the original")
+
+	# Compressor: -6 dB sine, threshold -12, ratio 4 -> about 4.5 dB of reduction.
+	var cmp := [_fx(8, [-12.0, 4.0, 0.0, 20.0, 250.0, 1.0])]
+	var cp := _through(core, 440.0, cmp)
+	var want_c := 0.5 * db_to_linear(-(20.0 * log(0.5) / log(10.0) + 12.0) * 0.75)
+	check(absf(cp - want_c) < 0.03, "compressor: 4:1 above -12 dB (%.3f, want about %.3f)" % [cp, want_c])
+	check(absf(_through(core, 440.0, [_fx(8, [0.0, 4.0, 0.0, 20.0, 250.0, 1.0])]) - 0.5) < 0.005, "compressor: below the threshold nothing changes")
+	check(absf(_through(core, 440.0, [_fx(8, [-12.0, 1.0, 0.0, 20.0, 250.0, 1.0])]) - 0.5) < 0.005, "compressor: ratio 1:1 does nothing")
+	check(absf(_through(core, 440.0, [_fx(8, [-12.0, 4.0, 0.0, 20.0, 250.0, 0.0])]) - 0.5) < 0.005, "compressor: mix 0 is the dry signal")
+	check(absf(_through(core, 440.0, [_fx(8, [-12.0, 4.0, 6.0206, 20.0, 250.0, 1.0])]) - cp * 2.0) < 0.05, "compressor: +6 dB makeup doubles the output")
+
+	check(absf(AWFxCurves.distortion(0.5, 1.0, 0.0, 0.0) - d1) < 0.002 and absf(AWFxCurves.distortion(0.5, 0.0, 0.0, 0.0) - d0) < 0.003, "plot curve equals the engine: distortion")
+	var cp_db := 20.0 * log(cp / 0.5) / log(10.0)
+	check(absf(AWFxCurves.compressor_db(-6.0206, -12.0, 4.0, 0.0, 1.0) - (-6.0206 + cp_db)) < 0.3, "plot curve equals the engine: compressor (%.2f dB vs %.2f dB)" % [AWFxCurves.compressor_db(-6.0206, -12.0, 4.0, 0.0, 1.0), -6.0206 + cp_db])
+
+	# Limiter: nothing passes the ceiling.
+	var lm := _through(core, 440.0, [_fx(9, [12.0, -6.0206, 0.1])])
+	check(lm <= 0.2502 * 2.0 + 0.002 and lm > 0.45, "limiter: +12 dB into a -6 dB ceiling holds at %.4f" % lm)
+	check(absf(_through(core, 440.0, [_fx(9, [0.0, 0.0, 0.1])]) - 0.5) < 0.002, "limiter: below the ceiling the signal is untouched")
+
+	# Reverb (10): room size sets the length of the tail; wet 0 leaves the signal alone.
+	core.call("clear_sources")
+	var rsrc := _sine_source(core, 300.0, 0.2)
+	var rtail := int(4.0 * sr)
+	core.call("set_plan", [_fx_voice(rsrc, 0.2, float(sr), [_fx(10, [1.0, 0.5, 1.0, 1.0, 0.0])], rtail)])
+	var rbig: PackedVector2Array = core.call("render_range", 0, int(1.4 * sr))
+	core.call("set_plan", [_fx_voice(rsrc, 0.2, float(sr), [_fx(10, [0.0, 0.5, 1.0, 1.0, 0.0])], rtail)])
+	var rsmall: PackedVector2Array = core.call("render_range", 0, int(1.4 * sr))
+	var big_tail := _peak(rbig, int(0.8 * sr), int(1.3 * sr))
+	var small_tail := _peak(rsmall, int(0.8 * sr), int(1.3 * sr))
+	check(big_tail > 0.01 and big_tail > small_tail * 4.0, "reverb: a big room still rings at 0.8 s (%.4f), a small one has died (%.4f)" % [big_tail, small_tail])
+	check(_peak(rbig, 0, int(1.4 * sr)) < 2.0, "reverb: stays bounded at room size 1")
+	check(absf(_through(core, 440.0, [_fx(10, [1.0, 0.5, 1.0, 0.0, 1.0])]) - 0.5) < 0.002, "reverb: wet 0 / dry 1 passes the signal untouched")
+	core.call("set_plan", [_fx_voice(rsrc, 0.2, float(sr), [_fx(10, [0.5, 0.5, 1.0, 1.0, 0.0])], rtail)])
+	var rmid: PackedVector2Array = core.call("render_range", 0, int(0.5 * sr))
+	check(_peak(rmid, 0, int(0.015 * sr)) < 0.0005 and _peak(rmid, int(0.2 * sr), int(0.4 * sr)) > 0.0005, "reverb: dry 0 starts silent, the tail builds after")
+
+	# Chorus (11): the delay modulation moves the sound's level around; no depth, no movement.
+	var wob := func(depth: float) -> float:
+		core.call("clear_sources")
+		var cid := _sine_source(core, 1000.0, 2.0)
+		core.call("set_plan", [_fx_voice(cid, 2.0, float(sr), [_fx(11, [2.0, depth, 1.0, 0.0])])])
+		var cb: PackedVector2Array = core.call("render_range", 0, int(1.9 * sr))
+		var lo := INF
+		var hi := 0.0
+		for w in 16:
+			var pk := _peak(cb, int((0.3 + w * 0.05) * sr), int((0.3 + w * 0.05 + 0.05) * sr))
+			lo = minf(lo, pk)
+			hi = maxf(hi, pk)
+		return hi - lo
+	var wob0: float = wob.call(0.0)
+	var wob5: float = wob.call(6.0)
+	check(wob0 < 0.01 and wob5 > 0.02, "chorus: depth 0 holds a steady level (%.3f), depth 6 ms moves it (%.3f)" % [wob0, wob5])
+	check(absf(_through(core, 440.0, [_fx(11, [1.0, 5.0, 0.0, 1.0])]) - 0.5) < 0.002, "chorus: wet 0 / dry 1 passes the signal untouched")
+
+	# Phaser (12): six allpass stages put a notch at the sweep centre (840 Hz), and leave lows alone.
+	var ph := [_fx(12, [0.01, 0.1, 0.1])]
+	check(_through(core, 840.0, ph) < 0.12, "phaser: the notch at 840 Hz (%.3f)" % _through(core, 840.0, ph))
+	check(absf(_through(core, 20.0, ph) - 0.5) < 0.02, "phaser: 20 Hz passes at about full level (%.3f)" % _through(core, 20.0, ph))
+
+	# Stereo Enhance (13): width scales the side (L - R); a centred signal never changes.
+	var lsrc := PackedVector2Array()
+	lsrc.resize(int(1.5 * sr))
+	for i in lsrc.size():
+		lsrc[i] = Vector2(0.5 * sin(TAU * 1000.0 * i / sr), 0.0)
+	core.call("clear_sources")
+	var lid: int = core.call("add_source", lsrc)
+	var se_render := func(params: Array) -> PackedVector2Array:
+		core.call("set_plan", [_fx_voice(lid, 1.5, float(sr), [_fx(13, params)])])
+		return core.call("render_range", 0, int(1.5 * sr))
+	var se1: PackedVector2Array = se_render.call([1.0, 0.0, 0.0])
+	check(absf(_peak(se1, int(0.8 * sr), int(1.4 * sr)) - 0.5) < 0.01, "stereo enhance: width 1 is transparent (left only stays left)")
+	var se1_r := 0.0
+	for i in range(int(0.8 * sr), int(1.4 * sr)):
+		se1_r = maxf(se1_r, absf(se1[i].y))
+	check(se1_r < 0.002, "stereo enhance: width 1 keeps the right channel silent (%.4f)" % se1_r)
+	var se0: PackedVector2Array = se_render.call([0.0, 0.0, 0.0])
+	var se0_l := 0.0
+	var se0_r := 0.0
+	for i in range(int(0.8 * sr), int(1.4 * sr)):
+		se0_l = maxf(se0_l, absf(se0[i].x))
+		se0_r = maxf(se0_r, absf(se0[i].y))
+	check(absf(se0_l - 0.25) < 0.01 and absf(se0_r - 0.25) < 0.01, "stereo enhance: width 0 folds it to mono, half level each side (%.3f / %.3f)" % [se0_l, se0_r])
+	check(absf(_through(core, 440.0, [_fx(13, [4.0, 0.0, 0.0])]) - 0.5) < 0.002, "stereo enhance: a centred signal is unchanged at any width")
+	check(absf(_through(core, 1000.0, [_fx(13, [1.0, 0.0, 1.0])]) - 0.25) < 0.01, "stereo enhance: surround 1 takes a centred signal down by half (%.3f)" % _through(core, 1000.0, [_fx(13, [1.0, 0.0, 1.0])]))
+
+	# Gate (14): above the threshold it opens, below it the range turns the sound down.
+	var g_open := _through(core, 440.0, [_fx(14, [-20.0, -40.0, 1.0, 50.0, 150.0, 3.0])])
+	var g_shut := _through(core, 440.0, [_fx(14, [-3.0, -40.0, 1.0, 50.0, 150.0, 3.0])])
+	check(absf(g_open - 0.5) < 0.005, "gate: a -6 dB signal over a -20 dB threshold passes (%.3f)" % g_open)
+	check(absf(g_shut - 0.5 * db_to_linear(-40.0)) < 0.002, "gate: under the threshold the range pulls it down 40 dB (%.4f)" % g_shut)
+	check(_through(core, 440.0, [_fx(14, [-3.0, -80.0, 1.0, 50.0, 150.0, 3.0])]) < 0.0001, "gate: range -80 dB is as good as silent")
+	check(absf(_through(core, 440.0, [_fx(14, [-3.0, 0.0, 1.0, 50.0, 150.0, 3.0])]) - 0.5) < 0.002, "gate: range 0 dB does nothing")
+	check(absf(AWFxCurves.gate_db(-6.0206, -3.0, -40.0) - (-6.0206 - 40.0)) < 1e-3 and absf(AWFxCurves.gate_db(-6.0206, -20.0, -40.0) + 6.0206) < 1e-3, "plot curve equals the engine: gate")
+	# A burst after silence: the gate opens within a few ms of the attack.
+	var gsrc := PackedVector2Array()
+	gsrc.resize(int(1.0 * sr))
+	for i in range(int(0.5 * sr), gsrc.size()):
+		var gv := 0.5 * sin(TAU * 440.0 * i / sr)
+		gsrc[i] = Vector2(gv, gv)
+	core.call("clear_sources")
+	var gid: int = core.call("add_source", gsrc)
+	core.call("set_plan", [_fx_voice(gid, 1.0, float(sr), [_fx(14, [-20.0, -80.0, 1.0, 50.0, 150.0, 3.0])])])
+	var gb: PackedVector2Array = core.call("render_range", 0, sr)
+	check(_peak(gb, int(0.5 * sr) + int(0.01 * sr), int(0.5 * sr) + int(0.05 * sr)) > 0.45, "gate: opens within 10 ms of a burst")
 
 	# Automation: a cutoff table sweeping 18 kHz down to 200 Hz closes the filter over time.
 	var sweep := PackedFloat32Array()
@@ -792,8 +920,10 @@ static func panel_tests(screen: AWMainScreen) -> void:
 		b.sort()
 		check(a == b, "library engine ids match the engine's effect types %s" % str(a))
 		check(AWEffectLibrary.engine_keys("EQ").size() == 6 and AWEffectLibrary.engine_keys("Low Pass") == ["cutoff_hz", "resonance"], "engine parameter order comes from the schema")
-	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and AWPanelRegistry.has_panel("High Pass") and AWPanelRegistry.has_panel("Band Pass") and AWPanelRegistry.has_panel("Amplify") and not AWPanelRegistry.has_panel("Reverb"), "registry: panels for every engine-capable effect, none for Reverb")
+	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and AWPanelRegistry.has_panel("High Pass") and AWPanelRegistry.has_panel("Band Pass") and AWPanelRegistry.has_panel("Amplify") and AWPanelRegistry.has_panel("Reverb") and AWPanelRegistry.has_panel("Gate"), "registry: a panel for every engine-capable effect")
+	AWPanelRegistry.suppressed = PackedStringArray(["Reverb"])
 	check(AWPanelRegistry.create("Reverb") == null, "registry: no panel falls back to the generic rows")
+	AWPanelRegistry.suppressed = PackedStringArray()
 
 	# --- Low Pass ---
 	var undo_base := 0
@@ -916,6 +1046,59 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	d.remove_effect(ch, amp)
 	await frames(tree, 2)
 
+	# --- Distortion, Delay, Compressor, Limiter ---
+	var plot_cases := [["Distortion", 4], ["Delay", 4], ["Compressor", 6], ["Limiter", 3], ["Reverb", 5], ["Chorus", 4], ["Phaser", 3], ["Stereo Enhance", 3], ["Gate", 6]]
+	for pc: Array in plot_cases:
+		var t: String = pc[0]
+		var pe := d.add_effect(ch, t)
+		await frames(tree, 3)
+		var pcard: AWEffectCard = screen.chain_panel._cards.back()
+		check(pcard.panel is AWPlotKnobPanel and pcard.panel.compact and pcard.rows.is_empty() and pcard.panel.knobs.size() == pc[1], "%s card is compact: plot and %d knobs" % [t, pc[1]])
+		d.open_detail(ch, pe)
+		await frames(tree, 2)
+		var pp := host.panel as AWPlotKnobPanel
+		check(pp != null and not pp.compact and (pp.plot_control() != null) == (t != "Chorus" and t != "Phaser" and t != "Stereo Enhance"), "%s dock panel %s a plot" % [t, "has no" if (t == "Chorus" or t == "Phaser" or t == "Stereo Enhance") else "has"])
+		if OS.get_environment("AW_SHOTS") != "" and (t == "Compressor" or t == "Delay" or t == "Reverb" or t == "Gate"):
+			(screen.chain_panel._cards_box.get_parent() as ScrollContainer).scroll_horizontal = 5000
+			await _panel_shot(tree, d, ch, pe, "aw_panel_%s.png" % t.to_lower())
+		var key: String = AWEffectLibrary.param_schema(t).keys()[0]
+		var kbefore := pe.get_param(key)
+		var pk := pp.knobs[0]
+		pk.size = pk.custom_minimum_size
+		click(pk, Vector2(40, 40))
+		move(pk, Vector2(40, -30))
+		click(pk, Vector2(40, -30), MOUSE_BUTTON_LEFT, false)
+		check(pe.get_param(key) != kbefore, "%s: the first knob edits %s (%.2f)" % [t, key, pe.get_param(key)])
+		d.undo()
+		check(pe.get_param(key) == kbefore, "%s: knob drag is one undo step" % t)
+		if t == "Gate":
+			var gp := pp.plot_control() as AWTransferPlot
+			gp.size = Vector2(400, 260)
+			pp.refresh()
+			drag(gp, Vector2(gp.px(gp.handle.x), gp.py(gp.handle.y)), Vector2(gp.px(-30.0), gp.py(-30.0)))
+			check(absf(pe.get_param("threshold_db") + 30.0) < 1.5, "Gate: dragging the handle sets the threshold (%.1f dB)" % pe.get_param("threshold_db"))
+			d.undo()
+		if t == "Reverb":
+			var dp := pp.plot_control() as AWDecayPlot
+			check(AWDecayPlot.rt60(1.0, 0.0) > AWDecayPlot.rt60(0.0, 0.0) * 5.0 and AWDecayPlot.rt60(0.8, 1.0, true) < AWDecayPlot.rt60(0.8, 1.0), "Reverb: bigger room = longer RT60, damping shortens the highs (%.1f s / %.1f s)" % [AWDecayPlot.rt60(1.0, 0.0), AWDecayPlot.rt60(0.0, 0.0)])
+			check(dp != null and is_equal_approx(dp.room, pe.get_param("room_size")), "Reverb: the plot follows the Room knob")
+		if t == "Compressor" or t == "Limiter":
+			var tp := pp.plot_control() as AWTransferPlot
+			tp.size = Vector2(400, 260)
+			pp.refresh()
+			var hx: float = tp.handle.x
+			var hy: float = tp.handle.y
+			var hfrom := Vector2(tp.px(hx), tp.py(hy))
+			if t == "Compressor":
+				drag(tp, hfrom, Vector2(tp.px(-30.0), tp.py(hy)))
+				check(absf(pe.get_param("threshold") + 30.0) < 1.0, "Compressor: dragging the handle sets the threshold (%.1f dB)" % pe.get_param("threshold"))
+			else:
+				drag(tp, hfrom, Vector2(hfrom.x, tp.py(-12.0)))
+				check(absf(pe.get_param("ceiling_db") + 12.0) < 1.0, "Limiter: dragging the handle sets the ceiling (%.1f dB)" % pe.get_param("ceiling_db"))
+			d.undo()
+		d.remove_effect(ch, pe)
+		await frames(tree, 2)
+
 	# --- EQ ---
 	var eq := d.add_effect(ch, "EQ")
 	await frames(tree, 4)
@@ -991,8 +1174,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.4.2" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.4.2"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.6.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.6.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -1217,6 +1400,9 @@ static func run(screen: AWMainScreen) -> void:
 	check(g.selected_keys.size() == 3, "box-select keys on active curve (got %d)" % g.selected_keys.size())
 
 	print("--- UI: dots and cards ---")
+	# The Reverb card has a panel now; this section tests the generic rows, so show them for it.
+	AWPanelRegistry.suppressed = PackedStringArray(["Reverb"])
+	d.project_changed.emit(true)
 	var dots: AWCurveDots = g.get_parent().get_child(0)
 	dots._layout()
 	var first: Array = dots._placed[0]
@@ -1229,26 +1415,27 @@ static func run(screen: AWMainScreen) -> void:
 	await frames(tree, 4)
 	var cards := screen.chain_panel._cards
 	check(cards.size() == ch.effects.size(), "one card per effect (%d)" % cards.size())
-	var lim_card: AWEffectCard = cards[1]
+	var lim_card: AWEffectCard = cards[2]
 	var row: AWParamRow = lim_card.rows[0]
 	check(row.curve() == null and row._slider.visible, "uncurved param shows slider + field")
 	var lim: AWEffect = row.effect
 	row._on_menu(1)
 	await frames(tree, 4)
-	check(ch.get_curve(lim.id, "pre_gain_db") != null, "right-click > Make Curve creates curve")
+	check(ch.get_curve(lim.id, "room_size") != null, "right-click > Make Curve creates curve")
 	cards = screen.chain_panel._cards
-	var row2: AWParamRow = (cards[1] as AWEffectCard).rows[0]
+	var row2: AWParamRow = (cards[2] as AWEffectCard).rows[0]
 	check(not row2._slider.visible and row2._curve_value.visible, "curved param shows curve value instead")
 	d.undo()
 	await frames(tree, 4)
-	var row3: AWParamRow = (screen.chain_panel._cards[1] as AWEffectCard).rows[0]
+	var row3: AWParamRow = (screen.chain_panel._cards[2] as AWEffectCard).rows[0]
 	row3._slider.drag_started.emit()
-	row3._slider.value = -6.0
+	row3._slider.value = 0.25
 	row3._slider.drag_ended.emit(true)
-	check(is_equal_approx(ch.effects[1].get_param("pre_gain_db"), -6.0), "slider drag sets value")
+	check(is_equal_approx(ch.effects[2].get_param("room_size"), 0.25), "slider drag sets value")
 	d.undo()
-	check(is_equal_approx(ch.effects[1].get_param("pre_gain_db"), 0.0), "slider drag is one undo step")
+	check(is_equal_approx(ch.effects[2].get_param("room_size"), 0.8), "slider drag is one undo step")
 
+	AWPanelRegistry.suppressed = PackedStringArray()
 	print("--- trim sync ---")
 	d.select_clip(c4)
 	await frames(tree, 4)
@@ -1374,6 +1561,13 @@ static func run(screen: AWMainScreen) -> void:
 	d.set_curve_keys(ch, lpc, lk, "sweep")
 	var mid := ch.sample(lpc, c4.length_sec * 0.5)
 	check(absf(mid - sqrt(20.0 * 20500.0)) < 5.0, "straight line on log scale = even sweep in octaves (mid %.0f Hz)" % mid)
+	# Curves are not limited to the clip: a key can sit well past its end.
+	check(d.curve_domain_len() > c4.length_sec * 10.0 and d.curve_span_len() >= c4.length_sec, "curve domain is not the clip length (span %.2f s, clip %.2f s)" % [d.curve_span_len(), c4.length_sec])
+	var far := ch.get_keys(lpc)
+	far.append({"t": c4.length_sec + 5.0, "v": 0.5, "in": Vector2(-0.5, 0.0), "out": Vector2(0.5, 0.0), "mode": AWCurve.HandleMode.BALANCED})
+	d.set_curve_keys(ch, lpc, far, "far key")
+	check(ch.get_keys(lpc).size() == 3 and absf(ch.get_keys(lpc)[2].t - (c4.length_sec + 5.0)) < 1e-4, "a key can be placed 5 s beyond the clip end")
+	d.undo()
 	d.remove_curve(ch, lpc)
 	await frames(tree, 4)
 	var lp_card: AWEffectCard = screen.chain_panel._cards.back()
@@ -1539,6 +1733,16 @@ static func run(screen: AWMainScreen) -> void:
 	d.set_export_bit_depth(16)
 	var len16 := d.export_size_bytes()
 	check(len32 - 44 == 2 * (len16 - 44), "export: 32-bit float file is twice the size of 16-bit")
+	# The demo chains hold a Reverb, which rings: switch every ringing card off to measure the bare end.
+	var ring_off: Array[AWEffect] = []
+	var ring_chains: Array = [ep.master_chain]
+	for rc in ep.clips:
+		ring_chains.append(rc.chain)
+	for rch: AWChain in ring_chains:
+		for re in rch.effects:
+			if not re.bypass and AWEffectLibrary.engine_rings(re.effect_type):
+				re.bypass = true
+				ring_off.append(re)
 	var no_tail := d.export_end_sec()
 	var last := ep.last_clip_end_sec()
 	check(absf(no_tail - last) < 0.0001, "export end (auto): last clip end with no ringing effects (%.3f s)" % no_tail)
@@ -1574,6 +1778,8 @@ static func run(screen: AWMainScreen) -> void:
 	d.set_export_end(-1.0)
 	ep.clips[0].chain.effects.erase(ring)
 	check(absf(d.export_end_sec() - no_tail) < 0.0001, "export end (auto): removing the card removes the tail")
+	for re in ring_off:
+		re.bypass = false
 	var tmp := "user://aw_selftest_overwrite.wav"
 	d.set_export_path(tmp)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))

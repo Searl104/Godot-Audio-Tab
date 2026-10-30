@@ -18,6 +18,15 @@ enum EffectType {
 	FX_BAND_PASS = 3,
 	FX_EQ6 = 4,
 	FX_AMPLIFY = 5,
+	FX_DISTORTION = 6,
+	FX_DELAY = 7,
+	FX_COMPRESSOR = 8,
+	FX_LIMITER = 9,
+	FX_REVERB = 10,
+	FX_CHORUS = 11,
+	FX_PHASER = 12,
+	FX_STEREO_ENHANCE = 13,
+	FX_GATE = 14,
 };
 
 // One automated parameter: entry i is the value at position i * step (frames); one entry
@@ -46,6 +55,9 @@ public:
 
 // Returns null for an unknown type. The spec must outlive the effect.
 std::unique_ptr<Effect> make_effect(const EffectSpec &p_spec, double p_sample_rate);
+
+// Static curves shared with the UI plots and the tests.
+float distort_shape(float p_x, float p_k); // tanh(k x) / k
 
 // Filter helpers, exposed for the tests.
 float resonance_to_q(float p_resonance);

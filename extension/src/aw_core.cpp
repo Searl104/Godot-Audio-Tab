@@ -662,7 +662,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 3; // 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 5; // 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
@@ -672,6 +672,15 @@ PackedInt32Array AWCore::get_effect_types() const {
 	out.push_back(aw::FX_BAND_PASS);
 	out.push_back(aw::FX_EQ6);
 	out.push_back(aw::FX_AMPLIFY);
+	out.push_back(aw::FX_DISTORTION);
+	out.push_back(aw::FX_DELAY);
+	out.push_back(aw::FX_COMPRESSOR);
+	out.push_back(aw::FX_LIMITER);
+	out.push_back(aw::FX_REVERB);
+	out.push_back(aw::FX_CHORUS);
+	out.push_back(aw::FX_PHASER);
+	out.push_back(aw::FX_STEREO_ENHANCE);
+	out.push_back(aw::FX_GATE);
 	return out;
 }
 

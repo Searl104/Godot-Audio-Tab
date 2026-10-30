@@ -480,17 +480,38 @@ func project_to_view(p: float) -> float:
 	return focus_clip.project_to_local(p) if is_clip_local_view() else p
 
 
-## Length of the chain's owner in its local time.
+## How far a key may be placed, in the chain's local time. Curves are not limited to the clip:
+## they may run on through a tail or past it, up to the length of the automation track.
 func curve_domain_len() -> float:
-	if chain_tab == ChainTab.CLIP:
-		return focus_clip.length_sec if focus_clip else project.length_sec
-	return project.content_end_sec()
+	return AWChain.MAX_TIME
+
+
+## Where a new curve or LFO ends by default: the clip's own length (the master's content).
+## Keys can be moved or added past it; beyond the last key a curve holds its value.
+func curve_owner_len() -> float:
+	if chain_tab == ChainTab.CLIP and focus_clip != null:
+		return focus_clip.length_sec
+	return project.content_end_sec() if project != null else 10.0
+
+
+## The stretch curves are drawn and framed over: the clip's own length, or on through
+## the export end when that lies later (so tails can be shaped). Master: the whole sound.
+func curve_span_len() -> float:
+	if project == null:
+		return 10.0
+	var end := project.export_end_resolved()
+	if chain_tab == ChainTab.CLIP and focus_clip != null:
+		var own := focus_clip.length_sec
+		if end > focus_clip.end_sec():
+			own = maxf(own, focus_clip.project_to_local(end))
+		return own
+	return maxf(project.content_end_sec(), end)
 
 
 func curve_domain_end_view() -> float:
 	if project == null:
 		return 10.0
-	return local_to_view(curve_domain_len())
+	return local_to_view(curve_span_len())
 
 
 func frame_curves() -> void:
@@ -807,7 +828,7 @@ func make_curve(chain: AWChain, e: AWEffect, param: String) -> AWCurve:
 	c.scale = AWEffectLibrary.default_scale(e.effect_type, param) as AWCurve.Scale
 	var r := Vector2(AWEffectLibrary.param_spec(e.effect_type, param)[0], AWEffectLibrary.param_spec(e.effect_type, param)[1])
 	var v := AWCurveMath.to_norm(c.scale, e.get_param(param), r.x, r.y)
-	var end := curve_domain_len()
+	var end := curve_owner_len()
 	var h := Vector2(end / 3.0, 0.0)
 	var keys := [
 		{"t": 0.0, "v": v, "in": -h, "out": h, "mode": AWCurve.HandleMode.BALANCED},
@@ -957,7 +978,7 @@ func add_lfo(chain: AWChain, c: AWCurve) -> AWLfo:
 		l.min_value = chain.from_norm(c, 0.25)
 		l.max_value = chain.from_norm(c, 0.75)
 	l.start_sec = 0.0
-	l.end_sec = curve_domain_len()
+	l.end_sec = curve_owner_len()
 	l.fade_in_sec = minf(0.25, l.span() * 0.25)
 	l.fade_out_sec = minf(0.25, l.span() * 0.25)
 	l.random_seed = randi() % 10000

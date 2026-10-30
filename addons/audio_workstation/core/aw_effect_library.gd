@@ -31,7 +31,7 @@ const EFFECTS := {
 		},
 	},
 	"Reverb": {
-		"godot_class": "AudioEffectReverb",
+		"godot_class": "AudioEffectReverb", "color": "#4fc9c0", "engine": {"id": 10, "rings": true},
 		"params": {
 			"room_size": [0.0, 1.0, 0.8, 0.01, "", "Room"],
 			"damping": [0.0, 1.0, 0.5, 0.01, "", "Damping"],
@@ -41,7 +41,7 @@ const EFFECTS := {
 		},
 	},
 	"Delay": {
-		"godot_class": "AudioEffectDelay",
+		"godot_class": "AudioEffectDelay", "color": "#b38bfa", "engine": {"id": 7, "rings": true},
 		"params": {
 			"tap1_delay_ms": [0.0, 1500.0, 250.0, 1.0, "ms", "Time"],
 			"tap1_level_db": [-60.0, 0.0, -6.0, 0.1, "dB", "Level"],
@@ -50,7 +50,7 @@ const EFFECTS := {
 		},
 	},
 	"Chorus": {
-		"godot_class": "AudioEffectChorus",
+		"godot_class": "AudioEffectChorus", "color": "#5ec2a8", "engine": {"id": 11, "rings": false},
 		"params": {
 			"voice/1/rate_hz": [0.1, 20.0, 0.8, 0.01, "Hz", "Rate"],
 			"voice/1/depth_ms": [0.0, 20.0, 2.0, 0.01, "ms", "Depth"],
@@ -59,7 +59,7 @@ const EFFECTS := {
 		},
 	},
 	"Phaser": {
-		"godot_class": "AudioEffectPhaser",
+		"godot_class": "AudioEffectPhaser", "color": "#d96ab2", "engine": {"id": 12, "rings": false},
 		"params": {
 			"rate_hz": [0.01, 20.0, 0.5, 0.01, "Hz", "Rate"],
 			"feedback": [0.1, 0.9, 0.7, 0.01, "", "Feedback"],
@@ -67,7 +67,7 @@ const EFFECTS := {
 		},
 	},
 	"Distortion": {
-		"godot_class": "AudioEffectDistortion",
+		"godot_class": "AudioEffectDistortion", "color": "#e05555", "engine": {"id": 6, "rings": false},
 		"params": {
 			"drive": [0.0, 1.0, 0.3, 0.01, "", "Drive"],
 			"pre_gain": [-60.0, 60.0, 0.0, 0.1, "dB", "Pre Gain"],
@@ -108,7 +108,7 @@ const EFFECTS := {
 		},
 	},
 	"Compressor": {
-		"godot_class": "AudioEffectCompressor",
+		"godot_class": "AudioEffectCompressor", "color": "#e8834a", "engine": {"id": 8, "rings": false},
 		"params": {
 			"threshold": [-60.0, 0.0, -12.0, 0.1, "dB", "Threshold"],
 			"ratio": [1.0, 48.0, 4.0, 0.1, ":1", "Ratio"],
@@ -119,7 +119,7 @@ const EFFECTS := {
 		},
 	},
 	"Limiter": {
-		"godot_class": "AudioEffectHardLimiter",
+		"godot_class": "AudioEffectHardLimiter", "color": "#d96a8a", "engine": {"id": 9, "rings": false},
 		"params": {
 			"pre_gain_db": [-24.0, 24.0, 0.0, 0.1, "dB", "Pre Gain"],
 			"ceiling_db": [-24.0, 0.0, -0.3, 0.1, "dB", "Ceiling"],
@@ -132,8 +132,19 @@ const EFFECTS := {
 			"volume_db": [-80.0, 24.0, 0.0, 0.1, "dB", "Volume"],
 		},
 	},
+	"Gate": {
+		"godot_class": "", "color": "#8a9aa8", "engine": {"id": 14, "rings": false},
+		"params": {
+			"threshold_db": [-80.0, 0.0, -45.0, 0.1, "dB", "Threshold"],
+			"range_db": [-80.0, 0.0, -40.0, 0.1, "dB", "Range"],
+			"attack_ms": [0.01, 100.0, 1.0, 0.01, "ms", "Attack"],
+			"hold_ms": [0.0, 500.0, 50.0, 1.0, "ms", "Hold"],
+			"release_ms": [1.0, 2000.0, 150.0, 1.0, "ms", "Release"],
+			"hysteresis_db": [0.0, 12.0, 3.0, 0.1, "dB", "Hysteresis"],
+		},
+	},
 	"Stereo Enhance": {
-		"godot_class": "AudioEffectStereoEnhance",
+		"godot_class": "AudioEffectStereoEnhance", "color": "#6a8fe8", "engine": {"id": 13, "rings": false},
 		"params": {
 			"pan_pullout": [0.0, 4.0, 1.0, 0.01, "", "Width"],
 			"time_pullout_ms": [0.0, 50.0, 0.0, 0.1, "ms", "Time"],

@@ -110,7 +110,7 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
 
 ## Native engine (milestones 1 to 4)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
-`● Engine 0.4.2`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
+`● Engine 0.6.0`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
 than the plugin: rebuild it) and everything except sound still works. Build steps: `BUILDING.md`.
 
 **Dry playback (milestone 2).** Play, Stop, seek, loop and double-click audition now make sound.
@@ -134,11 +134,13 @@ than the plugin: rebuild it) and everything except sound still works. Build step
   warp. Eight layered 20 s clips with 24 curves, all with 20 Hz LFOs: plan rebuild 61 ms (it was 8.9 s in GDScript);
   an LFO edit re-samples one curve in about 7 ms.
   Edits while playing are heard within 50 ms.
-- **Effects (milestone 4, in progress).** Effect cards now run in the native engine, in chain order after the
-  Clip card (per clip) and after Output (master). Done so far: Low Pass, High Pass, Band Pass, EQ (6 bands) and
-  Amplify. The other cards (Distortion, Delay, Reverb, Compressor, Limiter, Chorus, Phaser, Stereo Enhance) are
-  skipped for now, so they don't sound yet. The DSP is our own (RBJ biquads), built to fit the engine rather than
-  matching Godot's effects.
+- **Effects (milestone 4).** Effect cards run in the native engine, in chain order after the Clip card (per clip)
+  and after Output (master): Low Pass, High Pass, Band Pass, EQ (6 bands), Amplify, Distortion, Delay, Compressor,
+  Limiter, Reverb, Chorus, Phaser, Stereo Enhance and Gate (engine 0.6.0). The DSP is our own, built to fit the
+  engine rather than matching Godot's effects. Reverb is a Freeverb-style network (8 damped combs and 4 allpasses
+  per side); Chorus has three modulated voices; Phaser six allpass stages; Stereo Enhance works on mid/side (Width
+  scales the side, Time delays it, Surround adds a 10 ms inverted cross-feed, so check it in mono); Gate is a
+  stereo-linked gate with attack, hold, release and hysteresis, no look-ahead.
   - Parameters come from the same curve tables as Gain/Pan, updated every 32 frames; a curve or LFO on a cutoff
     sweeps the filter. Clip chains read their curves on the clip's own clock; the master chain on project time.
   - Tails and the end marker: the orange **end marker** on the timeline sets where the exported sound ends, so one
@@ -183,13 +185,15 @@ than the plugin: rebuild it) and everything except sound still works. Build step
 
 ## Effect panels and the control kit (v0.11)
 
-Effects can have a custom detail panel. It opens in the **Audio Effect** dock (bottom by default; double-click a card's header or use ⋮ > Open Panel). Every engine-capable effect has one (Low Pass, High Pass, Band Pass, EQ, Amplify), shown compactly on their cards (small response plot plus knobs); effects not yet ported keep their generic parameter rows.
+Effects can have a custom detail panel. It opens in the **Audio Effect** dock (bottom by default; double-click a card's header or use ⋮ > Open Panel). Every effect has one, shown compactly on its card (a small plot plus knobs); Chorus, Phaser and Stereo Enhance are knobs only. Gate and Compressor have a draggable threshold, Limiter a ceiling; Reverb shows its RT60. The generic parameter rows remain as the fallback for an effect with no panel.
+
+Curves are not limited to the clip: keys can sit anywhere up to one hour, so a tail (or anything past the clip) can be shaped. A new curve or LFO still spans the clip, the graph frames the clip or, when later, the end marker, and beyond the last key a curve holds its value.
 
 - `ui/kit/aw_binding.gd`: `AWParamBinding` is the only thing a control uses to edit a parameter (undo, live preview, curve dot state, right-click menu, one undo step for multi-parameter drags).
 - `ui/kit/`: `AWKnob` (optional bipolar and view range), `AWResponsePlot` (log-frequency plot with draggable handles). Gestures: drag, Shift = fine, wheel, double-click = reset, right-click = curve options. A driven parameter shows a yellow dotted ring and a click selects its curve.
 - `ui/kit/aw_panel_registry.gd`: effect type to panel. To add one, subclass `AWEffectPanel` (`ui/panels/`), register it there.
 - `core/aw_filter_response.gd`: the drawn response mirrors the engine's biquads; the self-test compares it with the engine's measured output.
 
-The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 (API level 3), which evaluates Accel and Smoothing natively.
+The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 or newer (the engine evaluates Accel and Smoothing natively).
 
 Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k` works, Enter applies, Esc cancels), **Ctrl+click to reset**, right-click for options.

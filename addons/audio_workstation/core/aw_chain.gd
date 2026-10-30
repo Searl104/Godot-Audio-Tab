@@ -15,6 +15,9 @@ extends Resource
 @export var automation: Animation
 @export var next_effect_id: int = 1
 
+## Latest time (local seconds) a key can sit at: the length of the automation track.
+const MAX_TIME := 3600.0
+
 ## Bumped whenever keys change, so cached data (e.g. a clip's time warp) knows to rebuild.
 var revision := 0
 
@@ -22,7 +25,7 @@ var revision := 0
 func _init() -> void:
 	if automation == null:
 		automation = Animation.new()
-		automation.length = 3600.0
+		automation.length = MAX_TIME
 
 
 static func create(fixed_type: String) -> AWChain:
