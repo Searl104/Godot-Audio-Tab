@@ -229,6 +229,7 @@ func _build_recovery_prompt() -> void:
 ## Opens the Import Sound browser; chosen sounds land on `row` (one row each) at `t`.
 func open_import(row := -1, t := -1.0) -> void:
 	_import_at = Vector2(row if row >= 0 else (doc.project.max_row() + 1 if not doc.project.clips.is_empty() else 0), t if t >= 0.0 else doc.playhead_sec)
+	browser.dest_hint = AWImporter.ROOT.path_join(AWImporter.sound_folder(doc.project_path, doc.project.title)) + "/"
 	browser.open()
 
 

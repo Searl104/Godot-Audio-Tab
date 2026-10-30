@@ -1678,7 +1678,13 @@ static func import_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 		return func(i: int, rt: int) -> Vector2i:
 			var v := int(9000.0 * sin(TAU * hz * i / rt))
 			return Vector2i(v, v)
-	write_wav("/tmp/aw_imp/door slam.wav", 0.6, tone.call(180.0))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	write_wav("/tmp/aw_imp/door slam.wav", 0.6, func(i: int, rt: int) -> Vector2i:
+		var t := float(i) / rt
+		var env := exp(-t * 7.0) * minf(1.0, t * 400.0) + 0.25 * exp(-maxf(t - 0.22, 0.0) * 18.0) * float(t > 0.22)
+		var v := int(clampf((rng.randf() * 2.0 - 1.0) * 0.6 * env + 0.3 * sin(TAU * 70.0 * t) * env, -1.0, 1.0) * 32000.0)
+		return Vector2i(v, v))
 	write_wav("/tmp/aw_imp/glass.wav", 0.4, tone.call(900.0))
 	write_wav("/tmp/aw_imp/sub folder/step.wav", 0.3, tone.call(400.0))
 	var f := FileAccess.open("/tmp/aw_imp/notes.txt", FileAccess.WRITE)
@@ -1761,7 +1767,7 @@ static func import_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	b._search.text_changed.emit("")
 	b.select_paths(PackedStringArray(["/tmp/aw_imp/door slam.wav"]))
 	await frames(tree, 3)
-	check(b.wave_peaks.size() == 400 and b.preview.stream != null, "browser: selecting a sound shows its waveform")
+	check(b.wave_peaks.size() == 600 and b.preview.stream != null, "browser: selecting a sound shows its waveform")
 	check(b.preview.playing or not b._autoplay.button_pressed, "browser: Play on select plays it")
 	b.stop()
 	b.open_dir("/tmp/aw_imp/sub folder")
@@ -1773,7 +1779,10 @@ static func import_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	b.toggle_favorite()
 	check(AWImporter.get_pref(AWImporter.PREF_LAST_DIR, "") == "/tmp/aw_imp", "browser: the folder is remembered")
 	b.select_paths(PackedStringArray(["/tmp/aw_imp/door slam.wav", "/tmp/aw_imp/glass.wav"]))
-	await frames(tree, 2)
+	b._select_file("/tmp/aw_imp/door slam.wav")
+	b.play(0.0)
+	await tree.create_timer(0.15).timeout
+	check(b.get_ok_button().text == "Import 2", "browser: the Import button counts the selection (%s)" % b.get_ok_button().text)
 	if OS.get_environment("AW_SHOTS") != "":
 		await frames(tree, 6)
 		var img := b.get_texture().get_image() if not b.is_embedded() else tree.root.get_viewport().get_texture().get_image()
