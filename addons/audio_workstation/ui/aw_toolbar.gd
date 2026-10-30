@@ -3,7 +3,7 @@ class_name AWToolbar
 extends HBoxContainer
 ## File / Edit menus, undo/redo, transport, clock, snap, export.
 
-## Actions the main screen handles (dialogs): "new", "open", "save", "save_as", "export_wav", "export_stream".
+## Actions the main screen handles: "new", "open", "save", "save_as", "export".
 signal request(action: String)
 
 var doc: AWDocument
@@ -14,6 +14,7 @@ var _play: Button
 var _loop: Button
 var _clock: Label
 var _snap: OptionButton
+var _file: Label
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -23,7 +24,7 @@ func setup(p_doc: AWDocument) -> void:
 func _ready() -> void:
 	add_theme_constant_override("separation", 4)
 	add_child(_menu("File", [["New", "new"], ["Open...", "open"], ["Save", "save"], ["Save As...", "save_as"], [],
-		["Export WAV...", "export_wav"], ["Export as AudioStream...", "export_stream"]]))
+		["Export Sound", "export"]]))
 	var edit := MenuButton.new()
 	edit.text = "Edit"
 	edit.flat = true
@@ -80,7 +81,14 @@ func _ready() -> void:
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(spacer)
+	_file = Label.new()
+	_file.name = "FileName"
+	_file.tooltip_text = "The open sound. A star means changes that aren't saved."
+	_file.add_theme_color_override("font_color", Color(1, 1, 1, 0.8))
+	add_child(_file)
+	add_child(VSeparator.new())
 	add_child(_engine_chip())
+	doc.file_state_changed.connect(_sync)
 
 	doc.transport_changed.connect(_sync)
 	doc.project_changed.connect(func(_s: bool) -> void: _sync())
@@ -118,6 +126,9 @@ func _menu(title: String, items: Array) -> MenuButton:
 
 
 func _sync() -> void:
+	if _file:
+		_file.text = doc.file_label()
+		_file.tooltip_text = (doc.project_path if doc.project_path != "" else "Not saved yet") + ("\nUnsaved changes" if doc.is_dirty() else "")
 	_undo.disabled = not doc.can_undo()
 	_redo.disabled = not doc.can_redo()
 	var tex := AWTheme.icon(self, &"Pause" if doc.playing else &"Play")

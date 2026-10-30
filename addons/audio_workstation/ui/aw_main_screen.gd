@@ -21,6 +21,9 @@ var lfo_panel: AWLfoPanel
 var _status: Label
 var _dialog: FileDialog
 var _dialog_action := ""
+var _confirm: ConfirmationDialog
+var _pending_after_ask := Callable()
+var _after_save := Callable()
 
 
 func setup(plugin: EditorPlugin) -> void:
@@ -82,6 +85,7 @@ func _ready() -> void:
 	_dialog = FileDialog.new()
 	_dialog.file_selected.connect(_on_dialog_path)
 	add_child(_dialog)
+	_build_confirm()
 	set_process(true)
 
 
@@ -145,18 +149,63 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-# --- File actions (dialogs only; the handlers are stubs) ----------------------
+# --- File actions -------------------------------------------------------------
+
+## Runs `then` now, or after the user has decided what to do with unsaved changes.
+func ask_discard(then: Callable) -> void:
+	if not doc.is_dirty():
+		then.call()
+		return
+	_pending_after_ask = then
+	_confirm.dialog_text = "Save changes to %s before continuing?" % (doc.project_path.get_file() if doc.project_path != "" else "the untitled sound")
+	_confirm.popup_centered()
+
+
+func _build_confirm() -> void:
+	_confirm = ConfirmationDialog.new()
+	_confirm.title = "Unsaved Changes"
+	_confirm.ok_button_text = "Save"
+	_confirm.add_button("Don't Save", true, "discard")
+	_confirm.confirmed.connect(func() -> void:
+		var then := _pending_after_ask
+		_pending_after_ask = Callable()
+		if doc.project_path != "":
+			if doc.save_project(doc.project_path) and then.is_valid():
+				then.call()
+		else:
+			_after_save = then
+			_on_request("save_as"))
+	_confirm.custom_action.connect(func(act: StringName) -> void:
+		if act == &"discard":
+			_confirm.hide()
+			var then := _pending_after_ask
+			_pending_after_ask = Callable()
+			if then.is_valid():
+				then.call())
+	_confirm.canceled.connect(func() -> void: _pending_after_ask = Callable())
+	add_child(_confirm)
+
 
 func _on_request(action: String) -> void:
 	match action:
 		"new":
-			doc.new_project()
+			ask_discard(doc.new_project)
+			return
+		"open":
+			ask_discard(func() -> void: _show_dialog("open"))
 			return
 		"save":
 			if doc.project_path != "":
 				doc.save_project(doc.project_path)
 				return
 			action = "save_as"
+		"export":
+			doc.export_now()
+			return
+	_show_dialog(action)
+
+
+func _show_dialog(action: String) -> void:
 	_dialog_action = action
 	_dialog.clear_filters()
 	_dialog.access = FileDialog.ACCESS_RESOURCES
@@ -169,26 +218,24 @@ func _on_request(action: String) -> void:
 		"save_as":
 			_dialog.title = "Save Sound As"
 			_dialog.add_filter("*.tres, *.res", "Audio Workstation Sound")
-		"export_wav":
-			_dialog.title = "Export WAV"
-			_dialog.access = FileDialog.ACCESS_FILESYSTEM
-			_dialog.add_filter("*.wav", "WAV")
 		"export_browse":
 			_dialog.title = "Export To"
-			_dialog.access = FileDialog.ACCESS_RESOURCES
-			_dialog.add_filter("*.wav", "WAV")
-		"export_stream":
-			_dialog.title = "Export as AudioStream"
-			_dialog.add_filter("*.tres, *.res", "AudioStreamWAV resource")
+			_dialog.add_filter("*.wav, *.ogg", "Audio file")
 	_dialog.popup_centered_ratio(0.6)
 
 
 func _on_dialog_path(path: String) -> void:
 	match _dialog_action:
-		"open": doc.load_project(path)
+		"open":
+			doc.load_project(path)
 		"save_as":
-			doc.project_path = path
-			doc.save_project(path)
-		"export_wav": doc.export_wav(path)
+			if path.get_extension().to_lower() not in ["tres", "res"]:
+				path += ".tres"
+			var ok := doc.save_project(path)
+			var then := _after_save
+			_after_save = Callable()
+			if ok and then.is_valid():
+				then.call()
 		"export_browse": doc.set_export_path(path.trim_prefix("res://"))
-		"export_stream": doc.export_audio_stream(path)
+
+

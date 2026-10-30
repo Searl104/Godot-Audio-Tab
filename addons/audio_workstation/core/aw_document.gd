@@ -20,6 +20,7 @@ signal message(text: String)
 ## The LFO panel opened, closed, or switched curve.
 signal lfo_panel_changed
 ## Export bit depth, tail or file name changed (not a sound edit, so no plan rebuild).
+signal file_state_changed
 signal export_settings_changed
 signal export_progress(fraction: float)
 signal export_finished(result: Dictionary)
@@ -44,6 +45,10 @@ var exporting := false
 var _exporter: AWExporter
 var undo_redo: EditorUndoRedoManager
 var project_path := ""
+## What the last Open had to repair (for the tests and the status line).
+var last_repairs: Array = []
+var _saved_version := 0
+var _touched := false
 
 # Transport
 var playing := false
@@ -109,20 +114,85 @@ func set_project(p: AWProject) -> void:
 
 
 func new_project() -> void:
+	_cancel_export_for_switch()
 	project_path = ""
 	set_project(AWProject.create_default())
+	_reset_history()
+	message.emit("New sound.")
 
 
-func save_project(path: String) -> void:
-	message.emit("Save isn't implemented yet (interface phase): %s" % path) # TODO(logic): ResourceSaver
+## Writes the project to `path` (a .tres or .res). Returns true on success.
+func save_project(path: String) -> bool:
+	var err := AWProjectIO.save(project, path)
+	if err != OK:
+		message.emit("Couldn't save %s: %s." % [path, error_string(err)])
+		return false
+	project_path = path
+	_mark_clean()
+	message.emit("Saved %s." % path.get_file())
+	if Engine.is_editor_hint():
+		EditorInterface.get_resource_filesystem().scan()
+	return true
 
 
-func load_project(path: String) -> void:
-	message.emit("Open isn't implemented yet (interface phase): %s" % path) # TODO(logic): ResourceLoader
+## Opens a saved sound, replacing the current one (the caller asks about unsaved changes first).
+## Damaged files are repaired as far as possible; the status line says what was changed.
+func load_project(path: String) -> bool:
+	var r := AWProjectIO.open(path)
+	if not r.ok:
+		message.emit(str(r.error))
+		return false
+	_cancel_export_for_switch()
+	set_project(r.project)
+	project_path = path
+	_reset_history()
+	var repairs: Array = r.repairs
+	if repairs.is_empty():
+		message.emit("Opened %s." % path.get_file())
+	else:
+		message.emit("Opened %s. Repaired %d thing%s: %s" % [path.get_file(), repairs.size(), "" if repairs.size() == 1 else "s", str(repairs[0])])
+	last_repairs = repairs
+	return true
+
+
+## The file name for the title: "Untitled" when never saved, with a star while there are changes.
+func file_label() -> String:
+	var n := project_path.get_file() if project_path != "" else "Untitled"
+	return n + ("*" if is_dirty() else "")
+
+
+## True when the sound has changes that aren't in the file on disk (or it was never saved).
+func is_dirty() -> bool:
+	return _touched or _history().get_version() != _saved_version
+
+
+## Marks changes that don't go through undo (export settings, curve display).
+func touch() -> void:
+	if not _touched:
+		_touched = true
+	file_state_changed.emit()
+
+
+func _mark_clean() -> void:
+	_touched = false
+	_saved_version = _history().get_version()
+	file_state_changed.emit()
+
+
+func _reset_history() -> void:
+	_history().clear_history()
+	_mark_clean()
+	transport_changed.emit()
+
+
+func _cancel_export_for_switch() -> void:
+	if exporting:
+		cancel_export()
 
 
 func set_export_bit_depth(bits: int) -> void:
 	project.export_bit_depth = bits
+	touch()
 	export_settings_changed.emit()
 
 
@@ -141,16 +211,19 @@ func set_export_format(format: String) -> void:
 	var old := p.get_extension().to_lower()
 	if AWProject.FORMATS.has(old) or old == "":
 		project.export_path = (p.get_basename() if old != "" else p.trim_suffix(".")) + "." + format
+	touch()
 	export_settings_changed.emit()
 
 
 func set_export_ogg_quality(q: float) -> void:
 	project.export_ogg_quality = clampf(q, 0.0, 10.0)
+	touch()
 	export_settings_changed.emit()
 
 
 func set_export_path(path: String) -> void:
 	project.export_path = path.strip_edges()
+	touch()
 	export_settings_changed.emit()
 
 
@@ -212,10 +285,6 @@ func export_wav(path: String) -> void:
 func cancel_export() -> void:
 	if _exporter != null:
 		_exporter.cancel()
-
-
-func export_audio_stream(path: String) -> void:
-	message.emit("AudioStream export isn't implemented yet (interface phase): %s" % path) # TODO(logic)
 
 
 # --- Undo / redo --------------------------------------------------------------
