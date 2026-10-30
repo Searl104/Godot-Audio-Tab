@@ -1,9 +1,9 @@
 @tool
 class_name AWLfoPanel
-extends HBoxContainer
-## Content of the "Audio LFO" dock. Left: the open LFO (waveform preview, shape, and knobs for
-## Freq, Accel, Max, Min, Fade In, Fade Out and Smoothing). Right: every LFO in the project as
-## "Clip 2\\Low Pass\\Cutoff"; click one to jump to it. Every change is undoable; knob drags
+extends VBoxContainer
+## Content of the "Audio LFO" dock, laid out as one column so it suits a tall, narrow dock: the open
+## LFO (waveform preview, shape, knobs for Freq, Accel, Max, Min, Fade In, Fade Out and Smoothing),
+## then every LFO in the project as "Clip 2\\Low Pass\\Cutoff"; click one to jump to it. Every change is undoable; knob drags
 ## preview live and commit as one step.
 
 var doc: AWDocument
@@ -24,24 +24,23 @@ func setup(p_doc: AWDocument) -> void:
 
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(520, 200)
-	add_theme_constant_override("separation", 10)
-	var escroll := ScrollContainer.new()
-	escroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	escroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	add_child(escroll)
+	custom_minimum_size = Vector2(250, 200)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	add_child(scroll)
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_theme_constant_override("separation", 8)
+	scroll.add_child(col)
 	_editor = VBoxContainer.new()
 	_editor.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_editor.add_theme_constant_override("separation", 8)
-	escroll.add_child(_editor)
-	add_child(VSeparator.new())
-	var lscroll := ScrollContainer.new()
-	lscroll.custom_minimum_size.x = 250
-	lscroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	add_child(lscroll)
+	col.add_child(_editor)
+	col.add_child(HSeparator.new())
 	_list = VBoxContainer.new()
 	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	lscroll.add_child(_list)
+	col.add_child(_list)
 	doc.lfo_panel_changed.connect(_queue_rebuild)
 	doc.project_changed.connect(func(structural: bool) -> void:
 		if structural or (_curve and _curve.lfo == null) or _list_sig != _signature():
@@ -119,30 +118,27 @@ func _build_editor() -> void:
 	on.toggled.connect(func(v: bool) -> void: doc.set_props(l, {"enabled": v}, "Toggle LFO"))
 	_refreshers.append(func() -> void: on.set_pressed_no_signal(l.enabled))
 	header.add_child(on)
+	_editor.add_child(header)
+	var actions := HBoxContainer.new()
 	var bake := Button.new()
 	bake.text = "Bake to Keys"
 	bake.tooltip_text = "Replace the LFO with ordinary keys you can edit"
 	bake.focus_mode = Control.FOCUS_NONE
+	bake.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bake.pressed.connect(func() -> void: doc.bake_lfo(_chain, _curve))
-	header.add_child(bake)
+	actions.add_child(bake)
 	var remove := Button.new()
 	remove.text = "Remove"
 	remove.tooltip_text = "Remove the LFO from this curve"
 	remove.focus_mode = Control.FOCUS_NONE
+	remove.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	remove.add_theme_color_override("font_color", Color("#f0a0a0"))
 	remove.pressed.connect(func() -> void: doc.remove_lfo(_curve))
-	header.add_child(remove)
-	_editor.add_child(header)
+	actions.add_child(remove)
+	_editor.add_child(actions)
 
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
-	_editor.add_child(row)
-
-	# Left: waveform preview and shape buttons.
-	var left := VBoxContainer.new()
-	left.custom_minimum_size.x = 220
-	left.add_theme_constant_override("separation", 6)
-	row.add_child(left)
+	# Waveform preview and shape buttons.
+	var left := _editor
 	var preview := _Preview.new()
 	preview.lfo = l
 	preview.color = col
@@ -184,12 +180,13 @@ func _build_editor() -> void:
 	_refreshers.append(sync_shape)
 	left.add_child(shapes)
 
-	# Right: knobs.
+	# Knobs wrap to the dock's width.
 	var flow := HFlowContainer.new()
 	flow.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	flow.alignment = FlowContainer.ALIGNMENT_CENTER
 	flow.add_theme_constant_override("h_separation", 2)
 	flow.add_theme_constant_override("v_separation", 2)
-	row.add_child(flow)
+	_editor.add_child(flow)
 	var span := maxf(l.span(), 0.01)
 	var vmax := AWParamBinding.for_property(doc, l, "max_value", "Max", spec[0], spec[1], spec[3], spec[1], spec[4], _curve.scale)
 	var vmin := AWParamBinding.for_property(doc, l, "min_value", "Min", spec[0], spec[1], spec[3], spec[0], spec[4], _curve.scale)

@@ -30,11 +30,11 @@ func _enter_tree() -> void:
 	_detail_dock.default_slot = EditorDock.DOCK_SLOT_BOTTOM
 	_detail_dock.add_child(_main_screen.detail_panel)
 	add_dock(_detail_dock)
-	# The LFO editor and the list of all LFOs get a dock too.
+	# The LFO editor and the list of all LFOs get a dock too (a tall column, so lower right by default).
 	_lfo_dock = EditorDock.new()
 	_lfo_dock.title = "Audio LFO"
 	_lfo_dock.layout_key = "audio_workstation_lfo"
-	_lfo_dock.default_slot = EditorDock.DOCK_SLOT_BOTTOM
+	_lfo_dock.default_slot = EditorDock.DOCK_SLOT_RIGHT_BL
 	_lfo_dock.add_child(_main_screen.lfo_panel)
 	add_dock(_lfo_dock)
 	_main_screen.doc.lfo_panel_changed.connect(func() -> void:
