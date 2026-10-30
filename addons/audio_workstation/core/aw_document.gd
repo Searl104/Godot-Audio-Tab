@@ -135,7 +135,7 @@ func save_project(path: String) -> bool:
 	_mark_clean()
 	message.emit("Saved %s." % path.get_file())
 	if Engine.is_editor_hint():
-		EditorInterface.get_resource_filesystem().scan()
+		AWExporter.tell_editor(path, false) # a saved sound is a plain resource: no import step
 	return true
 
 

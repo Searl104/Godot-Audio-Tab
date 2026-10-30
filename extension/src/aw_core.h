@@ -89,8 +89,14 @@ public:
 		std::vector<std::vector<std::unique_ptr<aw::Effect>>> voice;
 		std::vector<std::unique_ptr<aw::Effect>> master;
 		std::vector<float> scratch;
+		// Which spec each effect came from (index into Voice::effects / master_effects) and its type.
+		std::vector<std::vector<std::pair<size_t, int>>> voice_src;
+		std::vector<std::pair<size_t, int>> master_src;
 		int64_t next = -1; // the frame the next block should start at, or -1
 		void bind(const std::shared_ptr<const Plan> &p_plan, double p_rate);
+		// Takes over a newer plan with the same effect layout (only values changed), keeping all
+		// effect state. Returns false (and changes nothing) when the layout differs. No allocation.
+		bool adopt(const std::shared_ptr<const Plan> &p_plan);
 		void reset();
 	};
 
@@ -117,6 +123,8 @@ private:
 	int64_t off_pos = 0;
 	uint32_t off_rng = 0x9E3779B9u;
 	std::unique_ptr<aw::Encoder> off_enc; // Ogg encoder when one is configured
+	std::atomic<int64_t> fx_adopted{ 0 }; // plan swaps that kept effect state
+	std::atomic<int64_t> fx_rebuilt{ 0 }; // plan swaps that started effects fresh
 	std::atomic<float> load_avg{ 0.0f };
 	std::atomic<float> load_peak{ 0.0f };
 	std::atomic<bool> playing{ false };
@@ -184,6 +192,8 @@ public:
 	int64_t get_api_level() const;
 	// Share of the real-time budget the audio thread used while playing: [recent average, recent peak], 0..1+.
 	Array get_load() const;
+	// [plan swaps that kept effect state, swaps that started fresh] while playing (diagnostics).
+	Array get_fx_swaps() const;
 	int64_t get_plan_end() const;
 	// Offline render in chunks with continuous effect state, straight to PCM bytes (see aw_core.cpp).
 	int64_t export_begin(int64_t p_from_frame);

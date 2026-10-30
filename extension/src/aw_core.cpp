@@ -35,6 +35,7 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_effect_types"), &AWCore::get_effect_types);
 	ClassDB::bind_method(D_METHOD("get_api_level"), &AWCore::get_api_level);
 	ClassDB::bind_method(D_METHOD("get_load"), &AWCore::get_load);
+	ClassDB::bind_method(D_METHOD("get_fx_swaps"), &AWCore::get_fx_swaps);
 	ClassDB::bind_method(D_METHOD("play", "from_frame"), &AWCore::play);
 	ClassDB::bind_method(D_METHOD("stop"), &AWCore::stop);
 	ClassDB::bind_method(D_METHOD("seek", "frame"), &AWCore::seek);
@@ -574,20 +575,67 @@ void AWCore::FxRuntime::bind(const std::shared_ptr<const Plan> &p_plan, double p
 	if (!plan) {
 		return;
 	}
+	voice_src.clear();
+	master_src.clear();
 	for (const Voice &v : plan->voices) {
 		voice.emplace_back();
-		for (const aw::EffectSpec &spec : v.effects) {
-			if (auto e = aw::make_effect(spec, p_rate)) {
+		voice_src.emplace_back();
+		for (size_t i = 0; i < v.effects.size(); i++) {
+			if (auto e = aw::make_effect(v.effects[i], p_rate)) {
 				voice.back().push_back(std::move(e));
+				voice_src.back().emplace_back(i, v.effects[i].type);
 			}
 		}
 	}
-	for (const aw::EffectSpec &spec : plan->master_effects) {
-		if (auto e = aw::make_effect(spec, p_rate)) {
+	for (size_t i = 0; i < plan->master_effects.size(); i++) {
+		if (auto e = aw::make_effect(plan->master_effects[i], p_rate)) {
 			master.push_back(std::move(e));
+			master_src.emplace_back(i, plan->master_effects[i].type);
 		}
 	}
 	scratch.reserve(4096);
+}
+
+static bool same_layout(const std::vector<std::pair<size_t, int>> &p_src, const std::vector<aw::EffectSpec> &p_specs) {
+	size_t made = 0;
+	for (const aw::EffectSpec &s : p_specs) {
+		if (aw::can_make(s)) {
+			made++;
+		}
+	}
+	if (made != p_src.size()) {
+		return false;
+	}
+	for (const auto &e : p_src) {
+		if (e.first >= p_specs.size() || p_specs[e.first].type != e.second || !aw::can_make(p_specs[e.first])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool AWCore::FxRuntime::adopt(const std::shared_ptr<const Plan> &p_plan) {
+	if (!plan || !p_plan || p_plan->voices.size() != plan->voices.size() || voice_src.size() != p_plan->voices.size()) {
+		return false;
+	}
+	for (size_t v = 0; v < p_plan->voices.size(); v++) {
+		if (!same_layout(voice_src[v], p_plan->voices[v].effects)) {
+			return false;
+		}
+	}
+	if (!same_layout(master_src, p_plan->master_effects)) {
+		return false;
+	}
+	for (size_t v = 0; v < voice.size(); v++) {
+		for (size_t i = 0; i < voice[v].size(); i++) {
+			voice[v][i]->rebind(p_plan->voices[v].effects[voice_src[v][i].first]);
+		}
+	}
+	for (size_t i = 0; i < master.size(); i++) {
+		master[i]->rebind(p_plan->master_effects[master_src[i].first]);
+	}
+	plan = p_plan;
+	return true;
 }
 
 void AWCore::FxRuntime::reset() {
@@ -676,7 +724,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 8; // 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 9; // 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
@@ -763,7 +811,10 @@ void AWCore::mix_transport(float *r_out, int64_t p_frames) {
 		} else {
 			limit = std::min(limit, pl->end_frame - pos);
 		}
-		if (fx.plan != pl) {
+		if (fx.plan != pl && fx.adopt(pl)) {
+			fx_adopted.fetch_add(1);
+		} else if (fx.plan != pl) {
+			fx_rebuilt.fetch_add(1);
 			bool swapped = false;
 			{
 				std::lock_guard<std::mutex> lock(plan_mutex);
@@ -788,6 +839,13 @@ void AWCore::mix_transport(float *r_out, int64_t p_frames) {
 		}
 	}
 	position.store(pos);
+}
+
+Array AWCore::get_fx_swaps() const {
+	Array a;
+	a.push_back(fx_adopted.load());
+	a.push_back(fx_rebuilt.load());
+	return a;
 }
 
 Array AWCore::get_load() const {

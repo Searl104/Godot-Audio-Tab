@@ -304,10 +304,24 @@ static func refresh_sources(p: AWProject) -> Array:
 			var now := path_for_uid(c.source_uid)
 			if now != "" and now != c.source_path and source_exists(now):
 				rep.append("%s: its sound moved to %s." % [c.name, now])
+				c.name = follow_name(c.name, c.source_path, now)
 				c.source_path = now
 		elif c.source_path != "":
 			c.source_uid = uid_for_path(c.source_path)
 	return rep
+
+
+## A clip named after its file ("boom", or "boom 2" after a duplicate) takes the new file's name.
+## Names the user typed are kept.
+static func follow_name(name: String, old_path: String, new_path: String) -> String:
+	var old_base := old_path.get_file().get_basename()
+	var new_base := new_path.get_file().get_basename()
+	if old_base == "" or old_base == new_base or not name.begins_with(old_base):
+		return name
+	var rest := name.substr(old_base.length())
+	if rest != "" and not rest.begins_with(" ") and not rest.begins_with("(") and not rest.begins_with("_") and not rest.begins_with("-"):
+		return name # "boomerang" isn't named after "boom"
+	return new_base + rest
 
 
 ## File name -> full path for every audio file under `dir` (first found wins). Used to relink.

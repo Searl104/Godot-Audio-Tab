@@ -76,7 +76,7 @@ double clamp_hz(double hz, double sr) {
 
 // Params: cutoff_hz, resonance.
 class FilterFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	int mode;
 	Biquad bq;
@@ -84,7 +84,8 @@ class FilterFx : public Effect {
 
 public:
 	FilterFx(const EffectSpec &p_spec, double p_sr, int p_mode) :
-			spec(p_spec), sr(p_sr), mode(p_mode) {}
+			spec(&p_spec), sr(p_sr), mode(p_mode) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		bq.clear();
 	}
@@ -92,8 +93,8 @@ public:
 	void process(float *io, int64_t frames, int64_t pos0) override {
 		for (int64_t k = 0; k < frames; k += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - k);
-			const float fc = spec.params[0].at((double)(pos0 + k));
-			const float res = spec.params[1].at((double)(pos0 + k));
+			const float fc = spec->params[0].at((double)(pos0 + k));
+			const float res = spec->params[1].at((double)(pos0 + k));
 			if (fc != last_fc || res != last_res) {
 				last_fc = fc;
 				last_res = res;
@@ -122,14 +123,15 @@ class Eq6Fx : public Effect {
 	static constexpr int BANDS = 6;
 	static constexpr double FREQ[BANDS] = { 32.0, 100.0, 320.0, 1000.0, 3200.0, 10000.0 };
 	static constexpr double Q = 1.0;
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	Biquad bq[BANDS];
 	float last[BANDS] = { 1e9f, 1e9f, 1e9f, 1e9f, 1e9f, 1e9f };
 
 public:
 	Eq6Fx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {}
+			spec(&p_spec), sr(p_sr) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		for (Biquad &b : bq) {
 			b.clear();
@@ -140,7 +142,7 @@ public:
 		for (int64_t k = 0; k < frames; k += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - k);
 			for (int b = 0; b < BANDS; b++) {
-				const float db = spec.params[(size_t)b].at((double)(pos0 + k));
+				const float db = spec->params[(size_t)b].at((double)(pos0 + k));
 				if (db != last[b]) {
 					last[b] = db;
 					if (std::fabs(db) < 0.01f || FREQ[b] >= sr * 0.45) {
@@ -161,12 +163,13 @@ public:
 
 // Params: volume_db. The gain ramps across each control block, so automation doesn't zipper.
 class AmplifyFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	float gain = -1.0f;
 
 public:
 	explicit AmplifyFx(const EffectSpec &p_spec) :
-			spec(p_spec) {}
+			spec(&p_spec) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		gain = -1.0f;
 	}
@@ -174,7 +177,7 @@ public:
 	void process(float *io, int64_t frames, int64_t pos0) override {
 		for (int64_t k = 0; k < frames; k += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - k);
-			const float target = db_to_lin(spec.params[0].at((double)(pos0 + k)));
+			const float target = db_to_lin(spec->params[0].at((double)(pos0 + k)));
 			if (gain < 0.0f) {
 				gain = target;
 			}
@@ -198,14 +201,15 @@ inline float shape(float x, float k) {
 // Params: drive 0..1, pre_gain dB, post_gain dB, keep_hf_hz. Gains and drive ramp per control
 // block. Frequencies above keep_hf_hz (a one-pole split) bypass the shaper.
 class DistortionFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	float pre = -1, post = -1, k = -1;
 	float lp[2] = { 0, 0 };
 
 public:
 	DistortionFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {}
+			spec(&p_spec), sr(p_sr) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		pre = post = k = -1.0f;
 		lp[0] = lp[1] = 0.0f;
@@ -215,11 +219,11 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float drive = std::min(std::max(spec.params[0].at(pos), 0.0f), 1.0f);
-			const float t_pre = db_to_lin(spec.params[1].at(pos));
-			const float t_post = db_to_lin(spec.params[2].at(pos));
+			const float drive = std::min(std::max(spec->params[0].at(pos), 0.0f), 1.0f);
+			const float t_pre = db_to_lin(spec->params[1].at(pos));
+			const float t_post = db_to_lin(spec->params[2].at(pos));
 			const float t_k = 1.0f + 19.0f * drive;
-			const float hf = spec.params[3].at(pos);
+			const float hf = spec->params[3].at(pos);
 			const bool split = hf < (float)(sr * 0.45);
 			const float a = split ? std::exp(-(float)(TWO_PI * std::max(hf, 1.0f) / sr)) : 0.0f;
 			if (pre < 0.0f) {
@@ -253,7 +257,7 @@ public:
 // Params: tap1_delay_ms, tap1_level_db, feedback_level_db, dry (0..1). One tap fed back into
 // itself; the delay time glides across each control block (a moving time bends the pitch).
 class DelayFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	std::vector<float> buf; // interleaved stereo ring
 	int64_t size = 0;
@@ -262,10 +266,11 @@ class DelayFx : public Effect {
 
 public:
 	DelayFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {
+			spec(&p_spec), sr(p_sr) {
 		size = (int64_t)(sr * 1.6) + 8;
 		buf.assign((size_t)size * 2, 0.0f);
 	}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		std::fill(buf.begin(), buf.end(), 0.0f);
 		w = 0;
@@ -276,11 +281,11 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float ms = std::min(std::max(spec.params[0].at(pos), 0.0f), 1500.0f);
+			const float ms = std::min(std::max(spec->params[0].at(pos), 0.0f), 1500.0f);
 			const float t_delay = std::max(1.0f, ms * 0.001f * (float)sr);
-			const float level = db_to_lin(spec.params[1].at(pos));
-			const float fb = std::min(db_to_lin(spec.params[2].at(pos)), 0.995f);
-			const float dry = spec.params[3].at(pos);
+			const float level = db_to_lin(spec->params[1].at(pos));
+			const float fb = std::min(db_to_lin(spec->params[2].at(pos)), 0.995f);
+			const float dry = spec->params[3].at(pos);
 			if (cur_delay < 0.0f) {
 				cur_delay = t_delay;
 			}
@@ -309,13 +314,14 @@ public:
 // Params: threshold dB, ratio, gain (makeup) dB, attack us, release ms, mix 0..1.
 // Feed-forward, stereo-linked peak detector; the gain reduction is smoothed in dB.
 class CompressorFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	float gr = 0.0f; // dB of reduction currently applied
 
 public:
 	CompressorFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {}
+			spec(&p_spec), sr(p_sr) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		gr = 0.0f;
 	}
@@ -324,12 +330,12 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float thr = spec.params[0].at(pos);
-			const float ratio = std::max(spec.params[1].at(pos), 1.0f);
-			const float makeup = db_to_lin(spec.params[2].at(pos));
-			const float att = std::exp(-1.0f / (std::max(spec.params[3].at(pos), 1.0f) * 1e-6f * (float)sr));
-			const float rel = std::exp(-1.0f / (std::max(spec.params[4].at(pos), 1.0f) * 1e-3f * (float)sr));
-			const float mix = std::min(std::max(spec.params[5].at(pos), 0.0f), 1.0f);
+			const float thr = spec->params[0].at(pos);
+			const float ratio = std::max(spec->params[1].at(pos), 1.0f);
+			const float makeup = db_to_lin(spec->params[2].at(pos));
+			const float att = std::exp(-1.0f / (std::max(spec->params[3].at(pos), 1.0f) * 1e-6f * (float)sr));
+			const float rel = std::exp(-1.0f / (std::max(spec->params[4].at(pos), 1.0f) * 1e-3f * (float)sr));
+			const float mix = std::min(std::max(spec->params[5].at(pos), 0.0f), 1.0f);
 			const float slope = 1.0f - 1.0f / ratio;
 			for (int64_t i = 0; i < n; i++) {
 				float &l = io[(b + i) * 2];
@@ -349,13 +355,14 @@ public:
 
 // Params: pre_gain dB, ceiling dB, release s. Instant attack, so nothing passes the ceiling.
 class LimiterFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	float g = 1.0f;
 
 public:
 	LimiterFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {}
+			spec(&p_spec), sr(p_sr) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		g = 1.0f;
 	}
@@ -364,9 +371,9 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float pre = db_to_lin(spec.params[0].at(pos));
-			const float ceil = db_to_lin(std::min(spec.params[1].at(pos), 0.0f));
-			const float rc = 1.0f - std::exp(-1.0f / (std::max(spec.params[2].at(pos), 0.001f) * (float)sr));
+			const float pre = db_to_lin(spec->params[0].at(pos));
+			const float ceil = db_to_lin(std::min(spec->params[1].at(pos), 0.0f));
+			const float rc = 1.0f - std::exp(-1.0f / (std::max(spec->params[2].at(pos), 0.001f) * (float)sr));
 			for (int64_t i = 0; i < n; i++) {
 				float &l = io[(b + i) * 2];
 				float &r = io[(b + i) * 2 + 1];
@@ -390,7 +397,7 @@ public:
 class ReverbFx : public Effect {
 	static constexpr int NCOMB = 8;
 	static constexpr int NAP = 4;
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	struct Comb {
 		std::vector<float> buf;
 		size_t i = 0;
@@ -405,7 +412,7 @@ class ReverbFx : public Effect {
 
 public:
 	ReverbFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec) {
+			spec(&p_spec) {
 		static const int comb_t[NCOMB] = { 1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617 };
 		static const int ap_t[NAP] = { 556, 441, 341, 225 };
 		const double k = p_sr / 44100.0;
@@ -419,6 +426,7 @@ public:
 			}
 		}
 	}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		for (int c = 0; c < 2; c++) {
 			for (int j = 0; j < NCOMB; j++) {
@@ -437,11 +445,11 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float room = std::min(std::max(spec.params[0].at(pos), 0.0f), 1.0f);
-			const float damp = std::min(std::max(spec.params[1].at(pos), 0.0f), 1.0f) * 0.4f;
-			const float spread = std::min(std::max(spec.params[2].at(pos), 0.0f), 1.0f);
-			const float wet = std::min(std::max(spec.params[3].at(pos), 0.0f), 1.0f);
-			const float dry = std::min(std::max(spec.params[4].at(pos), 0.0f), 1.0f);
+			const float room = std::min(std::max(spec->params[0].at(pos), 0.0f), 1.0f);
+			const float damp = std::min(std::max(spec->params[1].at(pos), 0.0f), 1.0f) * 0.4f;
+			const float spread = std::min(std::max(spec->params[2].at(pos), 0.0f), 1.0f);
+			const float wet = std::min(std::max(spec->params[3].at(pos), 0.0f), 1.0f);
+			const float dry = std::min(std::max(spec->params[4].at(pos), 0.0f), 1.0f);
 			const float fb = room * 0.28f + 0.7f;
 			const float w1 = wet * 3.0f * (spread * 0.5f + 0.5f);
 			const float w2 = wet * 3.0f * (1.0f - spread) * 0.5f;
@@ -483,7 +491,7 @@ public:
 // Params: rate_hz, depth_ms, wet, dry. Three modulated delay voices (12, 15, 18 ms centres) with
 // spread phases, panned left / centre / right. Linear interpolation.
 class ChorusFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	std::vector<float> buf;
 	int64_t size = 0;
@@ -492,10 +500,11 @@ class ChorusFx : public Effect {
 
 public:
 	ChorusFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {
+			spec(&p_spec), sr(p_sr) {
 		size = (int64_t)(sr * 0.08) + 8;
 		buf.assign((size_t)size * 2, 0.0f);
 	}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		std::fill(buf.begin(), buf.end(), 0.0f);
 		w = 0;
@@ -509,10 +518,10 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float rate = std::min(std::max(spec.params[0].at(pos), 0.01f), 20.0f);
-			const float depth = std::min(std::max(spec.params[1].at(pos), 0.0f), 20.0f) * 0.001f * (float)sr;
-			const float wet = spec.params[2].at(pos);
-			const float dry = spec.params[3].at(pos);
+			const float rate = std::min(std::max(spec->params[0].at(pos), 0.01f), 20.0f);
+			const float depth = std::min(std::max(spec->params[1].at(pos), 0.0f), 20.0f) * 0.001f * (float)sr;
+			const float wet = spec->params[2].at(pos);
+			const float dry = spec->params[3].at(pos);
 			const double inc = (double)rate / sr;
 			for (int64_t i = 0; i < n; i++) {
 				float *f = io + (b + i) * 2;
@@ -552,7 +561,7 @@ public:
 // Params: rate_hz, feedback, depth. Six first-order allpasses swept on a sine LFO around 840 Hz,
 // +/- (0.93 * depth) octaves; the result is mixed 50/50 with the dry signal for deep notches.
 class PhaserFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	double phase = 0.0;
 	float z[2][6] = {};
@@ -560,7 +569,8 @@ class PhaserFx : public Effect {
 
 public:
 	PhaserFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {}
+			spec(&p_spec), sr(p_sr) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		phase = 0.0;
 		std::fill(&z[0][0], &z[0][0] + 12, 0.0f);
@@ -571,9 +581,9 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float rate = std::min(std::max(spec.params[0].at(pos), 0.01f), 20.0f);
-			const float fb = std::min(std::max(spec.params[1].at(pos), 0.0f), 0.95f);
-			const float depth = std::min(std::max(spec.params[2].at(pos), 0.0f), 4.0f);
+			const float rate = std::min(std::max(spec->params[0].at(pos), 0.01f), 20.0f);
+			const float fb = std::min(std::max(spec->params[1].at(pos), 0.0f), 0.95f);
+			const float depth = std::min(std::max(spec->params[2].at(pos), 0.0f), 4.0f);
 			const double inc = (double)rate / sr;
 			for (int64_t i = 0; i < n; i++) {
 				const float lfo = (float)std::sin(TWO_PI * phase);
@@ -606,7 +616,7 @@ public:
 // Mid/side: the side is scaled by `width` (1 = unchanged, 0 = mono). `time_ms` delays the side
 // signal (a Haas-style spread). `surround` adds a 10 ms delayed, polarity-inverted cross-feed.
 class StereoEnhanceFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	std::vector<float> side_buf; // side history
 	std::vector<float> cross_buf; // cross-feed history (L and R interleaved)
@@ -616,11 +626,12 @@ class StereoEnhanceFx : public Effect {
 
 public:
 	StereoEnhanceFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {
+			spec(&p_spec), sr(p_sr) {
 		size = (int64_t)(sr * 0.06) + 8;
 		side_buf.assign((size_t)size, 0.0f);
 		cross_buf.assign((size_t)size * 2, 0.0f);
 	}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		std::fill(side_buf.begin(), side_buf.end(), 0.0f);
 		std::fill(cross_buf.begin(), cross_buf.end(), 0.0f);
@@ -633,9 +644,9 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float width = std::min(std::max(spec.params[0].at(pos), 0.0f), 4.0f);
-			const float t = std::min(std::max(spec.params[1].at(pos), 0.0f), 50.0f) * 0.001f * (float)sr;
-			const float sur = std::min(std::max(spec.params[2].at(pos), 0.0f), 1.0f);
+			const float width = std::min(std::max(spec->params[0].at(pos), 0.0f), 4.0f);
+			const float t = std::min(std::max(spec->params[1].at(pos), 0.0f), 50.0f) * 0.001f * (float)sr;
+			const float sur = std::min(std::max(spec->params[2].at(pos), 0.0f), 1.0f);
 			if (cur_t < 0.0f) {
 				cur_t = t;
 			}
@@ -670,7 +681,7 @@ public:
 // Params: threshold dB, range dB (how far the closed gate turns the sound down), attack ms,
 // hold ms, release ms, hysteresis dB. Stereo-linked peak detector, no look-ahead.
 class GateFx : public Effect {
-	const EffectSpec &spec;
+	const EffectSpec *spec;
 	double sr;
 	bool open = false;
 	float gain = -1.0f; // current linear gain; negative = not started (snaps to the first target)
@@ -678,7 +689,8 @@ class GateFx : public Effect {
 
 public:
 	GateFx(const EffectSpec &p_spec, double p_sr) :
-			spec(p_spec), sr(p_sr) {}
+			spec(&p_spec), sr(p_sr) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
 	void reset() override {
 		open = false;
 		gain = -1.0f;
@@ -689,12 +701,12 @@ public:
 		for (int64_t b = 0; b < frames; b += CONTROL_BLOCK) {
 			const int64_t n = std::min(CONTROL_BLOCK, frames - b);
 			const double pos = (double)(pos0 + b);
-			const float thr_open = db_to_lin(spec.params[0].at(pos));
-			const float floor_g = db_to_lin(std::min(spec.params[1].at(pos), 0.0f));
-			const float att = std::exp(-1.0f / (std::max(spec.params[2].at(pos), 0.01f) * 0.001f * (float)sr));
-			const int64_t hold = (int64_t)(std::max(spec.params[3].at(pos), 0.0f) * 0.001f * (float)sr);
-			const float rel = std::exp(-1.0f / (std::max(spec.params[4].at(pos), 1.0f) * 0.001f * (float)sr));
-			const float thr_close = thr_open * db_to_lin(-std::max(spec.params[5].at(pos), 0.0f));
+			const float thr_open = db_to_lin(spec->params[0].at(pos));
+			const float floor_g = db_to_lin(std::min(spec->params[1].at(pos), 0.0f));
+			const float att = std::exp(-1.0f / (std::max(spec->params[2].at(pos), 0.01f) * 0.001f * (float)sr));
+			const int64_t hold = (int64_t)(std::max(spec->params[3].at(pos), 0.0f) * 0.001f * (float)sr);
+			const float rel = std::exp(-1.0f / (std::max(spec->params[4].at(pos), 1.0f) * 0.001f * (float)sr));
+			const float thr_close = thr_open * db_to_lin(-std::max(spec->params[5].at(pos), 0.0f));
 			for (int64_t i = 0; i < n; i++) {
 				float *f = io + (b + i) * 2;
 				const float lvl = std::max(std::fabs(f[0]), std::fabs(f[1]));
@@ -768,6 +780,10 @@ static size_t param_count(int type) {
 			return 6;
 	}
 	return 0;
+}
+
+bool can_make(const EffectSpec &p_spec) {
+	return p_spec.type >= FX_LOW_PASS && p_spec.type <= FX_GATE && p_spec.params.size() >= param_count(p_spec.type);
 }
 
 std::unique_ptr<Effect> make_effect(const EffectSpec &p_spec, double p_sr) {

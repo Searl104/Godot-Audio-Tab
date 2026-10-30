@@ -208,13 +208,13 @@ The **Audio Export** dock bakes the whole sound (every clip, clip and master cha
   playback and editing carry on. A test checks a 32-bit export equals the preview render sample for sample.
 - **Progress and cancel:** one-second chunks with progress; the button turns into Cancel. The file is written as
   `name.part` and renamed when complete, so a cancelled or failed export never leaves a broken file or damages an
-  existing one. The FileSystem dock refreshes afterwards.
+  existing one. The editor then imports (or re-imports) the file straight away, so you hear the new export.
 - **Report:** length, size, peak level, and a warning with the count of samples over full scale (WAV 16-bit and Ogg
   clip them; lower the Output volume or add a Limiter).
 - Ogg encoding uses vendored libogg 1.3.5 and libvorbis 1.3.7 (BSD, `extension/thirdparty/`). Needs engine 0.8.0 or newer.
 
 
-## Saving and opening (milestone 6, engine 0.8.1)
+## Saving and opening (milestone 6, engine 0.8.2)
 
 One sound is open at a time. **File > Save / Save As** writes a Godot resource (`.tres`, or `.res`); the sound's name
 and a star for unsaved changes show at the right of the toolbar. **Ctrl+S** works anywhere in the editor, double-clicking
@@ -227,8 +227,11 @@ are unsaved changes.
   and repairs what it can, saying how many things were fixed. A file from a newer version is refused with a message,
   and files from older versions go through migration steps.
 - **Missing sound files:** clips whose file can't be found are marked in red and stay silent, but the sound still opens.
-  Clips remember the file's Godot UID, so renaming or moving it in the editor is followed. Right-click a missing clip for
+  Clips remember the file's Godot UID, so renaming or moving it in the editor is followed, and a clip named after
+  its file takes the new name. Right-click a missing clip for
   **Relink Sound File...** or **Relink From Folder...** (searches a folder by file name; undoable).
+- **Editing while playing:** changing values (knobs, curve keys) keeps each effect's memory and tail, so it
+  doesn't click; only adding, removing or reordering effects or clips restarts the chains. Needs engine 0.8.2 (API 9).
 - **CPU meter:** the toolbar shows how much of the audio thread's time playback uses while playing; amber from 60%,
   red from 90% (dropouts). Needs engine 0.8.1 (API 8). Effect memory is now allocated on the main thread when the plan
   changes, so the audio thread no longer allocates when you edit during playback.

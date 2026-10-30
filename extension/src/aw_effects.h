@@ -51,10 +51,15 @@ public:
 	virtual void process(float *p_io, int64_t p_frames, int64_t p_pos0) = 0;
 	// Clears filter memory and tails (after a seek or a loop wrap). Never allocates.
 	virtual void reset() = 0;
+	// Points the effect at the same card in a newer plan (only parameter values changed), keeping
+	// its filter memory and tails, so editing during playback doesn't click. Never allocates.
+	virtual void rebind(const EffectSpec &p_spec) = 0;
 };
 
-// Returns null for an unknown type. The spec must outlive the effect.
+// Returns null for an unknown type. The spec must outlive the effect (or until rebind).
 std::unique_ptr<Effect> make_effect(const EffectSpec &p_spec, double p_sample_rate);
+// True when make_effect would return an effect for this spec.
+bool can_make(const EffectSpec &p_spec);
 
 // Static curves shared with the UI plots and the tests.
 float distort_shape(float p_x, float p_k); // tanh(k x) / k
