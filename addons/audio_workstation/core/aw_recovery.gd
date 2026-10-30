@@ -14,7 +14,7 @@ static func exists() -> bool:
 
 ## Writes the recovery copy. `original` is the file the sound was opened from ("" if never saved).
 static func write(project: AWProject, original: String) -> Error:
-	var err := AWProjectIO.save(project, PATH)
+	var err := AWProjectIO.save(project, PATH, false)
 	if err != OK:
 		return err
 	var cfg := ConfigFile.new()
