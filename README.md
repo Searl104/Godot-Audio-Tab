@@ -110,7 +110,7 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
 
 ## Native engine (milestones 1 to 4)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
-`● Engine 0.4.2`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
+`● Engine 0.5.0`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
 than the plugin: rebuild it) and everything except sound still works. Build steps: `BUILDING.md`.
 
 **Dry playback (milestone 2).** Play, Stop, seek, loop and double-click audition now make sound.
@@ -190,6 +190,6 @@ Effects can have a custom detail panel. It opens in the **Audio Effect** dock (b
 - `ui/kit/aw_panel_registry.gd`: effect type to panel. To add one, subclass `AWEffectPanel` (`ui/panels/`), register it there.
 - `core/aw_filter_response.gd`: the drawn response mirrors the engine's biquads; the self-test compares it with the engine's measured output.
 
-The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 (API level 3), which evaluates Accel and Smoothing natively.
+The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 or newer (the engine evaluates Accel and Smoothing natively).
 
 Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k` works, Enter applies, Esc cancels), **Ctrl+click to reset**, right-click for options.
