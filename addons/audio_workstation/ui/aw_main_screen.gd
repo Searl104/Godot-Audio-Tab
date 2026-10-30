@@ -25,6 +25,7 @@ var _confirm: ConfirmationDialog
 var _pending_after_ask := Callable()
 var _after_save := Callable()
 var _relink_clip: AWClip
+var _toolbar: AWToolbar
 var _recovery: ConfirmationDialog
 var recovery_prompt_in_tests := false
 
@@ -40,6 +41,7 @@ func _ready() -> void:
 	add_theme_constant_override("separation", 2)
 
 	var toolbar := AWToolbar.new()
+	_toolbar = toolbar
 	toolbar.setup(doc)
 	toolbar.request.connect(_on_request)
 	add_child(toolbar)
@@ -224,6 +226,11 @@ func open_from_editor(path: String) -> void:
 func save_from_editor() -> void:
 	if doc.is_dirty():
 		_on_request("save")
+
+
+func toolbar_update_cpu() -> void:
+	if _toolbar:
+		_toolbar.update_cpu()
 
 
 func _on_request(action: String) -> void:

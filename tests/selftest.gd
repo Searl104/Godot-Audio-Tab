@@ -1351,6 +1351,49 @@ static func _render_project(p: AWProject, secs: float) -> PackedVector2Array:
 	return e.render_preview_range(0.0, secs)
 
 
+static func load_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var e := d.engine
+	var sine := "/tmp/aw_load_sine.wav"
+	write_wav(sine, 4.0, func(i: int, rt: int) -> Vector2i:
+		var v := int(8000.0 * sin(TAU * 200.0 * i / rt))
+		return Vector2i(v, v))
+	# A busy project: 48 clips, each with Delay, Reverb and Chorus, plus a master chain.
+	var p := AWProject.create_default()
+	p.clips.clear()
+	for i in 48:
+		var c := AWClip.new()
+		c.name = "c%d" % i
+		c.source_path = sine
+		c.start_sec = float(i % 12) * 0.5
+		c.length_sec = 3.0
+		c.chain = AWChain.create("Source")
+		for t in ["Delay", "Reverb", "Chorus"]:
+			c.chain.effects.append(AWEffect.create(t, c.chain.new_effect_id()))
+		p.clips.append(c)
+	d.set_project(p)
+	check(e.get_load().size() == 2, "load: get_load returns [average, peak]")
+	var t0 := Time.get_ticks_usec()
+	var out := e.render_preview_range(0.0, 8.0)
+	var secs := (Time.get_ticks_usec() - t0) / 1e6
+	var speed := 8.0 / maxf(secs, 1e-6)
+	print("LOAD busy project: 8 s rendered in %.2f s (%.1fx real time)" % [secs, speed])
+	check(out.size() > 0 and speed > 1.5, "load: a busy project (48 clips x 3 effects) renders faster than real time (%.1fx)" % speed)
+
+	# Playing while the plan changes constantly stays alive and reports a sane load.
+	d.seek(0.0)
+	d.play_pause()
+	for i in 40:
+		d.set_props(p.clips[i % p.clips.size()], {"muted": i % 2 == 0}, "Mute")
+		await tree.process_frame
+	var l := e.get_load()
+	check(is_finite(float(l[0])) and is_finite(float(l[1])) and float(l[1]) >= 0.0, "load: meter reports finite numbers while playing and editing")
+	print("LOAD while playing: avg %.3f peak %.3f" % [float(l[0]), float(l[1])])
+	d.stop()
+	screen.toolbar_update_cpu()
+	d.new_project()
+
+
 static func recovery_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	AWRecovery.discard()
@@ -1692,8 +1735,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.8.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.8.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.8.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.8.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -2407,4 +2450,5 @@ static func run(screen: AWMainScreen) -> void:
 	await save_open_tests(tree, screen)
 	await source_tests(tree, screen)
 	await recovery_tests(tree, screen)
+	await load_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

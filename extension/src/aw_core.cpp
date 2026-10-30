@@ -1,5 +1,7 @@
 #include "aw_core.h"
 
+#include <chrono>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -32,6 +34,7 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_plan_end"), &AWCore::get_plan_end);
 	ClassDB::bind_method(D_METHOD("get_effect_types"), &AWCore::get_effect_types);
 	ClassDB::bind_method(D_METHOD("get_api_level"), &AWCore::get_api_level);
+	ClassDB::bind_method(D_METHOD("get_load"), &AWCore::get_load);
 	ClassDB::bind_method(D_METHOD("play", "from_frame"), &AWCore::play);
 	ClassDB::bind_method(D_METHOD("stop"), &AWCore::stop);
 	ClassDB::bind_method(D_METHOD("seek", "frame"), &AWCore::seek);
@@ -654,11 +657,17 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 	} else {
 		np->end_frame += np->master_tail;
 	}
+	auto staged = std::make_unique<FxRuntime>();
+	staged->bind(np, sample_rate); // allocates the delay and reverb buffers here, not on the audio thread
+	std::unique_ptr<FxRuntime> old_staged;
 	{
 		std::lock_guard<std::mutex> lock(plan_mutex);
 		retired.push_back(plan);
 		plan = np;
+		old_staged = std::move(staged_fx);
+		staged_fx = std::move(staged);
 	}
+	old_staged.reset();
 	// Keep the last couple of plans alive so the audio thread never drops the final reference.
 	while (retired.size() > 2) {
 		retired.erase(retired.begin());
@@ -667,7 +676,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 7; // 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 8; // 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
@@ -755,7 +764,17 @@ void AWCore::mix_transport(float *r_out, int64_t p_frames) {
 			limit = std::min(limit, pl->end_frame - pos);
 		}
 		if (fx.plan != pl) {
-			fx.bind(pl, sample_rate);
+			bool swapped = false;
+			{
+				std::lock_guard<std::mutex> lock(plan_mutex);
+				if (staged_fx && staged_fx->plan == pl) {
+					std::swap(fx, *staged_fx); // the old runtime is freed later by set_plan
+					swapped = true;
+				}
+			}
+			if (!swapped) {
+				fx.bind(pl, sample_rate);
+			}
 		} else if (fx.next != pos) {
 			fx.reset();
 		}
@@ -771,7 +790,15 @@ void AWCore::mix_transport(float *r_out, int64_t p_frames) {
 	position.store(pos);
 }
 
+Array AWCore::get_load() const {
+	Array a;
+	a.push_back((double)load_avg.load());
+	a.push_back((double)load_peak.load());
+	return a;
+}
+
 int32_t AWCore::mix(AudioFrame *p_buffer, int32_t p_frames) {
+	const auto t0 = std::chrono::steady_clock::now();
 	float buf[2048];
 	int32_t done = 0;
 	while (done < p_frames) {
@@ -782,6 +809,12 @@ int32_t AWCore::mix(AudioFrame *p_buffer, int32_t p_frames) {
 			p_buffer[done + i].right = buf[i * 2 + 1];
 		}
 		done += n;
+	}
+	if (p_frames > 0) {
+		const double spent = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		const float r = playing.load() ? (float)(spent / ((double)p_frames / sample_rate)) : 0.0f;
+		load_avg.store(load_avg.load() * 0.9f + r * 0.1f);
+		load_peak.store(std::max(r, load_peak.load() * 0.995f));
 	}
 	return p_frames;
 }
