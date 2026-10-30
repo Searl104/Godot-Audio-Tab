@@ -42,14 +42,18 @@ enum Mode { ABSOLUTE, RELATIVE }
 @export_range(0.0, 1.0, 0.01) var jitter_depth: float = 0.0
 ## Softens the jumps of Square, Saw and Random (0 = hard, 1 = Square becomes a sine, Random fully smooth).
 @export_range(0.0, 1.0, 0.01) var glide: float = 0.0
-## The swing halves every this many seconds (0 = off), dying away into the drawn curve.
-@export_range(0.0, 60.0, 0.01) var decay_sec: float = 0.0
+## ADSR on the swing (how much LFO is heard): Attack = fade_in_sec, then Decay falls from full to
+## Sustain, which holds until Release = fade_out_sec, the last part of the span. (Before format 7,
+## decay_sec was a half-life; old sounds are converted on open.)
+@export_range(0.0, 240.0, 0.01) var decay_sec: float = 0.0
+## Level held after Decay (0..1).
+@export_range(0.0, 1.0, 0.01) var sustain: float = 1.0
 
 
 ## Everything that changes the LFO's output, for caches.
 func signature() -> Array:
 	return [shape, max_value, min_value, freq_hz, fade_in_sec, fade_out_sec, start_sec, end_sec, random_seed,
-		freq_accel, fade_smoothing, mode, depth, phase_deg, jitter_rate, jitter_depth, glide, decay_sec]
+		freq_accel, fade_smoothing, mode, depth, phase_deg, jitter_rate, jitter_depth, glide, decay_sec, sustain]
 
 
 ## Pseudo-random 0..1 for integer k (same formula in C++).
@@ -158,7 +162,7 @@ func swing(t: float) -> float:
 	return (shape_at(p) * 2.0 - 1.0) * cycle_amp(p)
 
 
-## Effective fades (they never overlap: together at most the span).
+## Effective Attack (x) and Release (y): they never overlap, together at most the span.
 func fades() -> Vector2:
 	var fi := clampf(fade_in_sec, 0.0, span())
 	var fo := clampf(fade_out_sec, 0.0, span() - fi)
@@ -170,16 +174,26 @@ func envelope(t: float) -> float:
 	if t < start_sec or t > end_sec or span() <= 0.0:
 		return 0.0
 	var f := fades()
-	var e := 1.0
-	if f.x > 0.0:
-		e = minf(e, (t - start_sec) / f.x)
-	if f.y > 0.0:
-		e = minf(e, (end_sec - t) / f.y)
-	e = clampf(e, 0.0, 1.0)
-	e = e + fade_smoothing * (e * e * (3.0 - 2.0 * e) - e)
-	if decay_sec > 0.0:
-		e *= pow(0.5, (t - start_sec) / decay_sec)
-	return e
+	var rel_start := end_sec - f.y
+	var e := ads_level(minf(t, rel_start) - start_sec, f.x)
+	if f.y > 0.0 and t > rel_start:
+		e *= _shape((end_sec - t) / f.y)
+	return clampf(e, 0.0, 1.0)
+
+
+## Attack, Decay, Sustain at `a` seconds after the start (attack length `att`).
+func ads_level(a: float, att: float) -> float:
+	if att > 0.0 and a < att:
+		return _shape(a / att)
+	if decay_sec > 0.0 and a < att + decay_sec:
+		return 1.0 - (1.0 - sustain) * _shape((a - att) / decay_sec)
+	return sustain
+
+
+## A segment's 0..1 progress, eased by Smoothing.
+func _shape(u: float) -> float:
+	u = clampf(u, 0.0, 1.0)
+	return u + fade_smoothing * (u * u * (3.0 - 2.0 * u) - u)
 
 
 ## One-line description, e.g. "LFO sine 4.0 Hz · 0.20–0.80".

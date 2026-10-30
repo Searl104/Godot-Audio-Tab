@@ -787,6 +787,7 @@ static func sampler_tests(_screen: AWMainScreen) -> void:
 				l2.jitter_depth = [0.4, 0.0, 1.0, 0.6, 0.9][shape]
 				l2.glide = [0.5, 0.3, 0.7, 1.0, 0.6][shape] * variant
 				l2.decay_sec = [0.0, 0.8, 0.0, 1.5, 0.5][shape]
+				l2.sustain = [1.0, 0.3, 0.6, 0.0, 0.5][shape]
 				var r2 := ch.curve_range(curve)
 				l2.min_value = lerpf(r2.x, r2.y, 0.2)
 				l2.max_value = lerpf(r2.x, r2.y, 0.7)
@@ -1633,11 +1634,33 @@ static func lfo_param_tests(ch: AWChain) -> void:
 		saw_step = maxf(saw_step, absf(lsaw.shape_at(i * 0.001) - lsaw.shape_at((i - 1) * 0.001)))
 	check(saw_step < 0.02, "lfo params: Glide removes the Saw's reset jump (largest step %.4f)" % saw_step)
 
-	# Decay: the swing halves every Decay seconds, back towards the curve.
+	# ADSR: Attack 1 s rises to full, Decay 1 s falls to Sustain 0.4, which holds; Release (the last
+	# 1 s of the span) fades from there to nothing.
 	var lde: AWLfo = mk.call()
+	lde.fade_in_sec = 1.0
 	lde.decay_sec = 1.0
-	lde.phase_deg = 90.0
-	check(absf(lde.envelope(1.0) - 0.5) < 1e-6 and absf(lde.envelope(2.0) - 0.25) < 1e-6, "lfo params: Decay halves the swing every second (%.3f, %.3f)" % [lde.envelope(1.0), lde.envelope(2.0)])
+	lde.sustain = 0.4
+	lde.fade_out_sec = 1.0
+	lde.end_sec = 5.0
+	var env := [lde.envelope(0.5), lde.envelope(1.0), lde.envelope(1.5), lde.envelope(2.5), lde.envelope(4.5), lde.envelope(5.0)]
+	check(absf(env[0] - 0.5) < 1e-6 and absf(env[1] - 1.0) < 1e-6 and absf(env[2] - 0.7) < 1e-6 and absf(env[3] - 0.4) < 1e-6 and absf(env[4] - 0.2) < 1e-6 and env[5] < 1e-6, "lfo ADSR: attack, decay to sustain, hold, release (%s)" % str(env))
+	var old := AWProject.create_default()
+	var oc := AWClip.create("c", 0.0, 1.0, 0, Color.RED)
+	old.clips.append(oc)
+	var ocv := AWCurve.new()
+	ocv.effect_id = oc.chain.effects[0].id
+	ocv.param = "gain_db"
+	oc.chain.curves.append(ocv)
+	var ol: AWLfo = mk.call()
+	ol.decay_sec = 1.5 # a format-6 half-life
+	ocv.lfo = ol
+	old.format_version = 6
+	var opath := ProjectSettings.globalize_path("user://aw_old6.tres")
+	ResourceSaver.save(old, opath)
+	var oo := AWProjectIO.open(opath)
+	var ml: AWLfo = oo.project.clips[0].chain.curves[0].lfo if oo.ok else null
+	check(ml != null and absf(ml.decay_sec - 6.0) < 1e-6 and ml.sustain == 0.0, "lfo ADSR: an old half-life Decay converts to Decay 4x to Sustain 0")
+	DirAccess.remove_absolute(opath)
 
 	# Repair clamps the new fields; save and open keeps them.
 	var bad := AWProject.create_default()
@@ -2659,6 +2682,17 @@ static func shared_chain_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	d.new_project()
 	await frames(tree, 3)
 	check(d.chain_tab == AWDocument.ChainTab.CLIP and d.tab_chain == null and cp.find_child("ClipsCard", true, false) == null and cp._cards.is_empty() and cp.tabs.tab_count == 2, "chains: File > New clears the chain panel (tabs: %d)" % cp.tabs.tab_count)
+	# Export outside the project: an absolute path is kept and the file lands there.
+	check(AWMainScreen.export_path_for(ProjectSettings.globalize_path("res://assets/sfx/hit.wav")) == "assets/sfx/hit.wav", "export: a file inside the project is stored relative to it")
+	check(AWMainScreen.export_path_for("/tmp/aw_other_project/sfx/hit.wav") == "/tmp/aw_other_project/sfx/hit.wav", "export: a file elsewhere keeps its absolute path")
+	d.set_export_path(AWMainScreen.export_path_for("/tmp/aw_other_project/sfx/hit.wav"))
+	DirAccess.make_dir_recursive_absolute("/tmp/aw_other_project")
+	nx = d.add_clip_from_path("/tmp/aw_sc_dc.wav", 0, 0.0)
+	var rr: Dictionary = await AWExporter.new().run(d.project, d.export_target(), 16)
+	check(rr.ok and FileAccess.file_exists("/tmp/aw_other_project/sfx/hit.wav"), "export: writes into another folder outside res:// (%s)" % str(rr.error))
+	d.set_export_path("assets/sfx/jump.wav")
+	DirAccess.remove_absolute("/tmp/aw_other_project/sfx/hit.wav")
+
 	# 16 rows from the start.
 	check(screen.timeline.grid.row_count() >= 16, "grid: at least 16 rows (%d)" % screen.timeline.grid.row_count())
 
@@ -3149,8 +3183,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.11.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.11.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.12.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.12.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -3605,7 +3639,7 @@ static func run(screen: AWMainScreen) -> void:
 	var panel := screen.lfo_panel
 	check(panel._curve == wet2 and d.lfo_curve == wet2 and d.active_curve == wet2, "right-click > Edit LFO opens it in the LFO dock")
 	var fk := panel.find_child("freq_hz_knob", true, false) as AWKnob
-	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 13, "thirteen knobs; Freq is logarithmic")
+	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 14, "fourteen knobs; Freq is logarithmic")
 	var f0 := lf.freq_hz
 	click(fk, Vector2(40, 40))
 	move(fk, Vector2(40, -20))

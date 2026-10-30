@@ -296,6 +296,12 @@ func zoom_to_selection() -> void:
 		timeline.fit_all()
 
 
+## How a chosen export file is stored: relative to the project when it's inside it, else absolute.
+static func export_path_for(path: String) -> String:
+	var local := ProjectSettings.localize_path(path.replace("\\", "/"))
+	return local.trim_prefix("res://") if local.begins_with("res://") else path.replace("\\", "/")
+
+
 ## Opens the Import Sound browser; chosen sounds land on `row` (one row each) at `t`.
 func open_import(row := -1, t := -1.0) -> void:
 	_import_at = Vector2(row if row >= 0 else (doc.project.max_row() + 1 if not doc.project.clips.is_empty() else 0), t if t >= 0.0 else doc.playhead_sec)
@@ -381,8 +387,13 @@ func _show_dialog(action: String) -> void:
 			_dialog.access = FileDialog.ACCESS_FILESYSTEM
 			_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
 		"export_browse":
+			# Anywhere on disk, so a sound can be exported straight into another project.
 			_dialog.title = "Export To"
+			_dialog.access = FileDialog.ACCESS_FILESYSTEM
 			_dialog.add_filter("*.wav, *.ogg", "Audio file")
+			var cur := ProjectSettings.globalize_path(doc.export_target()) if doc.export_target() != "" else ""
+			if cur != "":
+				_dialog.current_path = cur
 	_dialog.popup_centered_ratio(0.6)
 
 
@@ -402,6 +413,6 @@ func _on_dialog_path(path: String) -> void:
 			doc.relink_clip(_relink_clip, ProjectSettings.localize_path(path))
 		"relink_folder":
 			doc.relink_in_folder(ProjectSettings.localize_path(path))
-		"export_browse": doc.set_export_path(path.trim_prefix("res://"))
+		"export_browse": doc.set_export_path(export_path_for(path))
 
 

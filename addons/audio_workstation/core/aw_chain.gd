@@ -222,7 +222,7 @@ func native_spec(curve: AWCurve) -> Dictionary:
 			"start": l.start_sec, "end": l.end_sec, "seed": l.random_seed,
 			"accel": l.freq_accel, "smooth": l.fade_smoothing,
 			"mode": l.mode, "depth": l.depth, "phase": l.phase_deg / 360.0, "jit_rate": l.jitter_rate,
-			"jit_depth": l.jitter_depth, "glide": l.glide, "decay": l.decay_sec,
+			"jit_depth": l.jitter_depth, "glide": l.glide, "decay": l.decay_sec, "sustain": l.sustain,
 		}
 	return spec
 

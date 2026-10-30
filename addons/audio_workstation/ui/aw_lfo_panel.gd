@@ -219,8 +219,13 @@ func _build_editor() -> void:
 	var accel := AWParamBinding.for_property(doc, l, "freq_accel", "Accel", -5.0, 5.0, 0.001, 0.0, "mHz/s")
 	accel.unit_factor = 1000.0
 	accel.power = 3.0
-	var fin := AWParamBinding.for_property(doc, l, "fade_in_sec", "Fade In", 0.0, span, 0.01, 0.25, "s")
-	var fout := AWParamBinding.for_property(doc, l, "fade_out_sec", "Fade Out", 0.0, span, 0.01, 0.25, "s")
+	var fin := AWParamBinding.for_property(doc, l, "fade_in_sec", "Attack", 0.0, span, 0.01, 0.25, "s")
+	fin.tooltip = "Attack: how long the swing takes to rise from nothing to full."
+	var fout := AWParamBinding.for_property(doc, l, "fade_out_sec", "Release", 0.0, span, 0.01, 0.25, "s")
+	fout.tooltip = "Release: the swing fades out over the last part of the LFO's span, from whatever level it is at."
+	var sus := AWParamBinding.for_property(doc, l, "sustain", "Sustain", 0.0, 1.0, 0.01, 1.0, "%")
+	sus.unit_factor = 100.0
+	sus.tooltip = "Sustain: the level the swing holds after Decay, until Release."
 	var smooth := AWParamBinding.for_property(doc, l, "fade_smoothing", "Smoothing", 0.0, 1.0, 0.01, 0.0)
 	smooth.tooltip = "0 = straight fade ramps, 1 = fully eased"
 	var depth := AWParamBinding.for_property(doc, l, "depth", "Depth", 0.0, 1.0, 0.001, 0.1, "%")
@@ -238,11 +243,11 @@ func _build_editor() -> void:
 	var glide := AWParamBinding.for_property(doc, l, "glide", "Glide", 0.0, 1.0, 0.01, 0.0, "%")
 	glide.unit_factor = 100.0
 	glide.tooltip = "Softens the jumps of Square, Saw and Random. At 100% Square becomes a sine and Random a smooth drift."
-	var decay := AWParamBinding.for_property(doc, l, "decay_sec", "Decay", 0.0, 60.0, 0.01, 0.0, "s")
+	var decay := AWParamBinding.for_property(doc, l, "decay_sec", "Decay", 0.0, 240.0, 0.01, 0.0, "s")
 	decay.power = 3.0
-	decay.tooltip = "The swing halves every this many seconds, dying away into the drawn curve. 0 = off."
+	decay.tooltip = "Decay: after the Attack peak, the swing falls to the Sustain level over this time. 0 = straight to Sustain."
 	accel.tooltip = "How fast the frequency changes, in milli-Hz per second (1000 = 1 Hz every second). Fine near the middle, wide at the ends. Negative slows down and stops at 0 Hz."
-	for b: AWParamBinding in [freq, accel, vmax, vmin, depth, phase, fin, fout, smooth, jrate, jdepth, glide, decay]:
+	for b: AWParamBinding in [freq, accel, vmax, vmin, depth, phase, fin, decay, sus, fout, smooth, jrate, jdepth, glide]:
 		var k := AWKnob.new()
 		k.setup(b, col, 48)
 		k.bipolar = b.prop == "freq_accel"
@@ -263,7 +268,7 @@ func _build_editor() -> void:
 	sync_mode.call()
 	_refreshers.append(sync_mode)
 
-	var note := AWTheme.dim_label("Freq runs on the clip's clock, so it slows down when Pitch drops. Accel drifts the frequency over time. The fades blend from the drawn curve into the LFO and back; Smoothing eases them. Jitter and Jit Depth make each cycle a little different; Decay lets the swing die away. Double-click a knob to type a value.", 0.6)
+	var note := AWTheme.dim_label("Freq runs on the clip's clock, so it slows down when Pitch drops. Accel drifts the frequency over time. Attack, Decay, Sustain and Release shape how much of the LFO is heard (Release takes the last part of its span); Smoothing eases them. Jitter and Jit Depth make each cycle a little different. Double-click a knob to type a value.", 0.6)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.custom_minimum_size.x = 200
 	note.add_theme_font_size_override("font_size", get_theme_default_font_size() - 2)
