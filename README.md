@@ -110,7 +110,7 @@ Global keys: Space play/pause, Enter stop, Home go to start, L loop, G snap on/o
 
 ## Native engine (milestones 1 to 4)
 The plugin looks for the `AWCore` class at startup. With the library built, the toolbar shows
-`● Engine 0.5.0`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
+`● Engine 0.6.0`; without it, `○ Engine not built` (or `Engine X is out of date` if the library is older
 than the plugin: rebuild it) and everything except sound still works. Build steps: `BUILDING.md`.
 
 **Dry playback (milestone 2).** Play, Stop, seek, loop and double-click audition now make sound.

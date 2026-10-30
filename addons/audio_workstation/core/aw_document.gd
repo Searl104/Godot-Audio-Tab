@@ -486,6 +486,14 @@ func curve_domain_len() -> float:
 	return AWChain.MAX_TIME
 
 
+## Where a new curve or LFO ends by default: the clip's own length (the master's content).
+## Keys can be moved or added past it; beyond the last key a curve holds its value.
+func curve_owner_len() -> float:
+	if chain_tab == ChainTab.CLIP and focus_clip != null:
+		return focus_clip.length_sec
+	return project.content_end_sec() if project != null else 10.0
+
+
 ## The stretch curves are drawn and framed over: the clip's own length, or on through
 ## the export end when that lies later (so tails can be shaped). Master: the whole sound.
 func curve_span_len() -> float:
@@ -820,7 +828,7 @@ func make_curve(chain: AWChain, e: AWEffect, param: String) -> AWCurve:
 	c.scale = AWEffectLibrary.default_scale(e.effect_type, param) as AWCurve.Scale
 	var r := Vector2(AWEffectLibrary.param_spec(e.effect_type, param)[0], AWEffectLibrary.param_spec(e.effect_type, param)[1])
 	var v := AWCurveMath.to_norm(c.scale, e.get_param(param), r.x, r.y)
-	var end := curve_span_len()
+	var end := curve_owner_len()
 	var h := Vector2(end / 3.0, 0.0)
 	var keys := [
 		{"t": 0.0, "v": v, "in": -h, "out": h, "mode": AWCurve.HandleMode.BALANCED},
@@ -970,7 +978,7 @@ func add_lfo(chain: AWChain, c: AWCurve) -> AWLfo:
 		l.min_value = chain.from_norm(c, 0.25)
 		l.max_value = chain.from_norm(c, 0.75)
 	l.start_sec = 0.0
-	l.end_sec = curve_span_len()
+	l.end_sec = curve_owner_len()
 	l.fade_in_sec = minf(0.25, l.span() * 0.25)
 	l.fade_out_sec = minf(0.25, l.span() * 0.25)
 	l.random_seed = randi() % 10000

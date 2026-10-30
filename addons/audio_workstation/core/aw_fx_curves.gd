@@ -30,3 +30,8 @@ static func compressor_db(in_db: float, thr: float, ratio: float, makeup_db: flo
 ## Limiter output level (dB): pre-gain, then nothing above the ceiling.
 static func limiter_db(in_db: float, pre_db: float, ceiling_db: float) -> float:
 	return minf(in_db + pre_db, minf(ceiling_db, 0.0))
+
+
+## Noise Gate level curve: dB in -> dB out (static; ignores attack, hold and hysteresis).
+static func gate_db(x_db: float, threshold_db: float, range_db: float) -> float:
+	return x_db if x_db >= threshold_db else x_db + minf(range_db, 0.0)

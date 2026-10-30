@@ -22,6 +22,11 @@ enum EffectType {
 	FX_DELAY = 7,
 	FX_COMPRESSOR = 8,
 	FX_LIMITER = 9,
+	FX_REVERB = 10,
+	FX_CHORUS = 11,
+	FX_PHASER = 12,
+	FX_STEREO_ENHANCE = 13,
+	FX_GATE = 14,
 };
 
 // One automated parameter: entry i is the value at position i * step (frames); one entry
