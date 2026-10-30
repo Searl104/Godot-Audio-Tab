@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 8:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 9:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -227,6 +227,13 @@ func get_load() -> Array:
 	if core == null:
 		return [0.0, 0.0]
 	return core.call("get_load")
+
+
+## [plan swaps that kept effect state, swaps that started effects fresh] (diagnostics, tests).
+func get_fx_swaps() -> Array:
+	if core == null:
+		return [0, 0]
+	return core.call("get_fx_swaps")
 
 
 func render_preview_range(from_sec: float, length_sec: float) -> PackedVector2Array:

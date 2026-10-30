@@ -103,7 +103,7 @@ func run(project: AWProject, path: String, bits: int, format := "wav", quality :
 		res.error = "Couldn't move the finished file into place (%s)." % error_string(mv)
 		return res
 	if Engine.is_editor_hint():
-		EditorInterface.get_resource_filesystem().scan()
+		tell_editor(path) # not awaited: the result is ready, the import follows
 	res.ok = true
 	res.frames = total
 	res.seconds = float(total) / float(rate)
@@ -111,6 +111,34 @@ func run(project: AWProject, path: String, bits: int, format := "wav", quality :
 	res.peak_db = 20.0 * log(peak) / log(10.0) if peak > 0.0 else -INF
 	res.clipped = clipped
 	return res
+
+
+## Makes the editor import the written file now (runs on in the background; don't await it).
+## A plain scan() isn't enough: it does nothing while another scan is running, and it compares
+## file times at one-second resolution, so a new file could stay unimported, or a file written
+## over an imported one could keep playing the old import until the editor restarts.
+static func tell_editor(path: String, reimport := true) -> void:
+	var local := ProjectSettings.localize_path(path)
+	if not local.begins_with("res://"):
+		return
+	var fs := EditorInterface.get_resource_filesystem()
+	var tree := Engine.get_main_loop() as SceneTree
+	var known := fs.get_file_type(local) != ""
+	if not known:
+		for i in 2: # a scan already running may have passed this folder: wait for it, scan again
+			while fs.is_scanning():
+				await tree.process_frame
+			if fs.get_file_type(local) != "":
+				return # the scan imported it
+			fs.scan()
+			await tree.process_frame
+		return
+	fs.update_file(local)
+	if not reimport:
+		return
+	while fs.is_scanning():
+		await tree.process_frame
+	fs.reimport_files(PackedStringArray([local]))
 
 
 ## RIFF/WAVE header: PCM for 16-bit, IEEE float (with the fact chunk the format asks for) for 32.

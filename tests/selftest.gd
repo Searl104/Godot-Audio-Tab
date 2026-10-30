@@ -1187,6 +1187,29 @@ static func _read_wav(path: String) -> Dictionary:
 
 
 ## Relative error energy between decoded interleaved samples and the render (clamped to full scale).
+## Decodes a WAV with Godot's own loader and playback, as interleaved stereo floats.
+static func _godot_wav_decode(path: String, total: int, options := {}) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	var st := AudioStreamWAV.load_from_file(path, options)
+	if st == null:
+		return out
+	var pb := st.instantiate_playback()
+	pb.start(0.0)
+	var frames := PackedVector2Array()
+	var guard := 0
+	while frames.size() < total and guard < 4000:
+		var got: PackedVector2Array = pb.mix_audio(1.0, mini(4096, total - frames.size()))
+		if got.is_empty():
+			break
+		frames.append_array(got)
+		guard += 1
+	out.resize(frames.size() * 2)
+	for i in frames.size():
+		out[i * 2] = frames[i].x
+		out[i * 2 + 1] = frames[i].y
+	return out
+
+
 static func _rel_error(samples: PackedFloat32Array, ref: PackedVector2Array) -> float:
 	var err := 0.0
 	var energy := 0.0
@@ -1264,6 +1287,17 @@ static func export_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 			worst16 = maxf(worst16, absf(s16[i * 2] - cx))
 	check(r16.ok and w16.ok and w16.bits == 16 and w16.format_tag == 1 and worst16 < 3.0 / 32768.0, "export: 16-bit file is PCM within 3 LSB of the render (worst %.1f LSB)" % (worst16 * 32768.0))
 	check(r16.ok and int(r16.bytes) == int(w16.file_bytes) and int(r16.bytes) == int(w16.frames) * 4 + 44, "export: a 16-bit file is header + 4 bytes a frame")
+
+	# Godot's own WAV loader reads both depths like the preview (its playback lags 2 frames).
+	# Uncompressed and QOA, the import modes a user would pick.
+	for mode in [0, 2]:
+		var g16 := _godot_wav_decode(abs_path, total, {"compress/mode": mode}).slice(4)
+		var e16 := _rel_error(g16, ref)
+		check(g16.size() / 2 > total / 2 and e16 < 1e-5, "export: Godot's WAV loader (compress mode %d) plays the 16-bit file like the preview (error %.1f dB)" % [mode, 10.0 * log(maxf(e16, 1e-12)) / log(10.0)])
+	var r32b: Dictionary = await AWExporter.new().run(ep, abs_path, 32)
+	var g32 := _godot_wav_decode(abs_path, total, {"compress/mode": 0}).slice(4)
+	var e32 := _rel_error(g32, ref)
+	check(r32b.ok and g32.size() / 2 > total / 2 and e32 < 1e-6, "export: Godot's WAV loader plays the 32-bit file like the preview (error %.1f dB)" % (10.0 * log(maxf(e32, 1e-12)) / log(10.0)))
 
 	# Ogg Vorbis: Godot decodes it and it matches the render closely; higher quality means a bigger file.
 	var opath := ProjectSettings.globalize_path("user://aw_export_test.ogg")
@@ -1382,6 +1416,77 @@ static func editor_resource_tests(_tree: SceneTree, screen: AWMainScreen) -> voi
 	d.new_project()
 
 
+## A sound with one clip of a sine at `hz` (for telling exports apart).
+static func _sine_project(hz: float, path: String) -> AWProject:
+	write_wav(path, 1.0, func(i: int, rt: int) -> Vector2i:
+		var v := int(12000.0 * sin(TAU * hz * i / rt))
+		return Vector2i(v, v))
+	var p := AWProject.create_default()
+	var c := AWClip.create("sine", 0.0, 1.0, 0, Color.RED)
+	c.source_path = path
+	p.clips.append(c)
+	p.export_end_sec = 1.0
+	return p
+
+
+## Zero crossings per second of the left channel of an imported stream (a frequency estimate).
+static func _crossings(st: AudioStreamWAV) -> float:
+	if st == null:
+		return -1.0
+	var pb := st.instantiate_playback()
+	pb.start(0.0)
+	var fr: PackedVector2Array = pb.mix_audio(1.0, int(st.mix_rate * 0.5))
+	var n := 0
+	for i in range(1, fr.size()):
+		if (fr[i - 1].x < 0.0) != (fr[i].x < 0.0):
+			n += 1
+	return n / 0.5 / 2.0
+
+
+## Waits until the editor has (re)imported `path` after `since_msec`, up to `max_sec`.
+static func _wait_import(tree: SceneTree, path: String, since_msec: int, max_sec := 20.0) -> void:
+	var fs := EditorInterface.get_resource_filesystem()
+	var t0 := Time.get_ticks_msec()
+	var stable := 0
+	while Time.get_ticks_msec() - t0 < max_sec * 1000.0:
+		await tree.process_frame
+		var imported := FileAccess.file_exists(path + ".import") and FileAccess.get_modified_time(path + ".import") * 1000 >= since_msec / 1000 * 1000 - 1000
+		if fs.is_scanning() or not imported:
+			stable = 0
+			continue
+		stable += 1
+		if stable > 20:
+			print("IMPORT waited %d ms" % (Time.get_ticks_msec() - t0))
+			return
+	print("IMPORT gave up after %d ms" % (Time.get_ticks_msec() - t0))
+
+
+static func reexport_tests(tree: SceneTree, _screen: AWMainScreen) -> void:
+	# Exporting over a file that is already imported: the editor must play the new sound, not the
+	# previously imported one (owner report: a WAV sounded wrong until the editor was restarted).
+	var target := "res://aw_reexport_test.wav"
+	var low := _sine_project(200.0, "/tmp/aw_reexport_200.wav")
+	var high := _sine_project(1000.0, "/tmp/aw_reexport_1000.wav")
+	var r1: Dictionary = await AWExporter.new().run(low, target, 16)
+	await _wait_import(tree, target, int(Time.get_unix_time_from_system() * 1000.0))
+	var first := ResourceLoader.load(target) as AudioStreamWAV # held, like an open inspector or player
+	var f1 := _crossings(first)
+	check(r1.ok and absf(f1 - 200.0) < 10.0, "re-export: first export imported (%.0f Hz)" % f1)
+	await tree.create_timer(1.1).timeout # file times have one-second resolution
+	var t2 := int(Time.get_unix_time_from_system() * 1000.0)
+	var r2: Dictionary = await AWExporter.new().run(high, target, 32)
+	await _wait_import(tree, target, t2)
+	var again := ResourceLoader.load(target) as AudioStreamWAV
+	var f2 := _crossings(again)
+	var f_held := _crossings(first)
+	print("REEXPORT after second export: load %.0f Hz, held copy %.0f Hz" % [f2, f_held])
+	check(r2.ok and absf(f2 - 1000.0) < 20.0, "re-export: loading the file gives the new sound (%.0f Hz)" % f2)
+	check(absf(f_held - 1000.0) < 20.0, "re-export: a copy the editor already held is updated too (%.0f Hz)" % f_held)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(target))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(target + ".import"))
+	EditorInterface.get_resource_filesystem().scan()
+
+
 static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	d.new_project()
@@ -1444,6 +1549,36 @@ static func load_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	print("LOAD while playing: avg %.3f peak %.3f" % [float(l[0]), float(l[1])])
 	d.stop()
 	screen.toolbar_update_cpu()
+
+	# Dragging a knob while playing keeps the effects' state (no reset, no click); adding an
+	# effect changes the layout and starts the effects fresh.
+	var small := AWProject.create_default()
+	for i in 2:
+		var sc := AWClip.new()
+		sc.name = "s%d" % i
+		sc.source_path = sine
+		sc.length_sec = 3.5
+		sc.chain = AWChain.create("Source")
+		for t in ["Delay", "Reverb"]:
+			sc.chain.effects.append(AWEffect.create(t, sc.chain.new_effect_id()))
+		small.clips.append(sc)
+	d.set_project(small)
+	d.seek(0.0)
+	d.play_pause()
+	await frames(tree, 10)
+	var s0: Array = e.get_fx_swaps()
+	var rev: AWEffect = small.clips[0].chain.effects[2]
+	for i in 20:
+		d.preview_param(rev, "wet", 0.1 + 0.02 * i)
+		await frames(tree, 2)
+	var s1: Array = e.get_fx_swaps()
+	print("SWAPS knob drag: kept %d, fresh %d" % [int(s1[0]) - int(s0[0]), int(s1[1]) - int(s0[1])])
+	check(int(s1[0]) - int(s0[0]) >= 5 and int(s1[1]) == int(s0[1]), "playing: a knob drag keeps effect state across plan swaps (kept %d, fresh %d)" % [int(s1[0]) - int(s0[0]), int(s1[1]) - int(s0[1])])
+	d.add_effect(small.clips[0].chain, "Chorus")
+	await frames(tree, 6)
+	var s2: Array = e.get_fx_swaps()
+	check(int(s2[1]) > int(s1[1]), "playing: adding an effect rebuilds the chain")
+	d.stop()
 	d.new_project()
 
 
@@ -1555,6 +1690,23 @@ static func source_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
 	q.clips[0].source_path = "/tmp/aw_src/a/deep/boom.wav"
 	q.clips[0].source_uid = "uid://notarealuid"
 	check(AWProjectIO.refresh_sources(q).is_empty() and q.clips[0].source_path == "/tmp/aw_src/a/deep/boom.wav", "sources: unknown uid leaves path alone")
+	# A file renamed in the editor keeps its UID: the clip follows it, and a clip named after the
+	# file takes the new name (names the user typed stay).
+	write_wav("/tmp/aw_src/b/renamed_hit.wav", 0.5, gen)
+	var uid_id := ResourceUID.create_id()
+	ResourceUID.add_id(uid_id, "/tmp/aw_src/b/renamed_hit.wav")
+	var mv := AWProject.create_default()
+	for nm in ["old_hit", "old_hit 2", "My punch"]:
+		var mc := AWClip.new()
+		mc.name = nm
+		mc.source_path = "/tmp/aw_src/b/old_hit.wav"
+		mc.source_uid = ResourceUID.id_to_text(uid_id)
+		mv.clips.append(mc)
+	var moved := AWProjectIO.refresh_sources(mv)
+	check(moved.size() == 3 and mv.clips[0].source_path == "/tmp/aw_src/b/renamed_hit.wav", "sources: a renamed file is followed by its uid")
+	check(mv.clips[0].name == "renamed_hit" and mv.clips[1].name == "renamed_hit 2" and mv.clips[2].name == "My punch", "sources: clip names follow the file, typed names stay (%s, %s, %s)" % [mv.clips[0].name, mv.clips[1].name, mv.clips[2].name])
+	check(AWProjectIO.follow_name("boomerang", "a/boom.wav", "a/hit.wav") == "boomerang", "sources: a name that only starts with the file name is kept")
+	ResourceUID.remove_id(uid_id)
 	check(AWProjectIO.path_for_uid("") == "" and AWProjectIO.uid_for_path("/tmp/aw_src/b/tick.wav") == "", "sources: files outside the project have no uid")
 
 	# Menu offers relink only for a missing clip.
@@ -1794,8 +1946,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.8.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.8.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.8.2" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.8.2"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -2511,5 +2663,6 @@ static func run(screen: AWMainScreen) -> void:
 	await recovery_tests(tree, screen)
 	await load_tests(tree, screen)
 	await empty_start_tests(tree, screen)
+	await reexport_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)
