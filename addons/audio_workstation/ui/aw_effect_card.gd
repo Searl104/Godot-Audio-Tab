@@ -111,7 +111,7 @@ func _on_menu(id: int) -> void:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.double_click \
 			and event.button_index == MOUSE_BUTTON_LEFT and AWPanelRegistry.has_panel(effect.effect_type):
-		if event.position.y < 34.0 or (panel and panel.plot and Rect2(panel.plot.global_position - global_position, panel.plot.size).has_point(event.position)):
+		if event.position.y < 34.0 or (panel and panel.plot_control() and Rect2(panel.plot_control().global_position - global_position, panel.plot_control().size).has_point(event.position)):
 			doc.open_detail(chain, effect)
 			accept_event()
 

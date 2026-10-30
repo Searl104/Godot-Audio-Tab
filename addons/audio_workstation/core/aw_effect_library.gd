@@ -41,7 +41,7 @@ const EFFECTS := {
 		},
 	},
 	"Delay": {
-		"godot_class": "AudioEffectDelay",
+		"godot_class": "AudioEffectDelay", "color": "#b38bfa", "engine": {"id": 7, "rings": true},
 		"params": {
 			"tap1_delay_ms": [0.0, 1500.0, 250.0, 1.0, "ms", "Time"],
 			"tap1_level_db": [-60.0, 0.0, -6.0, 0.1, "dB", "Level"],
@@ -67,7 +67,7 @@ const EFFECTS := {
 		},
 	},
 	"Distortion": {
-		"godot_class": "AudioEffectDistortion",
+		"godot_class": "AudioEffectDistortion", "color": "#e05555", "engine": {"id": 6, "rings": false},
 		"params": {
 			"drive": [0.0, 1.0, 0.3, 0.01, "", "Drive"],
 			"pre_gain": [-60.0, 60.0, 0.0, 0.1, "dB", "Pre Gain"],
@@ -108,7 +108,7 @@ const EFFECTS := {
 		},
 	},
 	"Compressor": {
-		"godot_class": "AudioEffectCompressor",
+		"godot_class": "AudioEffectCompressor", "color": "#e8834a", "engine": {"id": 8, "rings": false},
 		"params": {
 			"threshold": [-60.0, 0.0, -12.0, 0.1, "dB", "Threshold"],
 			"ratio": [1.0, 48.0, 4.0, 0.1, ":1", "Ratio"],
@@ -119,7 +119,7 @@ const EFFECTS := {
 		},
 	},
 	"Limiter": {
-		"godot_class": "AudioEffectHardLimiter",
+		"godot_class": "AudioEffectHardLimiter", "color": "#d96a8a", "engine": {"id": 9, "rings": false},
 		"params": {
 			"pre_gain_db": [-24.0, 24.0, 0.0, 0.1, "dB", "Pre Gain"],
 			"ceiling_db": [-24.0, 0.0, -0.3, 0.1, "dB", "Ceiling"],

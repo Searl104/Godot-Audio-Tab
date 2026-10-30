@@ -337,6 +337,46 @@ static func effects_tests(screen: AWMainScreen) -> void:
 	# Amplify.
 	check(absf(_through(core, 440.0, [_fx(5, [-6.0206])]) - 0.25) < 0.002, "amplify -6 dB halves the level")
 
+	# Distortion: tanh(k x) / k with k = 1 + 19 drive; keep_hf lets highs bypass it.
+	var d0 := _through(core, 440.0, [_fx(6, [0.0, 0.0, 0.0, 20000.0])])
+	check(absf(d0 - tanh(0.5) / 1.0) < 0.003, "distortion drive 0 is a gentle tanh (%.3f, want %.3f)" % [d0, tanh(0.5)])
+	var d1 := _through(core, 440.0, [_fx(6, [1.0, 0.0, 0.0, 20000.0])])
+	check(absf(d1 - tanh(10.0) / 20.0) < 0.002, "distortion drive 1 squashes the peak to 1/20 (%.3f)" % d1)
+	check(absf(_through(core, 440.0, [_fx(6, [1.0, 0.0, -6.0206, 20000.0])]) - d1 * 0.5) < 0.002, "distortion post gain scales the output")
+	check(_through(core, 10000.0, [_fx(6, [1.0, 0.0, 0.0, 1000.0])]) > 0.4, "distortion keep HF: a 10 kHz tone passes a 1 kHz split almost untouched")
+	check(_through(core, 10000.0, [_fx(6, [1.0, 0.0, 0.0, 20000.0])]) < 0.06, "distortion without the split squashes the same tone")
+
+	# Delay: a 0.3 s burst, a 250 ms tap and feedback.
+	core.call("clear_sources")
+	var dsrc := _sine_source(core, 1000.0, 0.3)
+	core.call("set_plan", [_fx_voice(dsrc, 0.3, float(sr), [_fx(7, [250.0, 0.0, -6.0206, 0.0])], int(0.5 * sr))])
+	var dbuf: PackedVector2Array = core.call("render_range", 0, int(0.8 * sr))
+	check(_peak(dbuf, int(0.01 * sr), int(0.24 * sr)) < 0.01, "delay: nothing before the first tap (dry 0)")
+	check(absf(_peak(dbuf, int(0.27 * sr), int(0.49 * sr)) - 0.5) < 0.02, "delay: first echo at full level, 250 ms late")
+	check(absf(_peak(dbuf, int(0.57 * sr), int(0.74 * sr)) - 0.25) < 0.02, "delay: feedback -6 dB makes the second echo half as loud (%.3f, echo1 %.3f)" % [_peak(dbuf, int(0.57 * sr), int(0.74 * sr)), _peak(dbuf, int(0.27 * sr), int(0.49 * sr))])
+	core.call("set_plan", [_fx_voice(dsrc, 0.3, float(sr), [_fx(7, [250.0, -60.0, -60.0, 1.0])], int(0.5 * sr))])
+	dbuf = core.call("render_range", 0, int(0.8 * sr))
+	check(absf(_peak(dbuf, int(0.02 * sr), int(0.28 * sr)) - 0.5) < 0.01 and _peak(dbuf, int(0.35 * sr), int(0.79 * sr)) < 0.01, "delay: dry 1 and a silent tap leave just the original")
+
+	# Compressor: -6 dB sine, threshold -12, ratio 4 -> about 4.5 dB of reduction.
+	var cmp := [_fx(8, [-12.0, 4.0, 0.0, 20.0, 250.0, 1.0])]
+	var cp := _through(core, 440.0, cmp)
+	var want_c := 0.5 * db_to_linear(-(20.0 * log(0.5) / log(10.0) + 12.0) * 0.75)
+	check(absf(cp - want_c) < 0.03, "compressor: 4:1 above -12 dB (%.3f, want about %.3f)" % [cp, want_c])
+	check(absf(_through(core, 440.0, [_fx(8, [0.0, 4.0, 0.0, 20.0, 250.0, 1.0])]) - 0.5) < 0.005, "compressor: below the threshold nothing changes")
+	check(absf(_through(core, 440.0, [_fx(8, [-12.0, 1.0, 0.0, 20.0, 250.0, 1.0])]) - 0.5) < 0.005, "compressor: ratio 1:1 does nothing")
+	check(absf(_through(core, 440.0, [_fx(8, [-12.0, 4.0, 0.0, 20.0, 250.0, 0.0])]) - 0.5) < 0.005, "compressor: mix 0 is the dry signal")
+	check(absf(_through(core, 440.0, [_fx(8, [-12.0, 4.0, 6.0206, 20.0, 250.0, 1.0])]) - cp * 2.0) < 0.05, "compressor: +6 dB makeup doubles the output")
+
+	check(absf(AWFxCurves.distortion(0.5, 1.0, 0.0, 0.0) - d1) < 0.002 and absf(AWFxCurves.distortion(0.5, 0.0, 0.0, 0.0) - d0) < 0.003, "plot curve equals the engine: distortion")
+	var cp_db := 20.0 * log(cp / 0.5) / log(10.0)
+	check(absf(AWFxCurves.compressor_db(-6.0206, -12.0, 4.0, 0.0, 1.0) - (-6.0206 + cp_db)) < 0.3, "plot curve equals the engine: compressor (%.2f dB vs %.2f dB)" % [AWFxCurves.compressor_db(-6.0206, -12.0, 4.0, 0.0, 1.0), -6.0206 + cp_db])
+
+	# Limiter: nothing passes the ceiling.
+	var lm := _through(core, 440.0, [_fx(9, [12.0, -6.0206, 0.1])])
+	check(lm <= 0.2502 * 2.0 + 0.002 and lm > 0.45, "limiter: +12 dB into a -6 dB ceiling holds at %.4f" % lm)
+	check(absf(_through(core, 440.0, [_fx(9, [0.0, 0.0, 0.1])]) - 0.5) < 0.002, "limiter: below the ceiling the signal is untouched")
+
 	# Automation: a cutoff table sweeping 18 kHz down to 200 Hz closes the filter over time.
 	var sweep := PackedFloat32Array()
 	for i in int(0.8 * sr / 64.0) + 2:
@@ -916,6 +956,48 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	d.remove_effect(ch, amp)
 	await frames(tree, 2)
 
+	# --- Distortion, Delay, Compressor, Limiter ---
+	var plot_cases := [["Distortion", 4], ["Delay", 4], ["Compressor", 6], ["Limiter", 3]]
+	for pc: Array in plot_cases:
+		var t: String = pc[0]
+		var pe := d.add_effect(ch, t)
+		await frames(tree, 3)
+		var pcard: AWEffectCard = screen.chain_panel._cards.back()
+		check(pcard.panel is AWPlotKnobPanel and pcard.panel.compact and pcard.rows.is_empty() and pcard.panel.knobs.size() == pc[1], "%s card is compact: plot and %d knobs" % [t, pc[1]])
+		d.open_detail(ch, pe)
+		await frames(tree, 2)
+		var pp := host.panel as AWPlotKnobPanel
+		check(pp != null and not pp.compact and pp.plot_control() != null, "%s dock panel has its plot" % t)
+		if OS.get_environment("AW_SHOTS") != "" and (t == "Compressor" or t == "Delay"):
+			(screen.chain_panel._cards_box.get_parent() as ScrollContainer).scroll_horizontal = 5000
+			await _panel_shot(tree, d, ch, pe, "aw_panel_%s.png" % t.to_lower())
+		var key: String = AWEffectLibrary.param_schema(t).keys()[0]
+		var kbefore := pe.get_param(key)
+		var pk := pp.knobs[0]
+		pk.size = pk.custom_minimum_size
+		click(pk, Vector2(40, 40))
+		move(pk, Vector2(40, -30))
+		click(pk, Vector2(40, -30), MOUSE_BUTTON_LEFT, false)
+		check(pe.get_param(key) != kbefore, "%s: the first knob edits %s (%.2f)" % [t, key, pe.get_param(key)])
+		d.undo()
+		check(pe.get_param(key) == kbefore, "%s: knob drag is one undo step" % t)
+		if t == "Compressor" or t == "Limiter":
+			var tp := pp.plot_control() as AWTransferPlot
+			tp.size = Vector2(400, 260)
+			pp.refresh()
+			var hx: float = tp.handle.x
+			var hy: float = tp.handle.y
+			var hfrom := Vector2(tp.px(hx), tp.py(hy))
+			if t == "Compressor":
+				drag(tp, hfrom, Vector2(tp.px(-30.0), tp.py(hy)))
+				check(absf(pe.get_param("threshold") + 30.0) < 1.0, "Compressor: dragging the handle sets the threshold (%.1f dB)" % pe.get_param("threshold"))
+			else:
+				drag(tp, hfrom, Vector2(hfrom.x, tp.py(-12.0)))
+				check(absf(pe.get_param("ceiling_db") + 12.0) < 1.0, "Limiter: dragging the handle sets the ceiling (%.1f dB)" % pe.get_param("ceiling_db"))
+			d.undo()
+		d.remove_effect(ch, pe)
+		await frames(tree, 2)
+
 	# --- EQ ---
 	var eq := d.add_effect(ch, "EQ")
 	await frames(tree, 4)
@@ -991,8 +1073,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.4.2" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.4.2"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.5.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.5.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -1229,25 +1311,25 @@ static func run(screen: AWMainScreen) -> void:
 	await frames(tree, 4)
 	var cards := screen.chain_panel._cards
 	check(cards.size() == ch.effects.size(), "one card per effect (%d)" % cards.size())
-	var lim_card: AWEffectCard = cards[1]
+	var lim_card: AWEffectCard = cards[2]
 	var row: AWParamRow = lim_card.rows[0]
 	check(row.curve() == null and row._slider.visible, "uncurved param shows slider + field")
 	var lim: AWEffect = row.effect
 	row._on_menu(1)
 	await frames(tree, 4)
-	check(ch.get_curve(lim.id, "pre_gain_db") != null, "right-click > Make Curve creates curve")
+	check(ch.get_curve(lim.id, "room_size") != null, "right-click > Make Curve creates curve")
 	cards = screen.chain_panel._cards
-	var row2: AWParamRow = (cards[1] as AWEffectCard).rows[0]
+	var row2: AWParamRow = (cards[2] as AWEffectCard).rows[0]
 	check(not row2._slider.visible and row2._curve_value.visible, "curved param shows curve value instead")
 	d.undo()
 	await frames(tree, 4)
-	var row3: AWParamRow = (screen.chain_panel._cards[1] as AWEffectCard).rows[0]
+	var row3: AWParamRow = (screen.chain_panel._cards[2] as AWEffectCard).rows[0]
 	row3._slider.drag_started.emit()
-	row3._slider.value = -6.0
+	row3._slider.value = 0.25
 	row3._slider.drag_ended.emit(true)
-	check(is_equal_approx(ch.effects[1].get_param("pre_gain_db"), -6.0), "slider drag sets value")
+	check(is_equal_approx(ch.effects[2].get_param("room_size"), 0.25), "slider drag sets value")
 	d.undo()
-	check(is_equal_approx(ch.effects[1].get_param("pre_gain_db"), 0.0), "slider drag is one undo step")
+	check(is_equal_approx(ch.effects[2].get_param("room_size"), 0.8), "slider drag is one undo step")
 
 	print("--- trim sync ---")
 	d.select_clip(c4)

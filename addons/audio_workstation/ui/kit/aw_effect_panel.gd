@@ -24,6 +24,11 @@ func setup(p_doc: AWDocument, p_chain: AWChain, p_effect: AWEffect, p_compact :=
 	refresh()
 
 
+## The control a double-click on the card should open the panel from (the plot).
+func plot_control() -> Control:
+	return plot
+
+
 func bind(param: String, scale := -1) -> AWParamBinding:
 	return AWParamBinding.new(doc, chain, effect, param, scale)
 
