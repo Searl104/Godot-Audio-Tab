@@ -106,6 +106,12 @@ private:
 	std::vector<std::shared_ptr<const Plan>> retired; // freed on the main thread only
 
 	FxRuntime fx; // audio thread only
+
+	// An offline render in progress (export): the plan it started with, its effect state and position.
+	std::shared_ptr<const Plan> off_plan;
+	FxRuntime off_rt;
+	int64_t off_pos = 0;
+	uint32_t off_rng = 0x9E3779B9u;
 	std::atomic<bool> playing{ false };
 	std::atomic<int64_t> position{ 0 };
 	std::atomic<bool> loop_enabled{ false };
@@ -170,6 +176,10 @@ public:
 	// Bumped when the plugin needs new behaviour from the engine (older libraries show as out of date).
 	int64_t get_api_level() const;
 	int64_t get_plan_end() const;
+	// Offline render in chunks with continuous effect state, straight to PCM bytes (see aw_core.cpp).
+	int64_t export_begin(int64_t p_from_frame);
+	Dictionary export_next(int64_t p_frames, int64_t p_bits);
+	void export_end();
 
 	// --- Transport ---------------------------------------------------------------
 	void play(int64_t p_from_frame);

@@ -39,6 +39,9 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_playing"), &AWCore::is_playing);
 	ClassDB::bind_method(D_METHOD("get_position"), &AWCore::get_position);
 	ClassDB::bind_method(D_METHOD("render_range", "from_frame", "frames"), &AWCore::render_range);
+	ClassDB::bind_method(D_METHOD("export_begin", "from_frame"), &AWCore::export_begin);
+	ClassDB::bind_method(D_METHOD("export_next", "frames", "bits"), &AWCore::export_next);
+	ClassDB::bind_method(D_METHOD("export_end"), &AWCore::export_end);
 	ClassDB::bind_method(D_METHOD("render", "frames"), &AWCore::render);
 	ClassDB::bind_method(D_METHOD("get_frames_rendered"), &AWCore::get_frames_rendered);
 	ClassDB::bind_method(D_METHOD("reset"), &AWCore::reset);
@@ -662,7 +665,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 5; // 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 6; // 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
@@ -800,6 +803,78 @@ PackedVector2Array AWCore::render_range(int64_t p_from_frame, int64_t p_frames) 
 		w[i] = Vector2(buf[(size_t)i * 2], buf[(size_t)i * 2 + 1]);
 	}
 	return out;
+}
+
+// Starts an offline render at p_from_frame with the current plan and fresh effect state.
+// Returns the plan's end frame (the export marker), or 0 when there is no plan.
+int64_t AWCore::export_begin(int64_t p_from_frame) {
+	off_plan = current_plan();
+	off_pos = std::max<int64_t>(0, p_from_frame);
+	off_rng = 0x9E3779B9u;
+	if (!off_plan) {
+		return 0;
+	}
+	off_rt = FxRuntime();
+	off_rt.bind(off_plan, sample_rate);
+	off_rt.next = off_pos;
+	return off_plan->end_frame;
+}
+
+// Renders the next p_frames of the export and returns them as little-endian interleaved PCM:
+// p_bits 16 = signed 16-bit with TPDF dither, 32 = IEEE float. "peak" is the largest sample before
+// clipping, "clipped" counts samples beyond full scale. Effect state carries over between calls.
+Dictionary AWCore::export_next(int64_t p_frames, int64_t p_bits) {
+	Dictionary result;
+	result["peak"] = 0.0;
+	result["clipped"] = (int64_t)0;
+	result["frames"] = (int64_t)0;
+	if (!off_plan || p_frames <= 0) {
+		result["data"] = PackedByteArray();
+		return result;
+	}
+	std::vector<float> buf((size_t)p_frames * 2, 0.0f);
+	render_voices(*off_plan, off_pos, p_frames, buf.data(), &off_rt);
+	apply_master(*off_plan, off_pos, p_frames, buf.data(), &off_rt);
+	off_rt.next = off_pos + p_frames;
+	off_pos += p_frames;
+
+	const bool f32 = p_bits == 32;
+	PackedByteArray data;
+	data.resize(p_frames * 2 * (f32 ? 4 : 2));
+	uint8_t *w = data.ptrw();
+	float peak = 0.0f;
+	int64_t clipped = 0;
+	auto next_rand = [this]() -> float { // uniform in [-0.5, 0.5)
+		off_rng = off_rng * 1664525u + 1013904223u;
+		return (float)(off_rng >> 8) / 16777216.0f - 0.5f;
+	};
+	for (int64_t i = 0; i < p_frames * 2; i++) {
+		const float x = buf[(size_t)i];
+		const float a = std::fabs(x);
+		peak = std::max(peak, a);
+		if (a > 1.0f) {
+			clipped++;
+		}
+		if (f32) {
+			std::memcpy(w + i * 4, &x, 4);
+		} else {
+			float v = x * 32767.0f + next_rand() + next_rand();
+			v = std::min(std::max(std::nearbyint(v), -32768.0f), 32767.0f);
+			const int16_t s = (int16_t)v;
+			w[i * 2] = (uint8_t)(s & 0xFF);
+			w[i * 2 + 1] = (uint8_t)((s >> 8) & 0xFF);
+		}
+	}
+	result["data"] = data;
+	result["peak"] = (double)peak;
+	result["clipped"] = clipped;
+	result["frames"] = p_frames;
+	return result;
+}
+
+void AWCore::export_end() {
+	off_plan.reset();
+	off_rt = FxRuntime();
 }
 
 PackedVector2Array AWCore::render(int64_t p_frames) {

@@ -17,6 +17,9 @@ var _end: SpinBox
 var _auto: Button
 var _path: LineEdit
 var _warn: Label
+var _export_btn: Button
+var _progress: ProgressBar
+var _result: Label
 var _info: Label
 var _updating := false
 
@@ -108,13 +111,34 @@ func _ready() -> void:
 	_info = AWTheme.dim_label("", 0.7)
 	_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	foot.add_child(_info)
-	var export := Button.new()
-	export.text = "Export..."
-	export.icon = AWTheme.icon(self, &"Save")
-	export.focus_mode = Control.FOCUS_NONE
-	export.pressed.connect(doc.export_now)
-	foot.add_child(export)
+	_export_btn = Button.new()
+	_export_btn.text = "Export"
+	_export_btn.icon = AWTheme.icon(self, &"Save")
+	_export_btn.focus_mode = Control.FOCUS_NONE
+	_export_btn.pressed.connect(func() -> void:
+		if doc.exporting:
+			doc.cancel_export()
+		else:
+			doc.export_now())
+	foot.add_child(_export_btn)
 	box.add_child(foot)
+	_progress = ProgressBar.new()
+	_progress.min_value = 0.0
+	_progress.max_value = 1.0
+	_progress.show_percentage = true
+	_progress.visible = false
+	box.add_child(_progress)
+	_result = Label.new()
+	_result.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_result.custom_minimum_size.x = 200
+	_result.visible = false
+	box.add_child(_result)
+	doc.export_progress.connect(func(f: float) -> void: _progress.value = f)
+	doc.export_finished.connect(func(r: Dictionary) -> void:
+		_result.text = AWExporter.summary(r)
+		_result.add_theme_color_override("font_color", RED_TEXT if (not r.ok and not r.cancelled) or int(r.get("clipped", 0)) > 0 else AWTheme.text(self))
+		_result.visible = true
+		_sync())
 
 	doc.export_settings_changed.connect(_sync)
 	doc.project_changed.connect(func(_s: bool) -> void: _sync())
@@ -175,6 +199,10 @@ func _sync() -> void:
 		_path.remove_theme_color_override("font_color")
 	var tail := maxf(0.0, doc.export_end_sec() - p.last_clip_end_sec())
 	_info.text = "Length %.2f s, tail %.2f s\nAbout %s" % [doc.export_end_sec(), tail, _size_text(doc.export_size_bytes())]
+	_export_btn.text = "Cancel" if doc.exporting else "Export"
+	_progress.visible = doc.exporting
+	if doc.exporting:
+		_result.visible = false
 	_updating = false
 
 
