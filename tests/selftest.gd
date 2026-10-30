@@ -1990,23 +1990,15 @@ static func grid_edit_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	click(grid, from + Vector2(-5.0 * px, 0), MOUSE_BUTTON_LEFT, false)
 	check(c.source_offset_sec <= 0.6 - 0.3 + 0.001, "slip: can't run past the end of the file (offset %.3f)" % c.source_offset_sec)
 
-	# Groups: selecting one selects all; Ctrl+Shift+G ungroups; copies form their own group.
+	# Groups (frames): Ctrl+G frames the selection, Ctrl+Shift+G removes the frame.
 	d.set_selection([a, b] as Array[AWClip])
 	key(screen, KEY_G, true)
-	check(a.group_id != 0 and a.group_id == b.group_id, "groups: Ctrl+G groups the selection")
+	check(d.project.groups.size() == 1 and d.project.group_of(a) != null and d.project.group_of(a) == d.project.group_of(b), "groups: Ctrl+G frames the selection")
 	d.select_clip(a)
-	check(d.selection.size() == 2 and d.is_selected(b), "groups: clicking one selects the group")
-	d.duplicate_selected()
-	var dup: Array[AWClip] = d.selection.duplicate()
-	check(dup.size() == 2 and dup[0].group_id == dup[1].group_id and dup[0].group_id != a.group_id, "groups: a duplicated group is a new group")
-	d.select_clip(a)
-	d.toggle_mute_clips(a)
-	check(a.muted and b.muted, "groups: mute applies to the whole group")
-	d.undo()
+	check(d.selection.size() == 1, "groups: clicking a clip selects only that clip")
 	key(screen, KEY_G, true, true)
-	check(a.group_id == 0 and b.group_id == 0, "groups: Ctrl+Shift+G ungroups")
-	d.select_clip(a)
-	check(d.selection.size() == 1, "groups: after ungrouping a click selects one clip")
+	check(d.project.groups.is_empty() and d.project.group_of(a) == null, "groups: Ctrl+Shift+G ungroups")
+	await frames(tree, 1)
 
 	# Double-click on empty space opens Import at that spot.
 	var opened := [false]
@@ -2693,6 +2685,132 @@ static func layer_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	d.set_edit_mode(AWDocument.EditMode.CLIPS)
 
 
+static func group_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	print("--- groups (frames) ---")
+	var d := screen.doc
+	var tl := screen.timeline
+	var grid := tl.grid
+	var clips := _grid_project(d)
+	var a := clips[0]
+	var b := clips[1]
+	var c := clips[2]
+	d.set_edit_mode(AWDocument.EditMode.CLIPS)
+	d.timeline_view.frame(0.0, 3.0)
+	tl.set_row_height(48.0, 0.0)
+	await frames(tree, 2)
+	d.set_selection([a, b] as Array[AWClip])
+	var g := d.group_selected()
+	await frames(tree, 1)
+	check(g != null and is_equal_approx(g.start_sec, 0.0) and absf(g.end_sec - b.end_sec()) < 1e-6 and g.row == 0 and g.row_count == 2, "group: frame spans the selection (0 to %.2f s, rows 1-2)" % (g.end_sec if g else -1.0))
+	check(d.project.group_clips(g) == [a, b] and d.selected_group == g, "group: its clips are the ones inside the frame; it is selected")
+	check(is_equal_approx(grid.row_top(0), AWClipGrid.STRIP_H) and is_equal_approx(grid.strip_rect(g).position.y, 0.0) and grid.clip_rect(a).position.y > AWClipGrid.STRIP_H, "group: its strip sits above the first row; no clip is covered")
+	check(d.project.groups.size() == 1, "group: one group")
+	d.select_clip(a)
+	check(d.selection == [a] and d.selected_group == null, "group: clicking a clip selects just that clip")
+	# Overlap is refused.
+	d.set_selection([b, c] as Array[AWClip])
+	check(d.group_selected() == null and d.project.groups.size() == 1, "group: a frame that would overlap another is refused")
+	# Live membership.
+	c.row = 1
+	c.start_sec = 0.6
+	check(d.project.group_of(c) == g, "group: a clip moved inside the frame joins")
+	c.row = 2
+	c.start_sec = 1.0
+	check(d.project.group_of(c) == null, "group: moved out again, it leaves")
+	d.project_changed.emit(true)
+	await frames(tree, 1)
+
+	# Drag the strip: the group moves with its clips, one undo step.
+	var px := d.timeline_view.pixels_per_sec
+	var sr := grid.strip_rect(g)
+	var from := Vector2(sr.position.x + sr.size.x * 0.5, sr.position.y + sr.size.y * 0.5)
+	drag(grid, from, from + Vector2(0.5 * px, 0))
+	check(absf(g.start_sec - 0.5) < 1e-4 and absf(a.start_sec - 0.5) < 1e-4 and absf(b.start_sec - 1.0) < 1e-4 and absf(c.start_sec - 1.0) < 1e-6, "group: dragging the strip moves the frame and its clips (c stays)")
+	d.undo()
+	check(is_equal_approx(g.start_sec, 0.0) and is_equal_approx(a.start_sec, 0.0) and is_equal_approx(b.start_sec, 0.5), "group: one undo puts the group and its clips back")
+	# Right end: wider span.
+	sr = grid.strip_rect(g)
+	drag(grid, Vector2(sr.end.x - 2.0, sr.position.y + 9.0), Vector2(d.timeline_view.time_to_x(2.0), sr.position.y + 9.0))
+	check(absf(g.end_sec - 2.0) < 1e-4 and is_equal_approx(g.start_sec, 0.0), "group: dragging the strip's right end sets the span (to %.2f s)" % g.end_sec)
+	# Rows handle: drag down one row; c (row 3, starting at 1.0 s) joins.
+	var hr := grid.handle_rect(g)
+	var hfrom := Vector2(hr.get_center().x, hr.end.y - 6.0)
+	var y3 := grid.row_top(2) + grid.row_height(2) * 0.5
+	drag(grid, hfrom, Vector2(hfrom.x, y3))
+	check(g.row_count == 3 and d.project.group_of(c) == g, "group: the rows handle takes in another row, and its clip joins")
+	d.undo()
+	check(g.row_count == 2 and d.project.group_of(c) == null, "group: undo the rows handle")
+	await frames(tree, 1)
+
+	# Strip buttons: mute, solo, collapse.
+	var bt := grid._strip_buttons(g)
+	click(grid, (bt["mute"] as Rect2).get_center())
+	click(grid, (bt["mute"] as Rect2).get_center(), MOUSE_BUTTON_LEFT, false)
+	check(g.muted and not d.project.is_clip_audible(a) and d.project.is_clip_audible(c), "group: M mutes the group's clips only")
+	d.undo()
+	click(grid, (bt["solo"] as Rect2).get_center())
+	click(grid, (bt["solo"] as Rect2).get_center(), MOUSE_BUTTON_LEFT, false)
+	check(g.solo and d.project.is_clip_audible(a) and not d.project.is_clip_audible(c), "group: S solos the group (others fall silent)")
+	d.undo()
+	var h_before := grid.content_height()
+	click(grid, (bt["collapse"] as Rect2).get_center())
+	click(grid, (bt["collapse"] as Rect2).get_center(), MOUSE_BUTTON_LEFT, false)
+	await frames(tree, 1)
+	check(g.collapsed and is_equal_approx(grid.row_height(0), AWClipGrid.COLLAPSED_ROW_H) and grid.content_height() < h_before and d.project.is_clip_audible(a), "group: collapse folds its rows (the clips still play)")
+	if OS.get_environment("AW_SHOTS") != "":
+		await shot(tree, "aw_group_collapsed.png")
+	d.undo()
+	await frames(tree, 1)
+	check(not g.collapsed and is_equal_approx(grid.row_height(0), grid.row_h), "group: expand again")
+
+	# The group chain is a bus: its clips are mixed, then processed once.
+	var e := d.engine
+	if e.is_available():
+		var peak := func(buf: PackedVector2Array) -> float:
+			var m := 0.0
+			for f in buf:
+				m = maxf(m, maxf(absf(f.x), absf(f.y)))
+			return m
+		var dry_both: float = peak.call(e.render_preview_range(0.6, 0.35))
+		var dry_c: float = peak.call(e.render_preview_range(1.35, 0.1))
+		var gch := d.new_group_chain(g)
+		check(d.chain_tab == AWDocument.ChainTab.GROUP and d.active_chain() == gch and is_equal_approx(d.local_to_view(0.0), g.start_sec), "group chain: its tab shows, curves on the group's clock")
+		var lim := d.add_effect(gch, "Limiter")
+		d.set_param(lim, "ceiling_db", -12.0)
+		var bus_both: float = peak.call(e.render_preview_range(0.6, 0.35))
+		var bus_c: float = peak.call(e.render_preview_range(1.35, 0.1))
+		check(dry_both > 0.3 and bus_both <= db_to_linear(-12.0) * 1.05, "group chain: a limiter on the group holds the mixed clips to its ceiling (%.2f -> %.2f; per-clip limiting would let ~0.5 through)" % [dry_both, bus_both])
+		check(absf(bus_c - dry_c) < 1e-4, "group chain: a clip outside the group is unaffected")
+		if OS.get_environment("AW_SHOTS") != "":
+			await shot(tree, "aw_group_chain.png")
+		d.remove_group_chain(g)
+		check(g.chain == null, "group chain: removed")
+
+	# Save, open, and the format-7 migration.
+	var path := ProjectSettings.globalize_path("user://aw_groups.tres")
+	AWProjectIO.save(d.project, path, false)
+	var o := AWProjectIO.open(path)
+	check(o.ok and o.project.groups.size() == 1 and o.project.groups[0].row_count == 2 and o.project.groups[0].name == g.name, "group: saved and opened")
+	DirAccess.remove_absolute(path)
+	var old := AWProject.create_default()
+	var oa := AWClip.create("a", 0.2, 1.0, 1, Color.RED)
+	var ob := AWClip.create("b", 0.8, 0.5, 2, Color.RED)
+	var oc := AWClip.create("c", 3.0, 0.5, 0, Color.RED)
+	oa.group_id = 4
+	ob.group_id = 4
+	old.clips.append_array([oa, ob, oc])
+	old.format_version = 7
+	var opath := ProjectSettings.globalize_path("user://aw_old7.tres")
+	ResourceSaver.save(old, opath)
+	var oo := AWProjectIO.open(opath)
+	var og: AWGroup = oo.project.groups[0] if oo.ok and not oo.project.groups.is_empty() else null
+	check(og != null and is_equal_approx(og.start_sec, 0.2) and is_equal_approx(og.end_sec, 1.3) and og.row == 1 and og.row_count == 2 and oo.project.clips[0].group_id == 0, "group: format 7 group ids become a frame")
+	DirAccess.remove_absolute(opath)
+	if OS.get_environment("AW_SHOTS") != "":
+		d.select_group(g)
+		await shot(tree, "aw_groups.png")
+
+
 static func navigation_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	var tl := screen.timeline
@@ -2992,14 +3110,17 @@ static func load_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	await frames(tree, 10)
 	var s0: Array = e.get_fx_swaps()
 	var rev: AWEffect = small.clips[0].chain.effects[2]
-	for i in 20:
-		d.preview_param(rev, "wet", 0.1 + 0.02 * i)
+	# A slow machine mixes less often; keep dragging until the audio thread has taken several plans.
+	for i in 150:
+		d.preview_param(rev, "wet", 0.1 + 0.004 * i)
 		await frames(tree, 2)
+		if i >= 20 and int(e.get_fx_swaps()[0]) - int(s0[0]) >= 5:
+			break
 	var s1: Array = e.get_fx_swaps()
 	print("SWAPS knob drag: kept %d, fresh %d" % [int(s1[0]) - int(s0[0]), int(s1[1]) - int(s0[1])])
 	check(int(s1[0]) - int(s0[0]) >= 5 and int(s1[1]) == int(s0[1]), "playing: a knob drag keeps effect state across plan swaps (kept %d, fresh %d)" % [int(s1[0]) - int(s0[0]), int(s1[1]) - int(s0[1])])
 	d.add_effect(small.clips[0].chain, "Chorus")
-	for i in 60: # the audio thread picks the new plan up on its next mix
+	for i in 400: # the audio thread picks the new plan up on its next mix
 		await tree.process_frame
 		if int(e.get_fx_swaps()[1]) > int(s1[1]):
 			break
@@ -3373,8 +3494,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.12.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.12.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.13.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.13.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -4135,6 +4256,7 @@ static func run(screen: AWMainScreen) -> void:
 	await timing_tests(tree, screen)
 	await navigation_tests(tree, screen)
 	await layer_tests(tree, screen)
+	await group_tests(tree, screen)
 	await shared_chain_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

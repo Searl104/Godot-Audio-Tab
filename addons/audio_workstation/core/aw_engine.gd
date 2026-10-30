@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 13:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 14:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -329,13 +329,46 @@ func _rebuild_plan() -> void:
 	if core == null or _project == null:
 		return
 	var voices: Array = []
+	var buses := _group_buses()
 	for clip in _project.clips:
 		if not _project.is_clip_audible(clip):
 			continue
 		var v := _voice_for(clip, int(round(clip.start_sec * _rate())))
 		if not v.is_empty():
+			var g := _project.group_of(clip)
+			if g and buses[1].has(g):
+				v["bus"] = buses[1][g]
 			voices.append(v)
-	core.call("set_plan", voices, _master_plan())
+	var master := _master_plan()
+	if not buses[0].is_empty():
+		master["buses"] = buses[0]
+	core.call("set_plan", voices, master)
+
+
+## Groups with an effect chain become buses: [bus dictionaries, {group: bus index}].
+## A bus's tables run over the group's own clock (0 = its start) up to the end marker.
+func _group_buses() -> Array:
+	var out: Array = []
+	var index := {}
+	var r := _rate()
+	var step_sec := RATE_STEP / r
+	for g in _project.groups:
+		if g.chain == null:
+			continue
+		var fx: Array = []
+		var length_sec := maxf(_end_sec() - g.start_sec, g.span())
+		for e: AWEffect in g.chain.effects:
+			if e.bypass or AWEffectLibrary.engine_id(e.effect_type) == 0:
+				continue
+			var tables: Array = []
+			for key: String in AWEffectLibrary.engine_keys(e.effect_type):
+				tables.append(_table(g.chain, e, key, length_sec, step_sec, AWSampler.VALUE))
+			fx.append({"type": AWEffectLibrary.engine_id(e.effect_type), "params": tables, "step": RATE_STEP})
+		if fx.is_empty():
+			continue
+		index[g] = out.size()
+		out.append({"start_frame": int(round(g.start_sec * r)), "effects": fx})
+	return [out, index]
 
 
 ## One voice for the native core. start_frame is where the clip lands on the timeline.

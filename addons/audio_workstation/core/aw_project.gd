@@ -3,7 +3,7 @@ class_name AWProject
 extends Resource
 ## The saved sound-effect document. All times are in seconds.
 
-const FORMAT_VERSION := 7 # 7: LFO ADSR (Decay is now attack-peak to Sustain; Sustain added); 6: 6: shared effect chains (clips' own effects move into "<clip> FX" chains); 5: markers; 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
+const FORMAT_VERSION := 8 # 8: groups are frames (AWGroup) instead of clip group ids; 7: LFO ADSR (Decay is now attack-peak to Sustain; Sustain added); 6: 6: shared effect chains (clips' own effects move into "<clip> FX" chains); 5: markers; 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
 const CLIP_COLORS := [
 	Color("#4f7fd9"), Color("#d9b63f"), Color("#6fae4f"), Color("#e07a3f"),
 	Color("#a77fd9"), Color("#d95f7a"), Color("#3fb8b0"),
@@ -23,6 +23,8 @@ const CLIP_COLORS := [
 @export var chains: Array[AWChain] = []
 ## Named points on the timeline, kept sorted by time.
 @export var markers: Array[AWMarker] = []
+## Group frames on the grid (they never overlap).
+@export var groups: Array[AWGroup] = []
 
 @export_group("Export")
 ## 16 or 32 (32 = float).
@@ -75,6 +77,11 @@ func export_end_resolved() -> float:
 	for c in clips:
 		if not c.muted:
 			end = maxf(end, c.start_sec + c.play_length() + (AUTO_TAIL_SEC if AWEngine.chain_rings(c.chain) or AWEngine.chain_rings(c.fx_chain) else 0.0))
+	for g in groups:
+		if AWEngine.chain_rings(g.chain):
+			for c in group_clips(g):
+				if not c.muted:
+					end = maxf(end, c.start_sec + c.play_length() + AUTO_TAIL_SEC)
 	if AWEngine.chain_rings(master_chain):
 		end += AUTO_TAIL_SEC
 	return end
@@ -100,6 +107,34 @@ func any_solo() -> bool:
 	for r in rows:
 		if r and r.solo:
 			return true
+	for g in groups:
+		if g.solo:
+			return true
+	return false
+
+
+## The group a clip belongs to (by position), or null.
+func group_of(c: AWClip) -> AWGroup:
+	for g in groups:
+		if g.contains(c.start_sec, c.row):
+			return g
+	return null
+
+
+## The clips inside a group's frame, in timeline order.
+func group_clips(g: AWGroup) -> Array[AWClip]:
+	var out: Array[AWClip] = []
+	for c in clips:
+		if g.contains(c.start_sec, c.row):
+			out.append(c)
+	return out
+
+
+## True when a frame at [s, e) x rows [r0, r1] would overlap a group other than `except`.
+func group_overlaps(s: float, e: float, r0: int, r1: int, except: AWGroup = null) -> bool:
+	for g in groups:
+		if g != except and g.overlaps(s, e, r0, r1):
+			return true
 	return false
 
 
@@ -111,9 +146,18 @@ func row_audible(i: int) -> bool:
 	return not any_solo() or (r != null and r.solo)
 
 
-## Heard in playback and in the export (clip and row mute, row solo).
+## Heard in playback and in the export (clip, row and group mute; row and group solo: while
+## anything is soloed, a clip plays when its row or its group is soloed).
 func is_clip_audible(c: AWClip) -> bool:
-	return not c.muted and row_audible(c.row)
+	if c.muted:
+		return false
+	var g := group_of(c)
+	var r := row(c.row)
+	if (r and r.muted) or (g and g.muted):
+		return false
+	if not any_solo():
+		return true
+	return (r != null and r.solo) or (g != null and g.solo)
 
 
 func row_locked(i: int) -> bool:
@@ -125,6 +169,8 @@ func max_row() -> int:
 	var r := 0
 	for c in clips:
 		r = maxi(r, c.row)
+	for g in groups:
+		r = maxi(r, g.last_row())
 	return r
 
 

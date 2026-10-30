@@ -20,6 +20,7 @@ var _rebuild_queued := false
 var _tab_targets: Array = [] # per tab: "master", "clip", an AWChain, or "+"
 var _menu: PopupMenu
 var _menu_chain: AWChain
+var _menu_group: AWGroup
 var _rename: LineEdit
 var _rename_chain: AWChain
 var _syncing := false
@@ -107,6 +108,11 @@ func _sync_tabs() -> void:
 		tabs.add_tab(ch.name)
 		tabs.set_tab_tooltip(tabs.tab_count - 1, "%s: used by %d clip%s. Right-click: rename, duplicate, delete." % [ch.name, doc.chain_clips(ch).size(), "" if doc.chain_clips(ch).size() == 1 else "s"])
 		_tab_targets.append(ch)
+	for g in doc.project.groups:
+		if g.chain:
+			tabs.add_tab("▣ " + g.name)
+			tabs.set_tab_tooltip(tabs.tab_count - 1, "Group \"%s\": its clips are mixed, then run through this chain once (a bus). Right-click: remove." % g.name)
+			_tab_targets.append(g)
 	tabs.add_tab(" + ")
 	tabs.set_tab_tooltip(tabs.tab_count - 1, "New chain for the selected clips (or group)")
 	_tab_targets.append("+")
@@ -115,6 +121,7 @@ func _sync_tabs() -> void:
 		AWDocument.ChainTab.MASTER: want = 0
 		AWDocument.ChainTab.CLIP: want = 1 if dry else 0
 		AWDocument.ChainTab.CHAIN: want = maxi(0, _tab_targets.find(doc.tab_chain))
+		AWDocument.ChainTab.GROUP: want = maxi(0, _tab_targets.find(doc.tab_group))
 	tabs.current_tab = want
 	_syncing = false
 
@@ -125,6 +132,8 @@ func _on_tab(i: int) -> void:
 	var t: Variant = _tab_targets[i]
 	if t is AWChain:
 		doc.open_chain_tab(t)
+	elif t is AWGroup:
+		doc.open_group_tab(t)
 	elif t == "master":
 		doc.set_chain_tab(AWDocument.ChainTab.MASTER)
 	elif t == "clip":
@@ -141,6 +150,13 @@ func _on_tab_clicked(i: int) -> void:
 
 
 func _on_tab_rmb(i: int) -> void:
+	if i >= 0 and i < _tab_targets.size() and _tab_targets[i] is AWGroup:
+		_menu_group = _tab_targets[i]
+		_menu.clear()
+		_menu.add_item("Remove Group Chain", 10)
+		var gr := tabs.get_tab_rect(i)
+		AWTheme.popup_at(_menu, tabs, gr.position + Vector2(0, gr.size.y))
+		return
 	if i < 0 or i >= _tab_targets.size() or not (_tab_targets[i] is AWChain):
 		return
 	_menu_chain = _tab_targets[i]
@@ -161,6 +177,7 @@ func _on_menu(id: int) -> void:
 		2: doc.duplicate_chain(_menu_chain)
 		3: doc.delete_chain(_menu_chain)
 		4: doc.set_clip_chain(null, _menu_chain)
+		10: doc.remove_group_chain(_menu_group)
 
 
 func start_rename(ch: AWChain) -> void:
@@ -200,6 +217,9 @@ func _rebuild() -> void:
 	match doc.chain_tab:
 		AWDocument.ChainTab.MASTER:
 			_add_chain_cards(doc.project.master_chain, 0)
+		AWDocument.ChainTab.GROUP:
+			if doc.tab_group and doc.tab_group.chain:
+				_add_chain_cards(doc.tab_group.chain, 0)
 		AWDocument.ChainTab.CHAIN:
 			var ch := doc.tab_chain
 			if ch == null:

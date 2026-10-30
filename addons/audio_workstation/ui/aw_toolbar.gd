@@ -159,7 +159,7 @@ func _reverse_selection() -> void:
 
 
 func _group_toggle() -> void:
-	if doc.selection.size() >= 2 and doc.selection.all(func(c: AWClip) -> bool: return c.group_id != 0 and c.group_id == doc.selection[0].group_id):
+	if doc.selected_group != null:
 		doc.ungroup_selected()
 	else:
 		doc.group_selected()

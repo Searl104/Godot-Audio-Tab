@@ -69,14 +69,24 @@ public:
 		// after the clip ends.
 		std::vector<aw::EffectSpec> effects;
 		int64_t tail_frames = 0;
+		// Group bus this voice is mixed into (-1 = straight to the master).
+		int bus = -1;
 
 		void prepare();
 		double warp(double s) const; // clip time -> elapsed project frames
 		double unwarp(double p) const; // elapsed project frames -> clip time
 	};
 
+	// A group bus: its clips are mixed together, then run through the group's chain once.
+	// Parameter tables are over project frames since `start` (the group's start).
+	struct Bus {
+		int64_t start = 0;
+		std::vector<aw::EffectSpec> effects;
+	};
+
 	struct Plan {
 		std::vector<Voice> voices;
+		std::vector<Bus> buses;
 		int64_t end_frame = 0;
 		// Master (Output) volume over project time: entry i is the linear gain at frame
 		// i * master_step; one entry means constant.
@@ -93,10 +103,13 @@ public:
 		std::shared_ptr<const Plan> plan;
 		std::vector<std::vector<std::unique_ptr<aw::Effect>>> voice;
 		std::vector<std::unique_ptr<aw::Effect>> master;
+		std::vector<std::vector<std::unique_ptr<aw::Effect>>> bus;
+		std::vector<std::vector<float>> bus_buf; // one mix buffer per bus (reserved in bind)
 		std::vector<float> scratch;
 		// Which spec each effect came from (index into Voice::effects / master_effects) and its type.
 		std::vector<std::vector<std::pair<size_t, int>>> voice_src;
 		std::vector<std::pair<size_t, int>> master_src;
+		std::vector<std::vector<std::pair<size_t, int>>> bus_src;
 		int64_t next = -1; // the frame the next block should start at, or -1
 		void bind(const std::shared_ptr<const Plan> &p_plan, double p_rate);
 		// Takes over a newer plan with the same effect layout (only values changed), keeping all
@@ -219,6 +232,8 @@ public:
 	// tables, step} and "tail_frames"; master takes the same as "effects" / "tail_frames".
 	// Types: 1 low pass, 2 high pass, 3 band pass, 4 EQ6, 5 amplify.
 	// master["end_frame"], when given, sets the plan's last frame (the export marker).
+	// master["buses"]: Array of {start_frame, effects} group buses; a voice's "bus" (index)
+	// mixes it into that bus, whose chain runs once on the sum before the master.
 	// Returns the plan's last frame (content end, tails included).
 	int64_t set_plan(const Array &p_voices, const Dictionary &p_master = Dictionary());
 	// The effect type ids this build can run (see above).
