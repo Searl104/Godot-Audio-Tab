@@ -23,6 +23,8 @@ signal lfo_panel_changed
 signal file_state_changed
 ## A missing clip asked to be relinked: mode "file" (pick the file) or "folder" (search a folder).
 signal relink_requested(clip: AWClip, mode: String)
+## The grid asked to import sounds at a row and time (the main screen opens the sound browser).
+signal import_requested(row: int, t: float)
 signal export_settings_changed
 signal export_progress(fraction: float)
 signal export_finished(result: Dictionary)
@@ -602,6 +604,62 @@ func set_snap(value: float) -> void:
 
 func toggle_snap() -> void:
 	set_snap(_last_snap if snap_sec <= 0.0 else 0.0)
+
+
+## Adds clips for sound files from anywhere on disk, one row each, starting at `row` / `t`.
+## Files outside the project are copied into it when `copy` is true, else used where they are.
+func import_files(paths: PackedStringArray, row: int, t: float, copy: bool) -> Array[AWClip]:
+	var added: Array[AWClip] = []
+	var copied := 0
+	var external := 0
+	var failed := PackedStringArray()
+	var folder := AWImporter.sound_folder(project_path, project.title)
+	for p in paths:
+		if not is_audio_file(p):
+			continue
+		var use := AWImporter.project_path_of(p)
+		if use == "":
+			if copy:
+				use = AWImporter.copy_into_project(p, folder)
+				if use == "":
+					failed.append(p.get_file())
+					continue
+				copied += 1
+				if Engine.is_editor_hint():
+					AWExporter.tell_editor(use, false)
+			else:
+				use = p.replace("\\", "/")
+				external += 1
+		added.append(add_clip_from_path(use, row, t))
+		row += 1
+	if not added.is_empty():
+		set_selection(added)
+	var msg := "Added %d sound%s." % [added.size(), "" if added.size() == 1 else "s"]
+	if copied > 0:
+		msg += " Copied %d into %s." % [copied, AWImporter.ROOT.path_join(folder).trim_prefix("res://")]
+	if external > 0:
+		msg += " %d stay%s outside the project (marked; right-click > Copy Into Project to bring %s in)." % [external, "s" if external == 1 else "", "it" if external == 1 else "them"]
+	if not failed.is_empty():
+		msg += " Couldn't copy: %s." % ", ".join(failed)
+	message.emit(msg)
+	return added
+
+
+func is_clip_external(c: AWClip) -> bool:
+	return c != null and AWImporter.is_external(c.source_path)
+
+
+## Copies an outside file into the project and points every clip that uses it there (one undo step).
+func copy_clip_into_project(clip: AWClip) -> void:
+	if not is_clip_external(clip):
+		return
+	var dest := AWImporter.copy_into_project(clip.source_path, AWImporter.sound_folder(project_path, project.title))
+	if dest == "":
+		message.emit("Couldn't copy %s into the project." % clip.source_path.get_file())
+		return
+	if Engine.is_editor_hint():
+		AWExporter.tell_editor(dest, false)
+	relink_clip(clip, dest)
 
 
 func is_audio_file(path: String) -> bool:

@@ -26,7 +26,7 @@ func setup(p_doc: AWDocument) -> void:
 func _ready() -> void:
 	add_theme_constant_override("separation", 4)
 	add_child(_menu("File", [["New", "new"], ["Open...", "open"], ["Save", "save"], ["Save As...", "save_as"], [],
-		["Export Sound", "export"]]))
+		["Import Sound...", "import"], ["Export Sound", "export"]]))
 	var edit := MenuButton.new()
 	edit.text = "Edit"
 	edit.flat = true
