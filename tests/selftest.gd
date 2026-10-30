@@ -1454,8 +1454,15 @@ static func run(screen: AWMainScreen) -> void:
 	lk[0]["mode"] = AWCurve.HandleMode.LINEAR
 	lk[1]["mode"] = AWCurve.HandleMode.LINEAR
 	d.set_curve_keys(ch, lpc, lk, "sweep")
-	var mid := ch.sample(lpc, c4.length_sec * 0.5)
+	var mid := ch.sample(lpc, d.curve_span_len() * 0.5)
 	check(absf(mid - sqrt(20.0 * 20500.0)) < 5.0, "straight line on log scale = even sweep in octaves (mid %.0f Hz)" % mid)
+	# Curves are not limited to the clip: a key can sit well past its end.
+	check(d.curve_domain_len() > c4.length_sec * 10.0 and d.curve_span_len() >= c4.length_sec, "curve domain is not the clip length (span %.2f s, clip %.2f s)" % [d.curve_span_len(), c4.length_sec])
+	var far := ch.get_keys(lpc)
+	far.append({"t": c4.length_sec + 5.0, "v": 0.5, "in": Vector2(-0.5, 0.0), "out": Vector2(0.5, 0.0), "mode": AWCurve.HandleMode.BALANCED})
+	d.set_curve_keys(ch, lpc, far, "far key")
+	check(ch.get_keys(lpc).size() == 3 and absf(ch.get_keys(lpc)[2].t - (c4.length_sec + 5.0)) < 1e-4, "a key can be placed 5 s beyond the clip end")
+	d.undo()
 	d.remove_curve(ch, lpc)
 	await frames(tree, 4)
 	var lp_card: AWEffectCard = screen.chain_panel._cards.back()

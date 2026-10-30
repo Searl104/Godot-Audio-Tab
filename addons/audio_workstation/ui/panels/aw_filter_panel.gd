@@ -106,7 +106,7 @@ func _curve_range(c: AWCurve) -> Vector2:
 		return Vector2.ZERO
 	var lo := INF
 	var hi := -INF
-	var span := doc.curve_domain_len()
+	var span := doc.curve_span_len()
 	for i in 41:
 		var v := chain.sample(c, span * float(i) / 40.0)
 		lo = minf(lo, v)

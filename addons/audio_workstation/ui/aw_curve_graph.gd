@@ -546,7 +546,7 @@ func _draw() -> void:
 		_center_hint("Select a clip to see its effect chain and curves.", c_text)
 		return
 	var x0 := local_to_x(0.0)
-	var x1 := local_to_x(doc.curve_domain_len())
+	var x1 := local_to_x(doc.curve_span_len())
 	draw_rect(Rect2(0, 0, maxf(x0, 0.0), size.y), Color(0, 0, 0, 0.22))
 	draw_rect(Rect2(x1, 0, maxf(size.x - x1, 0.0), size.y), Color(0, 0, 0, 0.22))
 
