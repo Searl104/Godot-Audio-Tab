@@ -24,6 +24,7 @@ var _dialog_action := ""
 var _confirm: ConfirmationDialog
 var _pending_after_ask := Callable()
 var _after_save := Callable()
+var _relink_clip: AWClip
 
 
 func setup(plugin: EditorPlugin) -> void:
@@ -84,6 +85,12 @@ func _ready() -> void:
 
 	_dialog = FileDialog.new()
 	_dialog.file_selected.connect(_on_dialog_path)
+	_dialog.dir_selected.connect(_on_dialog_path)
+	doc.relink_requested.connect(func(clip: AWClip, mode: String) -> void:
+		_relink_clip = clip
+		_show_dialog("relink_" + mode))
+	if Engine.is_editor_hint():
+		EditorInterface.get_resource_filesystem().filesystem_changed.connect(doc.refresh_sources)
 	add_child(_dialog)
 	_build_confirm()
 	set_process(true)
@@ -218,6 +225,15 @@ func _show_dialog(action: String) -> void:
 		"save_as":
 			_dialog.title = "Save Sound As"
 			_dialog.add_filter("*.tres, *.res", "Audio Workstation Sound")
+		"relink_file":
+			_dialog.title = "Find the Sound File"
+			_dialog.access = FileDialog.ACCESS_FILESYSTEM
+			_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+			_dialog.add_filter("*.wav, *.ogg, *.mp3", "Audio file")
+		"relink_folder":
+			_dialog.title = "Search This Folder for the Missing Files"
+			_dialog.access = FileDialog.ACCESS_FILESYSTEM
+			_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
 		"export_browse":
 			_dialog.title = "Export To"
 			_dialog.add_filter("*.wav, *.ogg", "Audio file")
@@ -236,6 +252,10 @@ func _on_dialog_path(path: String) -> void:
 			_after_save = Callable()
 			if ok and then.is_valid():
 				then.call()
+		"relink_file":
+			doc.relink_clip(_relink_clip, ProjectSettings.localize_path(path))
+		"relink_folder":
+			doc.relink_in_folder(ProjectSettings.localize_path(path))
 		"export_browse": doc.set_export_path(path.trim_prefix("res://"))
 
 

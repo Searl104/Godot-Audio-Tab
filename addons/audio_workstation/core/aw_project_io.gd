@@ -18,6 +18,7 @@ static func save(project: AWProject, path: String) -> Error:
 	if path == "":
 		return ERR_FILE_BAD_PATH
 	project.format_version = AWProject.FORMAT_VERSION
+	stamp_uids(project)
 	var tmp := path.get_basename() + ".aw_saving." + path.get_extension()
 	var err := ResourceSaver.save(project, tmp)
 	if err != OK:
@@ -58,6 +59,7 @@ static func open(path: String) -> Dictionary:
 		repairs.append("Updated from format %d." % project.format_version)
 		project.format_version += 1
 	repairs.append_array(sanitize(project))
+	repairs.append_array(refresh_sources(project))
 	res.project = project
 	res.ok = true
 	return res
@@ -249,3 +251,71 @@ static func _sanitize_curve(ch: AWChain, c: AWCurve, label: String, rep: Array) 
 
 static func _fin(x: float) -> bool:
 	return not is_nan(x) and not is_inf(x)
+
+
+# --- Source files --------------------------------------------------------------
+
+## "uid://..." for a file Godot knows, or "".
+static func uid_for_path(path: String) -> String:
+	if path == "":
+		return ""
+	var id := ResourceLoader.get_resource_uid(path)
+	return ResourceUID.id_to_text(id) if id != ResourceUID.INVALID_ID else ""
+
+
+## Where Godot currently keeps the file with this UID, or "".
+static func path_for_uid(uid: String) -> String:
+	if uid == "":
+		return ""
+	var id := ResourceUID.text_to_id(uid)
+	if id == ResourceUID.INVALID_ID or not ResourceUID.has_id(id):
+		return ""
+	return ResourceUID.get_id_path(id)
+
+
+static func source_exists(path: String) -> bool:
+	return path != "" and FileAccess.file_exists(path)
+
+
+## Records each clip's file UID (done on save).
+static func stamp_uids(p: AWProject) -> void:
+	for c in p.clips:
+		if c != null and c.source_path != "":
+			var u := uid_for_path(c.source_path)
+			if u != "":
+				c.source_uid = u
+
+
+## Points clips at their files' current paths (a file moved or renamed in the editor keeps its
+## UID). Returns what changed.
+static func refresh_sources(p: AWProject) -> Array:
+	var rep: Array = []
+	for c in p.clips:
+		if c == null:
+			continue
+		if c.source_uid != "":
+			var now := path_for_uid(c.source_uid)
+			if now != "" and now != c.source_path and source_exists(now):
+				rep.append("%s: its sound moved to %s." % [c.name, now])
+				c.source_path = now
+		elif c.source_path != "":
+			c.source_uid = uid_for_path(c.source_path)
+	return rep
+
+
+## File name -> full path for every audio file under `dir` (first found wins). Used to relink.
+static func index_audio_files(dir: String, limit := 20000) -> Dictionary:
+	var out := {}
+	var stack: Array[String] = [dir]
+	var seen := 0
+	while not stack.is_empty() and seen < limit:
+		var d: String = stack.pop_back()
+		for f in DirAccess.get_files_at(d):
+			seen += 1
+			var ext := f.get_extension().to_lower()
+			if (ext == "wav" or ext == "ogg" or ext == "mp3") and not out.has(f):
+				out[f] = d.path_join(f)
+		for sub in DirAccess.get_directories_at(d):
+			if not sub.begins_with("."):
+				stack.append(d.path_join(sub))
+	return out

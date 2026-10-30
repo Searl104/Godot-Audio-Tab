@@ -1351,6 +1351,65 @@ static func _render_project(p: AWProject, secs: float) -> PackedVector2Array:
 	return e.render_preview_range(0.0, secs)
 
 
+static func source_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	DirAccess.make_dir_recursive_absolute("/tmp/aw_src/a/deep")
+	DirAccess.make_dir_recursive_absolute("/tmp/aw_src/b")
+	var gen := func(i: int, rt: int) -> Vector2i:
+		var v := int(9000.0 * sin(TAU * 220.0 * i / rt))
+		return Vector2i(v, v)
+	write_wav("/tmp/aw_src/a/deep/boom.wav", 0.5, gen)
+	write_wav("/tmp/aw_src/b/tick.wav", 0.5, gen)
+	var p := AWProject.create_default()
+	p.clips[0].source_path = "/tmp/aw_src/a/deep/boom.wav"
+	p.clips[1].source_path = "/tmp/aw_src/a/deep/boom.wav"
+	p.clips[2].source_path = "/tmp/aw_src/b/tick.wav"
+	d.set_project(p)
+	check(d.missing_paths().is_empty(), "sources: nothing missing at first")
+	check(not d.is_clip_missing(p.clips[0]), "sources: present clip not marked")
+
+	# Missing files are marked, but the project still opens.
+	var path := "user://aw_src_test.tres"
+	check(d.save_project(path), "sources: saved")
+	DirAccess.remove_absolute("/tmp/aw_src/a/deep/boom.wav")
+	check(d.load_project(path), "sources: opens with a missing file")
+	check(d.missing_paths().size() == 1 and d.is_clip_missing(d.project.clips[0]) and d.is_clip_missing(d.project.clips[1]), "sources: both clips of the missing file are marked")
+	check(not d.is_clip_missing(d.project.clips[2]), "sources: other clip not marked")
+	check(d.project.clips[0].source_path == "/tmp/aw_src/a/deep/boom.wav", "sources: missing path kept so it can be relinked")
+
+	# Relink one file: all clips that used it follow, and undo restores.
+	write_wav("/tmp/aw_src/b/boom2.wav", 0.5, gen)
+	d.relink_clip(d.project.clips[0], "/tmp/aw_src/b/boom2.wav")
+	check(d.missing_paths().is_empty() and d.project.clips[1].source_path == "/tmp/aw_src/b/boom2.wav", "sources: relink moves every clip using the file")
+	d.undo()
+	check(d.is_clip_missing(d.project.clips[0]) and d.project.clips[1].source_path == "/tmp/aw_src/a/deep/boom.wav", "sources: relink undone")
+	d.redo()
+	check(d.missing_paths().is_empty(), "sources: relink redone")
+	d.relink_clip(d.project.clips[0], "/tmp/aw_src/nothing.wav")
+	check(d.project.clips[0].source_path == "/tmp/aw_src/b/boom2.wav", "sources: relink to a missing file refused")
+
+	# Relink from a folder, found by file name.
+	d.undo()
+	check(d.relink_in_folder("/tmp/aw_src/empty_nowhere") == 0, "sources: folder without the file relinks nothing")
+	write_wav("/tmp/aw_src/a/deep/boom.wav", 0.5, gen)
+	check(d.relink_in_folder("/tmp/aw_src/a") == 2 and d.missing_paths().is_empty(), "sources: folder search relinks by name, recursively")
+
+	# Moved files are followed by UID (only for files Godot knows; here, check the mechanism).
+	var q := AWProject.create_default()
+	q.clips[0].source_path = "/tmp/aw_src/a/deep/boom.wav"
+	q.clips[0].source_uid = "uid://notarealuid"
+	check(AWProjectIO.refresh_sources(q).is_empty() and q.clips[0].source_path == "/tmp/aw_src/a/deep/boom.wav", "sources: unknown uid leaves path alone")
+	check(AWProjectIO.path_for_uid("") == "" and AWProjectIO.uid_for_path("/tmp/aw_src/b/tick.wav") == "", "sources: files outside the project have no uid")
+
+	# Menu offers relink only for a missing clip.
+	DirAccess.remove_absolute("/tmp/aw_src/a/deep/boom.wav")
+	d.refresh_sources()
+	check(d.is_clip_missing(d.project.clips[0]), "sources: refresh re-detects missing files")
+	d.relink_requested.connect(func(_c: AWClip, m: String) -> void: print("relink asked: ", m), CONNECT_ONE_SHOT)
+	d.relink_requested.emit(d.project.clips[0], "file")
+	d.new_project()
+
+
 static func save_open_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	var rate := int(AudioServer.get_mix_rate())
@@ -2291,4 +2350,5 @@ static func run(screen: AWMainScreen) -> void:
 		await shot(tree, "aw_master.png")
 	print("--- save and open ---")
 	await save_open_tests(tree, screen)
+	await source_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)
