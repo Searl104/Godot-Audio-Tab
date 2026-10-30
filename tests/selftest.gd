@@ -1471,12 +1471,16 @@ static func run(screen: AWMainScreen) -> void:
 	var sk := panel.find_child("fade_smoothing_knob", true, false) as AWKnob
 	check(ak != null and ak.bipolar and sk != null, "Accel (bipolar) and Smoothing knobs exist")
 	ak.open_entry()
-	ak._entry.text_submitted.emit("-2.5")
-	check(is_equal_approx(lf.freq_accel, -2.5), "typing -2.5 sets the acceleration")
+	ak._entry.text_submitted.emit("-2500")
+	check(is_equal_approx(lf.freq_accel, -2.5) and ak.binding.text() == "-2500 mHz/s", "typing -2500 sets -2.5 Hz/s, shown as %s" % ak.binding.text())
+	var fine_a := ak.binding.from_norm(0.5 + 1.0 / 220.0)
+	var wide_a := ak.binding.from_norm(0.75)
+	check(absf(fine_a) <= 0.001 and absf(wide_a) > 1.0 and absf(ak.binding.to_norm(ak.binding.from_norm(0.8)) - 0.8) < 0.01, "Accel knob is fine near 0 and wide at the ends (1 px = %.3f Hz/s, 75%% = %.2f Hz/s)" % [fine_a, wide_a])
 	sk.open_entry()
 	sk._entry.text_submitted.emit("0.6")
 	check(is_equal_approx(lf.fade_smoothing, 0.6), "typing 0.6 sets the smoothing")
-	d.undo(); d.undo()
+	while lf.freq_accel != 0.0 or lf.fade_smoothing != 0.0:
+		d.undo()
 	check(lf.freq_accel == 0.0 and lf.fade_smoothing == 0.0, "both are undoable")
 
 	print("--- LFO list ---")

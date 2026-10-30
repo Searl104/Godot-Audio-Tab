@@ -197,12 +197,14 @@ func _build_editor() -> void:
 		b.like_effect = e.effect_type
 		b.like_param = _curve.param
 	var freq := AWParamBinding.for_property(doc, l, "freq_hz", "Freq", 0.05, 20.0, 0.01, 4.0, "Hz", AWCurve.Scale.LOG)
-	var accel := AWParamBinding.for_property(doc, l, "freq_accel", "Accel", -20.0, 20.0, 0.01, 0.0, "Hz/s")
+	var accel := AWParamBinding.for_property(doc, l, "freq_accel", "Accel", -20.0, 20.0, 0.001, 0.0, "mHz/s")
+	accel.unit_factor = 1000.0
+	accel.power = 3.0
 	var fin := AWParamBinding.for_property(doc, l, "fade_in_sec", "Fade In", 0.0, span, 0.01, 0.25, "s")
 	var fout := AWParamBinding.for_property(doc, l, "fade_out_sec", "Fade Out", 0.0, span, 0.01, 0.25, "s")
 	var smooth := AWParamBinding.for_property(doc, l, "fade_smoothing", "Smoothing", 0.0, 1.0, 0.01, 0.0)
 	smooth.tooltip = "0 = straight fade ramps, 1 = fully eased"
-	accel.tooltip = "How fast the frequency changes, in Hz per second. Negative slows down and stops at 0 Hz."
+	accel.tooltip = "How fast the frequency changes, in milli-Hz per second (1000 = 1 Hz every second). Fine near the middle, wide at the ends. Negative slows down and stops at 0 Hz."
 	for b: AWParamBinding in [freq, accel, vmax, vmin, fin, fout, smooth]:
 		var k := AWKnob.new()
 		k.setup(b, col, 48)

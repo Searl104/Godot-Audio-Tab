@@ -31,6 +31,11 @@ var like_effect := ""
 var like_param := ""
 ## Extra help shown in the control's tooltip.
 var tooltip := ""
+## Property mode: shown (and typed) as value * unit_factor, e.g. 1000 to show Hz/s as mHz/s.
+var unit_factor := 1.0
+## Bipolar ranges only: > 1 spreads the knob so the middle is fine and the ends coarse
+## (value = hi * sign(x) * |x|^power for a knob position x in -1..1).
+var power := 1.0
 var _orig := 0.0
 
 
@@ -97,11 +102,22 @@ func live_value() -> float:
 
 
 func to_norm(v: float) -> float:
+	if power > 1.0 and hi > 0.0:
+		var x := clampf(v / hi, -1.0, 1.0)
+		return 0.5 + 0.5 * signf(x) * pow(absf(x), 1.0 / power)
 	return AWCurveMath.to_norm(scale, v, lo, hi)
 
 
 func from_norm(n: float) -> float:
+	if power > 1.0 and hi > 0.0:
+		var x := clampf(n, 0.0, 1.0) * 2.0 - 1.0
+		return snappedf(hi * signf(x) * pow(absf(x), power), step)
 	return snappedf(AWCurveMath.from_norm(scale, n, lo, hi), step)
+
+
+func _decimals() -> int:
+	var st := step * unit_factor
+	return 0 if st >= 1.0 else (1 if st >= 0.1 else (2 if st >= 0.01 else 3))
 
 
 func text(v := NAN) -> String:
@@ -109,15 +125,13 @@ func text(v := NAN) -> String:
 	if is_property():
 		if like_effect != "":
 			return AWEffectLibrary.format_value(like_effect, like_param, x)
-		var decimals := 0 if step >= 1.0 else (1 if step >= 0.1 else 2)
-		return String.num(x, decimals) + (" " + unit if unit != "" else "")
+		return String.num(x * unit_factor, _decimals()) + (" " + unit if unit != "" else "")
 	return AWEffectLibrary.format_value(effect.effect_type, param, x)
 
 
 ## The value as typed into an entry field (no unit).
 func edit_text() -> String:
-	var decimals := 0 if step >= 1.0 else (1 if step >= 0.1 else (2 if step >= 0.01 else 3))
-	return String.num(value(), decimals)
+	return String.num(value() * unit_factor, _decimals())
 
 
 ## Parses what the user typed ("2000", "2k", "-6 dB", "0.25"). NAN when it isn't a number.
@@ -129,7 +143,7 @@ func parse_text(t: String) -> float:
 	var v := m.get_string(1).to_float()
 	if m.get_string(2) == "k":
 		v *= 1000.0
-	return v
+	return v / unit_factor
 
 
 func begin() -> void:
