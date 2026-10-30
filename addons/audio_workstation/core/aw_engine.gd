@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 5:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 7:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -228,12 +228,33 @@ func render_preview_range(from_sec: float, length_sec: float) -> PackedVector2Ar
 	return core.call("render_range", int(round(from_sec * _rate())), int(round(length_sec * _rate())))
 
 
-func render_wav(_path: String) -> Error:
-	return ERR_UNAVAILABLE # TODO(logic): offline render of the whole sound (milestone 5).
+## Offline render for export (use on its own AWEngine so playback is left alone). Builds the plan
+## and starts at `from_sec`; returns the total frames up to the end marker (0 = nothing to render).
+func export_begin(from_sec := 0.0) -> int:
+	if core == null or _project == null:
+		return 0
+	_rebuild_plan()
+	return int(core.call("export_begin", int(round(from_sec * _rate()))))
 
 
-func render_audio_stream(_path: String) -> Error:
-	return ERR_UNAVAILABLE # TODO(logic): bake to an AudioStreamWAV resource (milestone 5).
+## The next `frames` of the export as PCM bytes: {data, peak, clipped, frames}.
+func export_next(frames: int, bits: int) -> Dictionary:
+	return core.call("export_next", frames, bits)
+
+
+## Picks a compressed format for the export (kind 1 = Ogg Vorbis, quality -0.1 .. 1.0).
+func export_configure(kind: int, quality: float, total_frames: int) -> bool:
+	return core != null and bool(core.call("export_configure", kind, quality, total_frames))
+
+
+## The last bytes of a compressed export, after the final export_next.
+func export_finish() -> PackedByteArray:
+	return core.call("export_finish")
+
+
+func export_end() -> void:
+	if core != null:
+		core.call("export_end")
 
 
 # --- Plan building ---------------------------------------------------------------

@@ -1143,6 +1143,209 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	d.open_detail(null, null)
 
 
+## Reads back a PCM/float WAV written by the exporter: {rate, bits, channels, frames, samples (interleaved floats)}.
+static func _read_wav(path: String) -> Dictionary:
+	var b := FileAccess.get_file_as_bytes(path)
+	var out := {"ok": false}
+	if b.size() < 44 or b.slice(0, 4).get_string_from_ascii() != "RIFF" or b.slice(8, 12).get_string_from_ascii() != "WAVE":
+		return out
+	var pos := 12
+	var fmt_tag := 0
+	var data_at := -1
+	var data_len := 0
+	while pos + 8 <= b.size():
+		var id := b.slice(pos, pos + 4).get_string_from_ascii()
+		var len := b.decode_u32(pos + 4)
+		if id == "fmt ":
+			fmt_tag = b.decode_u16(pos + 8)
+			out["channels"] = b.decode_u16(pos + 10)
+			out["rate"] = b.decode_u32(pos + 12)
+			out["bits"] = b.decode_u16(pos + 22)
+		elif id == "data":
+			data_at = pos + 8
+			data_len = len
+			break
+		pos += 8 + len
+	if data_at < 0:
+		return out
+	var raw := b.slice(data_at, data_at + data_len)
+	var samples := PackedFloat32Array()
+	if out.bits == 32 and fmt_tag == 3:
+		samples = raw.to_float32_array()
+	elif out.bits == 16 and fmt_tag == 1:
+		samples.resize(raw.size() / 2)
+		for i in samples.size():
+			samples[i] = float(raw.decode_s16(i * 2)) / 32768.0
+	else:
+		return out
+	out["ok"] = true
+	out["format_tag"] = fmt_tag
+	out["samples"] = samples
+	out["frames"] = samples.size() / 2
+	out["file_bytes"] = b.size()
+	return out
+
+
+## Relative error energy between decoded interleaved samples and the render (clamped to full scale).
+static func _rel_error(samples: PackedFloat32Array, ref: PackedVector2Array) -> float:
+	var err := 0.0
+	var energy := 0.0
+	for i in mini(ref.size(), samples.size() / 2):
+		var rx := clampf(ref[i].x, -1.0, 1.0)
+		var ry := clampf(ref[i].y, -1.0, 1.0)
+		err += (samples[i * 2] - rx) * (samples[i * 2] - rx) + (samples[i * 2 + 1] - ry) * (samples[i * 2 + 1] - ry)
+		energy += rx * rx + ry * ry
+	return err / maxf(energy, 1e-12)
+
+
+static func export_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	if screen.engine.core == null:
+		return
+	var rate := int(AudioServer.get_mix_rate())
+	var path := "user://aw_export_test.wav"
+	var abs_path := ProjectSettings.globalize_path(path)
+	DirAccess.remove_absolute(abs_path)
+	# Its own project with real sound: a 220 Hz sine through a Reverb, so there is a tail to compare.
+	var sine := "/tmp/aw_export_sine.wav"
+	write_wav(sine, 1.5, func(i: int, rt: int) -> Vector2i:
+		var v := int(12000.0 * sin(TAU * 220.0 * i / rt))
+		return Vector2i(v, v))
+	var ep := AWProject.new()
+	var sclip := AWClip.create("sine", 0.0, 1.5, 0, Color.RED)
+	sclip.source_path = sine
+	sclip.chain.effects.append(AWEffect.create("Reverb", sclip.chain.new_effect_id()))
+	ep.clips.append(sclip)
+	var ref_engine := AWEngine.new()
+	ref_engine.set_project(ep)
+	var length := ep.export_end_resolved()
+	var total := int(round(length * rate))
+	var ref := ref_engine.render_preview_range(0.0, length)
+
+	# 32-bit float: the file is exactly the preview render, tail and chunk boundaries included.
+	var ex := AWExporter.new()
+	var fractions: Array[float] = []
+	ex.progress.connect(func(f: float) -> void: fractions.append(f))
+	var r: Dictionary = await ex.run(ep, abs_path, 32)
+	check(r.ok and absi(int(r.frames) - total) <= 1, "export: 32-bit run succeeds (%d frames, wanted %d)" % [int(r.frames), total])
+	check(FileAccess.file_exists(abs_path) and not FileAccess.file_exists(abs_path + ".part"), "export: the file exists and no .part is left")
+	var w := _read_wav(abs_path)
+	check(w.ok and w.rate == rate and w.channels == 2 and w.bits == 32 and w.format_tag == 3, "export: header is stereo 32-bit float at the mix rate (%d Hz)" % rate)
+	check(w.ok and int(w.file_bytes) == int(r.bytes) and absi(int(w.frames) - total) <= 1, "export: file size matches the report (%d bytes)" % int(r.bytes))
+	var worst := 0.0
+	var peak := 0.0
+	if w.ok:
+		var smp: PackedFloat32Array = w.samples
+		var n := mini(ref.size(), int(w.frames))
+		for i in n:
+			worst = maxf(worst, maxf(absf(smp[i * 2] - ref[i].x), absf(smp[i * 2 + 1] - ref[i].y)))
+			peak = maxf(peak, maxf(absf(ref[i].x), absf(ref[i].y)))
+	check(worst < 1e-6, "export: bake equals the preview render sample for sample (worst %.2e)" % worst)
+	check(length > 1.5 and fractions.size() >= 2 and is_equal_approx(fractions.back(), 1.0), "export: progress reported in chunks (%d steps)" % fractions.size())
+	check(absf(float(r.peak_db) - 20.0 * log(peak) / log(10.0)) < 0.01, "export: reported peak %.2f dBFS matches the render" % float(r.peak_db))
+
+	# The tail rings on past the last clip (the demo holds a Reverb).
+	var last_clip_end := int(ep.last_clip_end_sec() * rate)
+	check(peak > 0.1, "export: the test sound is audible (peak %.2f)" % peak)
+	var tail_peak := 0.0
+	if w.ok:
+		for i in range(last_clip_end + 2000, mini(total, int(w.frames))):
+			tail_peak = maxf(tail_peak, absf((w.samples as PackedFloat32Array)[i * 2]))
+	check(tail_peak > 0.0001 or total <= last_clip_end + 2000, "export: the tail is in the file (peak %.4f after the last clip)" % tail_peak)
+
+	# 16-bit: within a couple of LSB of the float render (TPDF dither).
+	var r16: Dictionary = await AWExporter.new().run(ep, abs_path, 16)
+	var w16 := _read_wav(abs_path)
+	var worst16 := 0.0
+	if w16.ok:
+		var s16: PackedFloat32Array = w16.samples
+		for i in mini(ref.size(), int(w16.frames)):
+			var cx := clampf(ref[i].x, -1.0, 1.0)
+			worst16 = maxf(worst16, absf(s16[i * 2] - cx))
+	check(r16.ok and w16.ok and w16.bits == 16 and w16.format_tag == 1 and worst16 < 3.0 / 32768.0, "export: 16-bit file is PCM within 3 LSB of the render (worst %.1f LSB)" % (worst16 * 32768.0))
+	check(r16.ok and int(r16.bytes) == int(w16.file_bytes) and int(r16.bytes) == int(w16.frames) * 4 + 44, "export: a 16-bit file is header + 4 bytes a frame")
+
+	# Ogg Vorbis: Godot decodes it and it matches the render closely; higher quality means a bigger file.
+	var opath := ProjectSettings.globalize_path("user://aw_export_test.ogg")
+	var ro: Dictionary = await AWExporter.new().run(ep, opath, 16, "ogg", 5.0)
+	var obytes := FileAccess.get_file_as_bytes(opath)
+	check(ro.ok and obytes.size() > 1000 and obytes.slice(0, 4).get_string_from_ascii() == "OggS", "export Ogg: an Ogg file (%d bytes)" % obytes.size())
+	var ostream := AudioStreamOggVorbis.load_from_buffer(obytes)
+	check(ostream != null and absf(ostream.get_length() - length) < 0.05, "export Ogg: Godot loads it (%.3f s, wanted %.3f)" % [ostream.get_length() if ostream else -1.0, length])
+	if ostream != null:
+		var opb := ostream.instantiate_playback()
+		opb.start(0.0)
+		var dec_frames := PackedVector2Array()
+		var guard_o := 0
+		while dec_frames.size() < total and guard_o < 2000:
+			var got_o: PackedVector2Array = opb.mix_audio(1.0, mini(4096, total - dec_frames.size()))
+			if got_o.is_empty():
+				break
+			dec_frames.append_array(got_o)
+			guard_o += 1
+		var dec_samples := PackedFloat32Array()
+		dec_samples.resize(dec_frames.size() * 2)
+		for i in dec_frames.size():
+			dec_samples[i * 2] = dec_frames[i].x
+			dec_samples[i * 2 + 1] = dec_frames[i].y
+		var oerr := _rel_error(dec_samples, ref)
+		check(dec_frames.size() > total / 2 and oerr < 0.01, "export Ogg: decodes to within 20 dB of the render (error %.5f, %d frames)" % [oerr, dec_frames.size()])
+	var ro2: Dictionary = await AWExporter.new().run(ep, opath, 16, "ogg", 9.0)
+	check(ro2.ok and int(ro2.bytes) > int(ro.bytes), "export Ogg: quality 9 is larger than quality 5 (%d vs %d bytes)" % [int(ro2.bytes), int(ro.bytes)])
+	DirAccess.remove_absolute(opath)
+	var rbad: Dictionary = await AWExporter.new().run(ep, opath, 16, "mp3")
+	check(not rbad.ok and rbad.error.begins_with("Unknown format"), "export: an unknown format is refused")
+
+	# Cancel mid-way: no file appears, an existing file stays as it was.
+	var before := FileAccess.get_file_as_bytes(abs_path)
+	var ec := AWExporter.new()
+	ec.progress.connect(func(_f: float) -> void: ec.cancel())
+	var rc: Dictionary = await ec.run(ep, abs_path, 32)
+	check(not rc.ok and rc.cancelled and not FileAccess.file_exists(abs_path + ".part"), "export: cancel stops it and removes the .part file")
+	check(FileAccess.get_file_as_bytes(abs_path) == before, "export: a cancelled export leaves the old file untouched")
+
+	# Clipping is reported: +12 dB on the clip pushes it over full scale.
+	var clip_src: AWEffect = sclip.chain.effects[0]
+	clip_src.params["gain_db"] = 12.0
+	var rhot: Dictionary = await AWExporter.new().run(ep, abs_path, 32)
+	clip_src.params["gain_db"] = 0.0
+	check(rhot.ok and int(rhot.clipped) > 0 and AWExporter.summary(rhot).contains("clip"), "export: samples over full scale are counted and the summary warns (%d)" % int(rhot.clipped))
+
+	# Nothing to export: an empty project.
+	var empty := AWProject.new()
+	var re: Dictionary = await AWExporter.new().run(empty, abs_path, 16)
+	check(not re.ok and re.error.begins_with("Nothing to export"), "export: an empty project says so")
+
+	# Format choice in the document and the dock.
+	var xpf: AWExportPanel = screen.export_panel
+	d.set_export_path("assets/sfx/jump.wav")
+	d.set_export_format("ogg")
+	check(d.project.export_path == "assets/sfx/jump.ogg" and xpf._quality_row.visible and not xpf._depth_row.visible, "export dock: Ogg swaps the extension, shows Quality, hides Bit depth")
+	d.set_export_format("wav")
+	check(d.project.export_path == "assets/sfx/jump.wav" and xpf._depth_row.visible, "export dock: back to WAV")
+	d.set_export_path("assets/sfx/custom_name")
+	d.set_export_format("ogg")
+	check(d.project.export_path == "assets/sfx/custom_name.ogg", "export dock: a name without extension gets one")
+	d.set_export_format("wav")
+	d.set_export_path("assets/sfx/jump.wav")
+
+	# The dock: Export button runs it through the document and shows the result.
+	d.set_export_path(path)
+	d.set_export_bit_depth(16)
+	var xp: AWExportPanel = screen.export_panel
+	d.export_now()
+	check(d.exporting and xp._export_btn.text == "Cancel" and xp._progress.visible, "export dock: while rendering the button says Cancel and shows progress")
+	var guard := 0
+	while d.exporting and guard < 400:
+		await frames(tree, 1)
+		guard += 1
+	await frames(tree, 2)
+	check(not d.exporting and xp._export_btn.text == "Export" and not xp._progress.visible and xp._result.visible and xp._result.text.begins_with("Exported"), "export dock: finished, result line shown (%s)" % xp._result.text)
+	d.set_export_bit_depth(16)
+	d.set_export_path("assets/sfx/jump.wav")
+	DirAccess.remove_absolute(abs_path)
+
+
 static func get_process_delta(tree: SceneTree) -> float:
 	return maxf(1.0 / 60.0, get_delta_guess(tree))
 
@@ -1174,8 +1377,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.6.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.6.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.8.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.8.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -1576,6 +1779,8 @@ static func run(screen: AWMainScreen) -> void:
 	check(not ch.effects.has(lp), "undo back to before Low Pass")
 	print("--- control kit and effect panels ---")
 	await panel_tests(screen)
+	print("--- export ---")
+	await export_tests(tree, screen)
 	if shots:
 		var lp2 := d.add_effect(ch, "Low Pass")
 		var c2v := d.make_curve(ch, lp2, "cutoff_hz")
@@ -1732,7 +1937,7 @@ static func run(screen: AWMainScreen) -> void:
 	var len32 := d.export_size_bytes()
 	d.set_export_bit_depth(16)
 	var len16 := d.export_size_bytes()
-	check(len32 - 44 == 2 * (len16 - 44), "export: 32-bit float file is twice the size of 16-bit")
+	check(len32 - 56 == 2 * (len16 - 44), "export: 32-bit float data is twice the size of 16-bit (header 56 vs 44 bytes)")
 	# The demo chains hold a Reverb, which rings: switch every ringing card off to measure the bare end.
 	var ring_off: Array[AWEffect] = []
 	var ring_chains: Array = [ep.master_chain]

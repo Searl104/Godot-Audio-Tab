@@ -17,6 +17,13 @@ var _end: SpinBox
 var _auto: Button
 var _path: LineEdit
 var _warn: Label
+var _format: OptionButton
+var _depth_row: Control
+var _quality_row: Control
+var _quality: SpinBox
+var _export_btn: Button
+var _progress: ProgressBar
+var _result: Label
 var _info: Label
 var _updating := false
 
@@ -33,10 +40,15 @@ func _ready() -> void:
 	box.add_theme_constant_override("separation", 8)
 	add_child(box)
 
-	var fmt := OptionButton.new()
-	fmt.add_item("WAV")
-	fmt.focus_mode = Control.FOCUS_NONE
-	box.add_child(_row("Format", fmt))
+	_format = OptionButton.new()
+	for f: String in AWProject.FORMATS:
+		_format.add_item(AWProject.FORMAT_NAMES[f])
+	_format.focus_mode = Control.FOCUS_NONE
+	_format.tooltip_text = "WAV is lossless. Ogg Vorbis is lossy and much smaller. (For a compressed WAV, use Godot's QOA option when importing it.)"
+	_format.item_selected.connect(func(i: int) -> void:
+		if not _updating:
+			doc.set_export_format(AWProject.FORMATS[i]))
+	box.add_child(_row("Format", _format))
 
 	var group := ButtonGroup.new()
 	var depth := HBoxContainer.new()
@@ -47,7 +59,18 @@ func _ready() -> void:
 	depth.add_child(_depth_32)
 	_depth_16.pressed.connect(func() -> void: _on_depth(16))
 	_depth_32.pressed.connect(func() -> void: _on_depth(32))
-	box.add_child(_row("Bit depth", depth))
+	_depth_row = _row("Bit depth", depth)
+	box.add_child(_depth_row)
+	_quality = SpinBox.new()
+	_quality.min_value = 0.0
+	_quality.max_value = 10.0
+	_quality.step = 0.1
+	_quality.tooltip_text = "Ogg Vorbis quality, 0 to 10 (5 is about 160 kbit/s, 8 about 256)."
+	_quality.value_changed.connect(func(v: float) -> void:
+		if not _updating:
+			doc.set_export_ogg_quality(v))
+	_quality_row = _row("Quality", _quality)
+	box.add_child(_quality_row)
 
 	var rate := AWTheme.dim_label("%d Hz, project mix rate" % int(AudioServer.get_mix_rate()), 0.7)
 	box.add_child(_row("Sample rate", rate))
@@ -108,13 +131,34 @@ func _ready() -> void:
 	_info = AWTheme.dim_label("", 0.7)
 	_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	foot.add_child(_info)
-	var export := Button.new()
-	export.text = "Export..."
-	export.icon = AWTheme.icon(self, &"Save")
-	export.focus_mode = Control.FOCUS_NONE
-	export.pressed.connect(doc.export_now)
-	foot.add_child(export)
+	_export_btn = Button.new()
+	_export_btn.text = "Export"
+	_export_btn.icon = AWTheme.icon(self, &"Save")
+	_export_btn.focus_mode = Control.FOCUS_NONE
+	_export_btn.pressed.connect(func() -> void:
+		if doc.exporting:
+			doc.cancel_export()
+		else:
+			doc.export_now())
+	foot.add_child(_export_btn)
 	box.add_child(foot)
+	_progress = ProgressBar.new()
+	_progress.min_value = 0.0
+	_progress.max_value = 1.0
+	_progress.show_percentage = true
+	_progress.visible = false
+	box.add_child(_progress)
+	_result = Label.new()
+	_result.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_result.custom_minimum_size.x = 200
+	_result.visible = false
+	box.add_child(_result)
+	doc.export_progress.connect(func(f: float) -> void: _progress.value = f)
+	doc.export_finished.connect(func(r: Dictionary) -> void:
+		_result.text = AWExporter.summary(r)
+		_result.add_theme_color_override("font_color", RED_TEXT if (not r.ok and not r.cancelled) or int(r.get("clipped", 0)) > 0 else AWTheme.text(self))
+		_result.visible = true
+		_sync())
 
 	doc.export_settings_changed.connect(_sync)
 	doc.project_changed.connect(func(_s: bool) -> void: _sync())
@@ -151,6 +195,11 @@ func _on_depth(bits: int) -> void:
 func _sync() -> void:
 	_updating = true
 	var p := doc.project
+	_format.select(maxi(0, AWProject.FORMATS.find(p.export_format)))
+	_depth_row.visible = p.export_format == "wav"
+	_quality_row.visible = p.export_format == "ogg"
+	_quality.value = p.export_ogg_quality
+	_path.placeholder_text = "assets/sfx/sound." + p.export_format
 	_depth_16.button_pressed = p.export_bit_depth == 16
 	_depth_32.button_pressed = p.export_bit_depth == 32
 	_end.value = doc.export_end_sec()
@@ -175,6 +224,10 @@ func _sync() -> void:
 		_path.remove_theme_color_override("font_color")
 	var tail := maxf(0.0, doc.export_end_sec() - p.last_clip_end_sec())
 	_info.text = "Length %.2f s, tail %.2f s\nAbout %s" % [doc.export_end_sec(), tail, _size_text(doc.export_size_bytes())]
+	_export_btn.text = "Cancel" if doc.exporting else "Export"
+	_progress.visible = doc.exporting
+	if doc.exporting:
+		_result.visible = false
 	_updating = false
 
 

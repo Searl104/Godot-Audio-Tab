@@ -21,6 +21,10 @@ const CLIP_COLORS := [
 @export_group("Export")
 ## 16 or 32 (32 = float).
 @export_enum("16-bit:16", "32-bit float:32") var export_bit_depth: int = 16
+## "wav" or "ogg" (Ogg Vorbis). Bit depth applies to WAV only. (QOA is a Godot import option for WAV files.)
+@export_enum("wav", "ogg") var export_format: String = "wav"
+## Ogg Vorbis quality on oggenc's 0 to 10 scale (5 is about 160 kbit/s for stereo).
+@export_range(0.0, 10.0, 0.1) var export_ogg_quality: float = 5.0
 ## Where the exported sound ends (seconds): the marker on the timeline. The part after the last
 ## clip is the tail, where effects ring out. Negative = automatic (see export_end_resolved).
 @export var export_end_sec: float = -1.0
@@ -29,6 +33,17 @@ const CLIP_COLORS := [
 
 
 const AUTO_TAIL_SEC := 2.5
+
+const FORMATS := ["wav", "ogg"]
+const FORMAT_NAMES := {"wav": "WAV", "ogg": "Ogg Vorbis"}
+
+
+## Approximate Ogg Vorbis bit rate (kbit/s, stereo 44.1 kHz) for a quality on the 0 to 10 scale.
+static func ogg_kbps(quality: float) -> float:
+	var table := [64.0, 80.0, 96.0, 112.0, 128.0, 160.0, 192.0, 224.0, 256.0, 320.0, 500.0]
+	var q := clampf(quality, 0.0, 10.0)
+	var i := mini(int(q), 9)
+	return lerpf(table[i], table[i + 1], q - i)
 const MAX_END_SEC := 600.0
 
 

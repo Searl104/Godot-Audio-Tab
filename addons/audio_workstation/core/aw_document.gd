@@ -21,6 +21,8 @@ signal message(text: String)
 signal lfo_panel_changed
 ## Export bit depth, tail or file name changed (not a sound edit, so no plan rebuild).
 signal export_settings_changed
+signal export_progress(fraction: float)
+signal export_finished(result: Dictionary)
 ## The effect shown in the detail panel dock changed (or was closed).
 signal detail_changed
 
@@ -37,6 +39,9 @@ const SNAP_OPTIONS := [
 
 var project: AWProject
 var engine: AWEngine
+## True while an export is rendering.
+var exporting := false
+var _exporter: AWExporter
 var undo_redo: EditorUndoRedoManager
 var project_path := ""
 
@@ -127,6 +132,23 @@ func set_export_end(sec: float) -> void:
 	set_props(project, {"export_end_sec": v}, "Set Export End")
 
 
+## Picks the file format and swaps the extension of the file name to match.
+func set_export_format(format: String) -> void:
+	if not AWProject.FORMATS.has(format):
+		return
+	project.export_format = format
+	var p := project.export_path
+	var old := p.get_extension().to_lower()
+	if AWProject.FORMATS.has(old) or old == "":
+		project.export_path = (p.get_basename() if old != "" else p.trim_suffix(".")) + "." + format
+	export_settings_changed.emit()
+
+
+func set_export_ogg_quality(q: float) -> void:
+	project.export_ogg_quality = clampf(q, 0.0, 10.0)
+	export_settings_changed.emit()
+
+
 func set_export_path(path: String) -> void:
 	project.export_path = path.strip_edges()
 	export_settings_changed.emit()
@@ -155,8 +177,12 @@ func export_length_sec() -> float:
 
 
 func export_size_bytes() -> int:
-	var bytes_per_sample := project.export_bit_depth / 8
-	return int(ceil(export_length_sec() * AudioServer.get_mix_rate())) * 2 * bytes_per_sample + 44
+	var frames := int(ceil(export_length_sec() * AudioServer.get_mix_rate()))
+	match project.export_format:
+		"ogg":
+			return int(export_length_sec() * AWProject.ogg_kbps(project.export_ogg_quality) * 125.0)
+		_:
+			return frames * 2 * (project.export_bit_depth / 8) + (56 if project.export_bit_depth == 32 else 44)
 
 
 func export_now() -> void:
@@ -167,8 +193,25 @@ func export_now() -> void:
 	export_wav(t)
 
 
+## Renders the whole sound to a WAV (see AWExporter). Only one export at a time.
 func export_wav(path: String) -> void:
-	message.emit("WAV export isn't implemented yet (interface phase): %s" % path) # TODO(logic): engine.render_wav
+	if exporting:
+		return
+	exporting = true
+	_exporter = AWExporter.new()
+	_exporter.progress.connect(func(f: float) -> void: export_progress.emit(f))
+	export_settings_changed.emit()
+	var r: Dictionary = await _exporter.run(project, path, project.export_bit_depth, project.export_format, project.export_ogg_quality)
+	_exporter = null
+	exporting = false
+	export_settings_changed.emit()
+	export_finished.emit(r)
+	message.emit(AWExporter.summary(r))
+
+
+func cancel_export() -> void:
+	if _exporter != null:
+		_exporter.cancel()
 
 
 func export_audio_stream(path: String) -> void:

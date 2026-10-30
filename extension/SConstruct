@@ -22,8 +22,21 @@ env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
 # godot-cpp command lines (changing them would rebuild all of godot-cpp, minutes of work).
 aw_env = env.Clone()
 aw_env.Append(CPPPATH=["src/"])
-aw_env.Append(CPPDEFINES=[("AW_ENGINE_VERSION", '\\"0.6.0\\"'), ("AW_GODOT_CPP", '\\"%s\\"' % GODOT_CPP_TAG)])
+aw_env.Append(CPPDEFINES=[("AW_ENGINE_VERSION", '\\"0.8.0\\"'), ("AW_GODOT_CPP", '\\"%s\\"' % GODOT_CPP_TAG)])
 sources = Glob("src/*.cpp")
+
+# Vendored libogg / libvorbis (encoder side only), see thirdparty/README.md. Plain C, built with
+# their own include paths and without our warnings settings.
+c_env = aw_env.Clone()
+c_env.Append(CPPPATH=["thirdparty/ogg/include", "thirdparty/vorbis/include", "thirdparty/vorbis/lib"])
+aw_env.Append(CPPPATH=["thirdparty/ogg/include", "thirdparty/vorbis/include"])
+VORBIS_FILES = ["analysis", "bitrate", "block", "codebook", "envelope", "floor0", "floor1", "info", "lookup",
+                "lpc", "lsp", "mapping0", "mdct", "psy", "registry", "res0", "sharedbook", "smallft",
+                "synthesis", "vorbisenc", "window"]
+for f in VORBIS_FILES:
+    sources.append(c_env.SharedObject("thirdparty/vorbis/lib/%s.c" % f))
+for f in ["bitwise", "framing"]:
+    sources.append(c_env.SharedObject("thirdparty/ogg/src/%s.c" % f))
 
 ADDON = "../addons/audio_workstation/"
 BIN = ADDON + "bin/"

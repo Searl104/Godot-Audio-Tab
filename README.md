@@ -120,7 +120,7 @@ than the plugin: rebuild it) and everything except sound still works. Build step
   Pan, pitch as a playback-rate table) and an `AudioStreamPlayer` plays the core through `AWPreviewStream`.
   The playhead is the real playback position; the sound stops by itself at its end (or loops).
 - Waveforms in the clip grid are real peaks of the source file (clips with no audio keep the placeholder).
-- Not yet: export/bake (5), save/open (6). Clips without an audio file stay silent but still move the playhead.
+- Export (milestone 5) is done: see "Export" below. Not yet: save/open (6). Clips without an audio file stay silent but still move the playhead.
 - The decoder lag of Godot's resampler (about 2 source frames) is removed, so a source sample lands on
   the exact frame the timing model says.
 - **Automation (milestone 3).** The Gain, Pan and Pitch curves of a clip (including their LFOs) and the
@@ -158,7 +158,7 @@ than the plugin: rebuild it) and everything except sound still works. Build step
 - `AWEngine`: `render_wav` and `render_audio_stream` are stubs (milestone 5).
 - Without the native engine, waveforms are a fake pattern (`AWEngine.get_waveform_peaks`) and
   `AWDocument.tick_preview` is a fallback clock that moves the playhead.
-- Save, Open and both exports only post a status message.
+- Save and Open only post a status message.
 
 ## Verified
 - Tested on Godot 4.7 stable: all scripts parse and the plugin loads without errors.
@@ -197,3 +197,18 @@ Curves are not limited to the clip: keys can sit anywhere up to one hour, so a t
 The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 or newer (the engine evaluates Accel and Smoothing natively).
 
 Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k` works, Enter applies, Esc cancels), **Ctrl+click to reset**, right-click for options.
+
+
+## Export (milestone 5, engine 0.8.0)
+
+The **Audio Export** dock bakes the whole sound (every clip, clip and master chains, up to the end marker) to a file.
+- **Formats:** WAV (16-bit with TPDF dither, or 32-bit float) and Ogg Vorbis (variable bit rate, Quality 0 to 10 on
+  oggenc's scale; 5 is about 160 kbit/s). For a compressed WAV use Godot's own QOA option when you import the WAV.
+- **Same as the preview:** the export renders with the same native code as playback, on its own engine instance, so
+  playback and editing carry on. A test checks a 32-bit export equals the preview render sample for sample.
+- **Progress and cancel:** one-second chunks with progress; the button turns into Cancel. The file is written as
+  `name.part` and renamed when complete, so a cancelled or failed export never leaves a broken file or damages an
+  existing one. The FileSystem dock refreshes afterwards.
+- **Report:** length, size, peak level, and a warning with the count of samples over full scale (WAV 16-bit and Ogg
+  clip them; lower the Output volume or add a Limiter).
+- Ogg encoding uses vendored libogg 1.3.5 and libvorbis 1.3.7 (BSD, `extension/thirdparty/`). Needs engine 0.8.0.
