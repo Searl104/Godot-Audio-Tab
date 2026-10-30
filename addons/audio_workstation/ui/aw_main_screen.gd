@@ -4,15 +4,14 @@ extends VBoxContainer
 ## The "Audio" main-screen tab, laid out like the sketch:
 ##
 ##   toolbar
-##   [reserved] [ Timeline: clip grid  |  Timeline: automation curves ]
-##   [ Master | Clip ]  Effect Chain:  card  card  card  card  [+]
+##   timeline: clip grid with the curve layer over it (Clips / Curves, Tab switches)
+##   |Master|chains|+|  card  card  card  card
 ##   status line
 
 var doc: AWDocument
 var engine: AWEngine
 
 var timeline: AWTimelinePane
-var curves: AWCurvePane
 var chain_panel: AWChainPanel
 var export_panel: AWExportPanel
 var detail_panel: AWEffectDetail
@@ -55,19 +54,10 @@ func _ready() -> void:
 	var top := HBoxContainer.new()
 	top.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	top.add_theme_constant_override("separation", 2)
-	var hsplit := HSplitContainer.new()
-	hsplit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	timeline = AWTimelinePane.new()
 	timeline.setup(doc)
 	timeline.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	timeline.size_flags_stretch_ratio = 1.0
-	curves = AWCurvePane.new()
-	curves.setup(doc)
-	curves.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	curves.size_flags_stretch_ratio = 1.0
-	hsplit.add_child(timeline)
-	hsplit.add_child(curves)
-	top.add_child(hsplit)
+	top.add_child(timeline)
 	export_panel = AWExportPanel.new()
 	export_panel.setup(doc)
 	export_panel.browse_requested.connect(func() -> void: _on_request("export_browse"))
@@ -117,6 +107,23 @@ func _process(delta: float) -> void:
 
 
 # --- Shortcuts ----------------------------------------------------------------
+
+## Tab switches clip mode / curve mode. Caught before the GUI so it doesn't move the focus,
+## but only while the timeline has the focus or the mouse (text fields keep their Tab).
+func _input(event: InputEvent) -> void:
+	var k := event as InputEventKey
+	if k == null or not k.pressed or k.echo or k.keycode != KEY_TAB or not is_visible_in_tree():
+		return
+	if k.ctrl_pressed or k.alt_pressed or k.meta_pressed or k.shift_pressed:
+		return
+	var f := get_viewport().gui_get_focus_owner()
+	if f is LineEdit or f is TextEdit or f is SpinBox:
+		return
+	var in_timeline := f != null and timeline.is_ancestor_of(f)
+	var hovered := timeline.get_global_rect().has_point(timeline.get_global_mouse_position())
+	if in_timeline or hovered:
+		doc.toggle_edit_mode()
+		get_viewport().set_input_as_handled()
 # Keys the curve graph handles itself (when it has focus) never reach this point.
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -220,7 +227,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				doc.clear_time_selection()
 			else:
 				doc.clear_selection()
-		KEY_F: timeline.fit_all()
+		KEY_F: timeline.fit_view()
 		_: handled = false
 	if handled:
 		get_viewport().set_input_as_handled()

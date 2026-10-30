@@ -28,7 +28,7 @@ func _ready() -> void:
 	_menu = PopupMenu.new()
 	_menu.id_pressed.connect(_on_menu)
 	add_child(_menu)
-	for s: Signal in [doc.curve_view_changed, doc.chain_target_changed, doc.curve_view.changed]:
+	for s: Signal in [doc.curve_view_changed, doc.chain_target_changed, doc.curve_view.changed, doc.value_view.changed]:
 		s.connect(queue_redraw)
 	doc.project_changed.connect(func(_s: bool) -> void: queue_redraw())
 	resized.connect(queue_redraw)

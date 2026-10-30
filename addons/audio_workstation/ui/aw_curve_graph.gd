@@ -1,8 +1,11 @@
 @tool
 class_name AWCurveGraph
 extends Control
-## Overlaid Bezier automation curves for the active chain. Each curve fills the plot's height
-## on its own scale (linear, log for Hz, fader for dB), so different units share one plot.
+## The curve layer: Bezier automation curves for the active chain, drawn over the clip grid
+## in project time on the shared timeline. Each curve fills the plot's height on its own scale
+## (linear, log for Hz, fader for dB), so different units share one plot; the value view
+## (doc.value_view) zooms and scrolls that height. In clip mode the layer is drawn faintly
+## and ignores the mouse; in curve mode it is edited.
 ## Key values here are in that 0..1 space; hover shows the real parameter value.
 ##
 ## Controls follow Godot's Bezier editor:
@@ -10,7 +13,7 @@ extends Control
 ##   Drag the handles of selected keys. Drag empty space to box-select keys.
 ##   Double-click or Ctrl+click to insert a key on the active curve.
 ##   Delete removes selected keys, Ctrl+A selects all, F frames the curves.
-##   Wheel zooms, Shift+wheel scrolls, middle-drag pans. Right-click for handle modes and more.
+##   Navigation (pan, zoom, wheel) is shared with the grid: see AWTimelinePane. Right-click for more.
 ## Curves set to Dim are drawn faintly and can't be edited; Off curves are hidden.
 
 const PAD_Y := 16.0
@@ -38,6 +41,8 @@ var _menu: PopupMenu
 var _menu_pos := Vector2.ZERO
 var _menu_curve: AWCurve = null
 var _last_active: AWCurve = null
+## Callable(event) -> bool from the timeline pane: shared pan / zoom gestures.
+var nav := Callable()
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -53,8 +58,10 @@ func _ready() -> void:
 	_menu = PopupMenu.new()
 	_menu.id_pressed.connect(_on_menu)
 	add_child(_menu)
-	resized.connect(func() -> void: view.set_view_width(size.x))
 	view.changed.connect(queue_redraw)
+	doc.value_view.changed.connect(queue_redraw)
+	doc.edit_mode_changed.connect(queue_redraw)
+	doc.selection_changed.connect(queue_redraw)
 	doc.project_changed.connect(func(_s: bool) -> void: _validate_selection(); queue_redraw())
 	doc.export_settings_changed.connect(queue_redraw)
 	doc.chain_target_changed.connect(func() -> void: selected_keys.clear(); queue_redraw())
@@ -86,17 +93,22 @@ func _plot_h() -> float:
 	return maxf(size.y - PAD_Y * 2.0, 1.0)
 
 
+## Pixels per whole 0..1 range at the current value zoom.
+func unit_h() -> float:
+	return _plot_h() / doc.value_view.span
+
+
 ## 0..1 curve height -> y. (`c` is kept so per-curve vertical zoom can be added later.)
 func val_to_y(_c: AWCurve, n: float) -> float:
-	return PAD_Y + (1.0 - n) * _plot_h()
+	return PAD_Y + (doc.value_view.hi() - n) * unit_h()
 
 
 func y_to_val(_c: AWCurve, y: float) -> float:
-	return clampf(1.0 - (y - PAD_Y) / _plot_h(), 0.0, 1.0)
+	return clampf(y_to_val_unclamped(y), 0.0, 1.0)
 
 
 func y_to_val_unclamped(y: float) -> float:
-	return 1.0 - (y - PAD_Y) / _plot_h()
+	return doc.value_view.hi() - (y - PAD_Y) / unit_h()
 
 
 func local_to_x(t: float) -> float:
@@ -111,7 +123,7 @@ func x_to_local(x: float) -> float:
 ## with playback rate in Project Time view, so it's measured locally.
 func px_per_unit(_c: AWCurve, t := 0.0) -> Vector2:
 	var dx := (local_to_x(t + 0.001) - local_to_x(t)) / 0.001
-	return Vector2(maxf(dx, 0.0001), _plot_h())
+	return Vector2(maxf(dx, 0.0001), unit_h())
 
 
 func key_pos(c: AWCurve, k: Dictionary) -> Vector2:
@@ -185,14 +197,13 @@ func hit_curve(pos: Vector2, editable_only := true) -> AWCurve:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if view.handle_wheel(mb, mb.position.x, true):
+		if nav.is_valid() and nav.call(event):
 			accept_event()
 			return
-		if mb.button_index == MOUSE_BUTTON_MIDDLE:
-			_drag = Drag.PAN if mb.pressed else Drag.NONE
-			_press_pos = mb.position
+		if view.handle_wheel(mb, mb.position.x):
 			accept_event()
-		elif mb.button_index == MOUSE_BUTTON_LEFT:
+			return
+		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
 				grab_focus()
 				if mb.double_click or mb.ctrl_pressed and hit_key(mb.position)[0] == null:
@@ -208,6 +219,9 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 	elif event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
+		if nav.is_valid() and nav.call(event):
+			accept_event()
+			return
 		if _drag == Drag.NONE:
 			_hover(mm.position)
 		else:
@@ -282,9 +296,6 @@ func _press(mb: InputEventMouseButton) -> void:
 func _motion(mm: InputEventMouseMotion) -> void:
 	var pos := mm.position
 	match _drag:
-		Drag.PAN:
-			view.scroll_by(_press_pos.x - pos.x)
-			_press_pos = pos
 		Drag.CLICK:
 			if pos.distance_to(_press_pos) > 4.0:
 				_drag = Drag.MARQUEE
@@ -318,7 +329,7 @@ func _move_keys(pos: Vector2, lock_axis: bool, free_time: bool) -> void:
 			d.y = 0.0
 		else:
 			d.x = 0.0
-	var dv := -d.y / _plot_h()
+	var dv := -d.y / unit_h()
 	var keys := _orig_keys.duplicate(true)
 	var domain := doc.curve_domain_len()
 	for i in keys.size():
@@ -532,14 +543,28 @@ func _on_menu(id: int) -> void:
 
 # --- Drawing ------------------------------------------------------------------
 
+func is_curve_mode() -> bool:
+	return doc.edit_mode == AWDocument.EditMode.CURVES
+
+
 func _draw() -> void:
 	var c_text := AWTheme.text(self)
 	var c_acc := AWTheme.accent(self)
 	var font := get_theme_default_font()
 	var fs := get_theme_default_font_size() - 2
-	draw_rect(Rect2(Vector2.ZERO, size), AWTheme.bg(self))
-	AWTheme.draw_time_grid(self, view, 0.0, size.y)
 	var ch := chain()
+	if not is_curve_mode():
+		# Clip mode: the curves faintly over the clips, for reference only.
+		if ch == null or not AWTimelinePane.show_curves_in_clip_mode():
+			return
+		var fx0 := local_to_x(0.0)
+		var fx1 := local_to_x(doc.curve_span_len())
+		_draw_copies(ch, 0.6)
+		for c in ch.curves:
+			if doc.is_curve_visible(c):
+				_draw_samples(c, AWSampler.NORM, maxf(fx0, 0.0), minf(fx1, size.x), Color(c.color, 0.45), 1.5)
+		return
+	AWTheme.draw_time_grid(self, view, 0.0, size.y)
 	_draw_value_grid(ch, c_text)
 
 	if ch == null:
@@ -549,6 +574,7 @@ func _draw() -> void:
 	var x1 := local_to_x(doc.curve_span_len())
 	draw_rect(Rect2(0, 0, maxf(x0, 0.0), size.y), Color(0, 0, 0, 0.22))
 	draw_rect(Rect2(x1, 0, maxf(size.x - x1, 0.0), size.y), Color(0, 0, 0, 0.22))
+	_draw_copies(ch, 1.0)
 
 	if ch.curves.is_empty():
 		_center_hint("No curves yet. Right-click a parameter in the effect chain > Make Curve.", c_text)
@@ -588,11 +614,53 @@ func _draw() -> void:
 		draw_string(font, at + Vector2(2, 0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, c_text)
 
 
+## The clips that share the chain on the chain tab, other than the focused one: their
+## copies of the curves, faintly, each on its own clip's clock.
+func copy_clips() -> Array[AWClip]:
+	var out: Array[AWClip] = []
+	if doc.chain_tab != AWDocument.ChainTab.CHAIN or doc.curve_on_clip or doc.tab_chain == null:
+		return out
+	var vc := doc.view_clip()
+	for clip in doc.chain_clips(doc.tab_chain):
+		if clip != vc:
+			out.append(clip)
+	return out
+
+
+func _draw_copies(ch: AWChain, alpha: float) -> void:
+	for clip in copy_clips():
+		var xa := maxf(view.time_to_x(clip.start_sec), 0.0)
+		var xb := minf(view.time_to_x(clip.end_sec()), size.x)
+		if xb <= xa:
+			continue
+		draw_rect(Rect2(xa, 0, xb - xa, size.y), Color(1, 1, 1, 0.025 * alpha))
+		for c in ch.curves:
+			if not doc.is_curve_visible(c):
+				continue
+			var px := PackedFloat32Array()
+			var times := PackedFloat64Array()
+			var x := xa
+			while true:
+				px.append(x)
+				times.append(clip.project_to_local(view.x_to_time(x)))
+				if x >= xb:
+					break
+				x = minf(x + 2.0, xb)
+			if px.size() < 2:
+				continue
+			var vals := AWSampler.values_at(ch, c, times, AWSampler.NORM)
+			var pts := PackedVector2Array()
+			pts.resize(px.size())
+			for i in px.size():
+				pts[i] = Vector2(px[i], val_to_y(c, vals[i]))
+			draw_polyline(pts, Color(c.color, 0.28 * alpha), 1.25, true)
+
+
 ## Horizontal lines at the selected curve's axis ticks; plain quarters when none is selected.
 func _draw_value_grid(ch: AWChain, c_text: Color) -> void:
 	var c := doc.active_curve
 	if ch and c and ch.curves.has(c) and doc.is_curve_visible(c):
-		for t: Array in AWCurveAxis.ticks(ch, c, _plot_h()):
+		for t: Array in AWCurveAxis.ticks(ch, c, unit_h()):
 			var y := roundf(val_to_y(c, t[0])) + 0.5
 			draw_line(Vector2(0, y), Vector2(size.x, y), Color(c.color, 0.10))
 		for n: float in [0.0, 1.0]:
@@ -600,7 +668,7 @@ func _draw_value_grid(ch: AWChain, c_text: Color) -> void:
 			draw_line(Vector2(0, y2), Vector2(size.x, y2), Color(c_text, 0.08))
 		return
 	for i in 5:
-		var y := roundf(PAD_Y + _plot_h() * i / 4.0) + 0.5
+		var y := roundf(val_to_y(null, i / 4.0)) + 0.5
 		draw_line(Vector2(0, y), Vector2(size.x, y), Color(c_text, 0.08 if i % 4 == 0 else 0.04))
 
 

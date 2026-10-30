@@ -14,6 +14,10 @@ signal selection_changed
 signal chain_target_changed
 ## Curve visibility, solo, active curve or key selection changed (view state).
 signal curve_view_changed
+## Clip mode / curve mode switched (the curve layer over the grid).
+signal edit_mode_changed
+## Fit both axes of the timeline (F, Fit button, Frame Curves).
+signal fit_requested
 signal playhead_changed
 signal transport_changed
 signal message(text: String)
@@ -34,6 +38,8 @@ signal detail_changed
 ## MASTER: the master chain. CLIP: the focused clip on its own (no shared chain). CHAIN: a shared chain.
 enum ChainTab { MASTER, CLIP, CHAIN }
 enum CurveTime { CLIP, PROJECT }
+## Which layer of the timeline is edited: clips on the grid, or the curves drawn over it.
+enum EditMode { CLIPS, CURVES }
 
 const AUDIO_EXTENSIONS := ["wav", "ogg", "mp3"]
 const MIN_LEN := 0.01
@@ -76,7 +82,11 @@ var tab_chain: AWChain = null
 var curve_on_clip := false
 
 # Curves (view state)
-var curve_time := CurveTime.CLIP
+## Curves are always drawn in project time on the shared timeline (since 0.18).
+var curve_time := CurveTime.PROJECT
+var edit_mode := EditMode.CLIPS
+## Vertical view of the curve layer (0..1 curve heights).
+var value_view := AWValueView.new()
 var active_curve: AWCurve = null
 var solo_curve: AWCurve = null
 ## Curve whose LFO panel is open (null = closed).
@@ -86,7 +96,8 @@ var lfo_list_open := false
 
 # Views
 var timeline_view := AWTimeView.new()
-var curve_view := AWTimeView.new()
+## The curve layer shares the grid's time axis (one timeline).
+var curve_view := timeline_view
 var snap_sec := 0.05
 var _last_snap := 0.05
 
@@ -103,7 +114,6 @@ func _init(p_undo_redo: EditorUndoRedoManager, p_engine: AWEngine) -> void:
 			playing = p
 			transport_changed.emit())
 	timeline_view.content_end = func() -> float: return project.content_end_sec() + 1.0
-	curve_view.content_end = func() -> float: return curve_domain_end_view() + 0.5
 	project_changed.connect(func(structural: bool) -> void:
 		for c in project.clips:
 			c.invalidate_warp() # a static Pitch change alters timing too
@@ -125,12 +135,15 @@ func set_project(p: AWProject) -> void:
 	solo_curve = null
 	lfo_curve = null
 	clear_time_selection()
+	edit_mode = EditMode.CLIPS
+	value_view.reset()
 	playhead_sec = 0.0
 	engine.set_project(p)
 	project_changed.emit(true)
 	selection_changed.emit()
 	chain_target_changed.emit()
 	curve_view_changed.emit()
+	edit_mode_changed.emit()
 	playhead_changed.emit()
 	transport_changed.emit()
 
@@ -1323,12 +1336,20 @@ func chain_local_time(chain: AWChain, project_t: float) -> float:
 	return project_t
 
 
-func set_curve_time(mode: CurveTime) -> void:
-	if curve_time == mode:
+## Kept for older callers: curves are always shown in project time now.
+func set_curve_time(_mode: CurveTime) -> void:
+	pass
+
+
+func set_edit_mode(m: EditMode) -> void:
+	if edit_mode == m:
 		return
-	curve_time = mode
-	frame_curves()
-	curve_view_changed.emit()
+	edit_mode = m
+	edit_mode_changed.emit()
+
+
+func toggle_edit_mode() -> void:
+	set_edit_mode(EditMode.CLIPS if edit_mode == EditMode.CURVES else EditMode.CURVES)
 
 
 ## View time -> curve-local time.
@@ -1387,9 +1408,11 @@ func curve_domain_end_view() -> float:
 	return local_to_view(curve_span_len())
 
 
+## Fits the timeline (both axes); in curve mode also resets the value zoom.
 func frame_curves() -> void:
-	curve_view.min_time = 0.0
-	curve_view.frame(local_to_view(0.0), curve_domain_end_view())
+	if edit_mode == EditMode.CURVES:
+		value_view.reset()
+	fit_requested.emit()
 
 
 # --- Curve display (view state, not undoable) ---------------------------------
@@ -1397,6 +1420,7 @@ func frame_curves() -> void:
 func set_active_curve(c: AWCurve) -> void:
 	if c != null:
 		_show_curve_owner(c)
+		set_edit_mode(EditMode.CURVES) # opening a curve shows the curve layer
 	if active_curve == c:
 		return
 	active_curve = c
