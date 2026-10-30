@@ -2411,31 +2411,65 @@ static func timing_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	click(ruler, Vector2(d.timeline_view.time_to_x(0.5), ya), MOUSE_BUTTON_LEFT, false)
 	check(not d.scrubbing and not e.core.call("is_scrubbing") and absf(d.playhead_sec - 0.5) < 0.01, "scrub: release ends it at the mouse (%.3f)" % d.playhead_sec)
 
-	# The scrub sound itself (same code as the audio thread, run directly): a ramp file played at
-	# tape speed forward, backwards, and silent when held still.
+	# The scrub sound itself (same code as the audio thread, run directly): grains at normal pitch
+	# that follow the mouse (owner choice), forward or backward, silent when the mouse holds still.
 	write_wav("/tmp/aw_scrub_ramp.wav", 2.0, func(i: int, rt: int) -> Vector2i: return Vector2i(int(16000.0 * float(i) / (rt * 2.0)), 0))
 	d.new_project()
 	d.add_clip_from_path("/tmp/aw_scrub_ramp.wav", 0, 0.0)
 	await frames(tree, 2)
-	var block := 512
+	var block := 256
+	var rslope := 0.5 / (2.0 * rate)
 	var tgt := PackedFloat64Array()
-	for k in 80: # forward at normal speed: 0.4 s -> about 1.33 s
-		tgt.append(0.4 + float(k + 1) * block / rate)
+	for k in 200: # a slow drag, 0.25x, from 0.5 s
+		tgt.append(0.5 + 0.25 * float(k + 1) * block / rate)
 	var fw := e.scrub_simulate(tgt, block)
-	var mid_v := fw[int(fw.size() * 0.75)].x
-	check(fw.size() == 80 * block and mid_v > 0.2 and mid_v < 0.36, "scrub: moving forward plays the file around the target (%.3f)" % mid_v)
-	var rising := fw[int(fw.size() * 0.9)].x > fw[int(fw.size() * 0.5)].x
-	check(rising, "scrub: forward reads the ramp upwards")
+	var near_ok := true
+	for k in range(60, 190, 10):
+		var i := k * block + block / 2
+		var at_target := tgt[k] * rate * rslope
+		if absf(fw[i].x) > 0.02 and absf(fw[i].x - at_target) > 0.05 * rate * rslope:
+			near = false
+	check(fw.size() == 200 * block and near_ok, "scrub: what you hear comes from where the mouse is (within 50 ms)")
+	check(fw[int(fw.size() * 0.9)].x > fw[int(fw.size() * 0.5)].x, "scrub: dragging right moves forward through the sound")
 	var bk := PackedFloat64Array()
-	for k in 80:
-		bk.append(1.4 - float(k + 1) * block / rate)
+	for k in 200:
+		bk.append(1.5 - 0.25 * float(k + 1) * block / rate)
 	var bw := e.scrub_simulate(bk, block)
-	check(bw[int(bw.size() * 0.9)].x < bw[int(bw.size() * 0.5)].x and bw[int(bw.size() * 0.5)].x > 0.05, "scrub: dragging left plays it backwards")
+	var lv_b := 0.0
+	for f in bw.slice(bw.size() / 2):
+		lv_b = maxf(lv_b, absf(f.x))
+	check(lv_b > 0.2 and bw[int(bw.size() * 0.9)].x < bw[int(bw.size() * 0.5)].x, "scrub: dragging left plays from earlier and earlier positions")
+	# Normal pitch and full level even on a slow drag: a 440 Hz tone stays 440 Hz.
+	write_wav("/tmp/aw_scrub_tone.wav", 2.0, func(i: int, rt: int) -> Vector2i:
+		var v := int(16000.0 * sin(TAU * 440.0 * i / rt))
+		return Vector2i(v, v))
+	d.new_project()
+	d.add_clip_from_path("/tmp/aw_scrub_tone.wav", 0, 0.0)
+	await frames(tree, 2)
+	var slow := PackedFloat64Array()
+	for k in 300: # 0.1x
+		slow.append(0.5 + 0.1 * float(k + 1) * block / rate)
+	var slw := e.scrub_simulate(slow, block)
+	var part := slw.slice(int(slw.size() * 0.3), int(slw.size() * 0.95))
+	var crossings := 0
+	var rms := 0.0
+	for i in range(1, part.size()):
+		if (part[i - 1].x < 0.0) != (part[i].x < 0.0):
+			crossings += 1
+		rms += part[i].x * part[i].x
+	rms = sqrt(rms / part.size())
+	var hz := crossings / 2.0 / (part.size() / float(rate))
+	print("SCRUB slow drag on 440 Hz: %.1f Hz, rms %.3f (source %.3f)" % [hz, rms, 0.4883 / sqrt(2.0)])
+	check(absf(hz - 440.0) < 440.0 * 0.06, "scrub: a slow drag keeps the sound's pitch (%.0f Hz from a 440 Hz tone)" % hz)
+	check(rms > 0.25, "scrub: and its level (rms %.2f)" % rms)
 	var still := PackedFloat64Array()
 	still.resize(120)
 	still.fill(1.0)
 	var st := e.scrub_simulate(still, block)
-	check(absf(st[st.size() - 1].x) < 0.01, "scrub: a still mouse is silent")
+	var tail := 0.0
+	for f in st.slice(st.size() - 4096):
+		tail = maxf(tail, absf(f.x))
+	check(tail < 0.001, "scrub: a still mouse is silent")
 
 	for k: String in saved:
 		d.set_snap_target(k, saved[k])
@@ -2614,6 +2648,19 @@ static func shared_chain_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 		worst = maxf(worst, absf(before[i].x - after[i].x))
 	check(worst < 1e-4, "migration: the sound is unchanged (worst %.6f)" % worst)
 	DirAccess.remove_absolute(fpath)
+
+	# File > New after working on a chain: the panel shows the new, empty sound (owner report).
+	d.new_project()
+	var nx := d.add_clip_from_path("/tmp/aw_sc_dc.wav", 0, 0.0)
+	d.set_selection([nx] as Array[AWClip])
+	var ch_old := d.new_chain_for(null)
+	d.add_effect(ch_old, "Reverb")
+	await frames(tree, 3)
+	d.new_project()
+	await frames(tree, 3)
+	check(d.chain_tab == AWDocument.ChainTab.CLIP and d.tab_chain == null and cp.find_child("ClipsCard", true, false) == null and cp._cards.is_empty() and cp.tabs.tab_count == 2, "chains: File > New clears the chain panel (tabs: %d)" % cp.tabs.tab_count)
+	# 16 rows from the start.
+	check(screen.timeline.grid.row_count() >= 16, "grid: at least 16 rows (%d)" % screen.timeline.grid.row_count())
 
 	# Toolbar shortcuts; the narrow left column is gone.
 	for nm in ["EditMarker", "EditTrimStart", "EditTrimEnd", "EditReverse", "EditCrossfade", "EditGroup"]:
@@ -3102,8 +3149,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.11.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.11.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.11.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.11.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)

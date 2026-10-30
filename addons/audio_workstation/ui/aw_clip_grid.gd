@@ -15,7 +15,7 @@ const ROW_H_MIN := 28.0
 const ROW_H_MAX := 160.0
 const EDGE := 6.0
 const FADE_HANDLE := 7.0
-const MIN_ROWS := 6
+const MIN_ROWS := 16
 const PEAKS_PER_SEC := 120.0
 
 ## Height of one grid row. Alt+wheel changes it (taller rows show the waveform better).
