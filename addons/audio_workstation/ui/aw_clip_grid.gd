@@ -1049,7 +1049,7 @@ func _draw_group_strip(g: AWGroup, c_text: Color, c_acc: Color) -> void:
 			draw_rect(br, bcol)
 			draw_string(font, br.position + Vector2(4, br.size.y - 3.0), "M" if k == "mute" else "S", HORIZONTAL_ALIGNMENT_LEFT, -1, fs - 1, Color.WHITE)
 			right = minf(right, br.position.x - 4.0)
-	var label := g.name + ("  ▣ " + (g.chain.name if g.chain.name != "" else "chain") if g.chain else "")
+	var label := g.name + ("  ▣ chain" if g.chain else "")
 	var lx := cr.end.x + 4.0
 	if right - lx > 12.0:
 		draw_string(font, Vector2(lx, sr.position.y + STRIP_H - 5.0), label, HORIZONTAL_ALIGNMENT_LEFT, right - lx, fs, Color.WHITE)
