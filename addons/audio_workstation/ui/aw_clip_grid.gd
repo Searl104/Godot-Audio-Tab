@@ -45,6 +45,7 @@ var _menu_t := 0.0
 var _menu_pos := Vector2.ZERO
 var _drop_ghost := Rect2()
 var _color_menu: PopupMenu
+var _chain_menu: PopupMenu
 var _fade_menus: Array[PopupMenu] = []
 var _rename_edit: LineEdit
 var _rename_clip: AWClip = null
@@ -78,6 +79,18 @@ func _ready() -> void:
 		if _menu_clip:
 			doc.set_clip_color(_menu_clip, AWProject.CLIP_COLORS[i]))
 	_menu.add_child(_color_menu)
+	_chain_menu = PopupMenu.new()
+	_chain_menu.name = "ChainMenu"
+	_chain_menu.id_pressed.connect(func(i: int) -> void:
+		if _menu_clip == null:
+			return
+		if i == 1000:
+			doc.new_chain_for(_menu_clip)
+		elif i == 1001:
+			doc.set_clip_chain(_menu_clip, null)
+		else:
+			doc.set_clip_chain(_menu_clip, doc.project.chains[i]))
+	_menu.add_child(_chain_menu)
 	for side in 2:
 		var fm := PopupMenu.new()
 		fm.name = "FadeInShape" if side == 0 else "FadeOutShape"
@@ -477,6 +490,15 @@ func _open_menu(pos: Vector2) -> void:
 		if not doc.is_selected(_menu_clip):
 			doc.select_clip(_menu_clip)
 		_menu.add_item("Show Effect Chain", 1)
+		_chain_menu.clear()
+		_chain_menu.add_item("New Chain", 1000)
+		_chain_menu.add_separator()
+		_chain_menu.add_radio_check_item("None (dry)", 1001)
+		_chain_menu.set_item_checked(_chain_menu.item_count - 1, _menu_clip.fx_chain == null)
+		for i in doc.project.chains.size():
+			_chain_menu.add_radio_check_item(doc.project.chains[i].name, i)
+			_chain_menu.set_item_checked(_chain_menu.item_count - 1, _menu_clip.fx_chain == doc.project.chains[i])
+		_menu.add_submenu_node_item("Effect Chain", _chain_menu)
 		_menu.add_separator()
 		_menu.add_item("Split at Playhead", 2)
 		_menu.add_item("Split Here", 3)
@@ -713,9 +735,9 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 		for tt in doc.clip_transients(c):
 			var tx := view.time_to_x(tt)
 			draw_line(Vector2(tx, r.end.y - 6.0), Vector2(tx, r.end.y), Color(1, 1, 1, 0.75), 1.0)
-	var fx_count := c.chain.effects.size() - 1 if c.chain else 0
-	if fx_count > 0 and r.size.x > 90.0:
-		var badge := "fx %d" % fx_count + ("  ~%d" % c.chain.curves.size() if not c.chain.curves.is_empty() else "")
+	var fx_count := (c.chain.effects.size() - 1 if c.chain else 0) + (c.fx_chain.effects.size() if c.fx_chain else 0)
+	if (fx_count > 0 or c.fx_chain) and r.size.x > 90.0:
+		var badge := (c.fx_chain.name + " " if c.fx_chain else "") + ("fx %d" % fx_count) + ("  ~%d" % c.chain.curves.size() if not c.chain.curves.is_empty() else "")
 		draw_string(font, Vector2(r.position.x, r.position.y + 10), badge, HORIZONTAL_ALIGNMENT_RIGHT, r.size.x - 5.0, fs - 1, Color(c_text, 0.7))
 
 	var selected := doc.is_selected(c)
@@ -742,9 +764,10 @@ func _get_tooltip(at: Vector2) -> String:
 		lines.append("Gain %.1f dB · Pitch %+.2f st · Pan %+.2f" % [float(src.get_param("gain_db")), float(src.get_param("pitch_semitones")), float(src.get_param("pan"))])
 	lines.append("File offset %.3f s · Fades %.3f / %.3f s (%s / %s)" % [c.source_offset_sec, c.fade_in_sec, c.fade_out_sec,
 		AWClip.FADE_SHAPE_NAMES[c.fade_in_shape], AWClip.FADE_SHAPE_NAMES[c.fade_out_shape]])
-	var fx := c.chain.effects.size() - 1 if c.chain else 0
-	if fx > 0:
-		lines.append("%d effect%s, %d curve%s" % [fx, "" if fx == 1 else "s", c.chain.curves.size(), "" if c.chain.curves.size() == 1 else "s"])
+	if c.fx_chain:
+		lines.append("Chain: %s (%d effect%s)" % [c.fx_chain.name, c.fx_chain.effects.size(), "" if c.fx_chain.effects.size() == 1 else "s"])
+	else:
+		lines.append("No effect chain (dry)")
 	if c.group_id != 0:
 		lines.append("Grouped (Ctrl+Shift+G ungroups)")
 	return "\n".join(lines)

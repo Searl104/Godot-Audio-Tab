@@ -7,6 +7,8 @@ extends HBoxContainer
 var doc: AWDocument
 var graph: AWCurveGraph
 
+var owner_chain: Button
+var owner_clip: Button
 var _owner_label: Label
 var _clip_time: Button
 var _project_time: Button
@@ -25,9 +27,22 @@ func _ready() -> void:
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(col)
 	var header := HBoxContainer.new()
-	var title := Label.new()
-	title.text = "  Timeline"
-	header.add_child(title)
+	# On a chain tab: show the chain's curves, or the selected clip's own (Gain, Pitch, Pan).
+	var og := ButtonGroup.new()
+	owner_chain = Button.new()
+	owner_clip = Button.new()
+	owner_chain.name = "OwnerChain"
+	owner_clip.name = "OwnerClip"
+	for b: Button in [owner_chain, owner_clip]:
+		b.toggle_mode = true
+		b.button_group = og
+		b.flat = true
+		b.focus_mode = Control.FOCUS_NONE
+		header.add_child(b)
+	owner_chain.pressed.connect(func() -> void: doc.set_curve_on_clip(false))
+	owner_clip.pressed.connect(func() -> void: doc.set_curve_on_clip(true))
+	owner_chain.tooltip_text = "Curves of the chain's effects (shared by its clips; each runs on its clip's clock)"
+	owner_clip.tooltip_text = "This clip's own curves: Gain, Pitch, Pan"
 	_owner_label = AWTheme.dim_label("")
 	header.add_child(_owner_label)
 	var spacer := Control.new()
@@ -136,7 +151,18 @@ func _on_target_changed() -> void:
 
 func _sync_header() -> void:
 	var owner_name := doc.active_chain_name()
-	_owner_label.text = ("  ·  " + owner_name + " curves") if owner_name != "" else ""
+	var on_chain := doc.chain_tab == AWDocument.ChainTab.CHAIN
+	var vc := doc.view_clip()
+	owner_chain.visible = on_chain
+	owner_clip.visible = on_chain and vc != null
+	if on_chain:
+		owner_chain.text = (doc.tab_chain.name if doc.tab_chain else "Chain") + " curves"
+		owner_clip.text = (vc.name if vc else "Clip") + " curves"
+		owner_chain.set_pressed_no_signal(not doc.curve_on_clip or vc == null)
+		owner_clip.set_pressed_no_signal(doc.curve_on_clip and vc != null)
+		_owner_label.text = ("  on " + vc.name + "'s clock") if vc and not doc.curve_on_clip else ""
+	else:
+		_owner_label.text = ("  ·  " + owner_name + " curves") if owner_name != "" else ""
 	var is_master := doc.chain_tab == AWDocument.ChainTab.MASTER
 	_clip_time.disabled = is_master
 	_project_time.disabled = is_master

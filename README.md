@@ -224,6 +224,29 @@ The **Audio Export** dock bakes the whole sound (every clip, clip and master cha
 - Ogg encoding uses vendored libogg 1.3.5 and libvorbis 1.3.7 (BSD, `extension/thirdparty/`). Needs engine 0.8.0 or newer.
 
 
+## Effect chains (0.16)
+
+Effect chains are shared: a chain is a named set of effects (with their curves) that any number of clips play
+through, so a group of layers can share one Reverb, and editing it once changes them all. A clip without a chain
+plays dry.
+
+- **Tabs** above the cards: `|Master|Impact FX|Debris FX| + |`. **+** makes a new chain for the selected clips (or
+  the group) and opens it. Right-click a chain tab: Rename, Duplicate, Use for Selected Clips, Delete (its clips play
+  dry; undoable). Selecting a clip opens its chain's tab; a clip without one gets a temporary "· no chain" tab with
+  its Clip card and **New Chain** / **Use Chain**.
+- The first card of a chain is **Clips**: one entry per clip on the chain, each with its own **Gain, Pitch and Pan**
+  knobs (they belong to the clip, not the chain). Click a name to select the clip; × takes it off the chain.
+- A chain's curves run on each clip's own clock (a fade-in curve fades every clip in from its own start). The curve
+  view's **Chain curves / Clip curves** switch shows the chain's curves or the selected clip's own Gain, Pitch and Pan
+  curves; making a curve from a clip's knob switches to it.
+- Right-click a clip > **Effect Chain** > New Chain / None / any chain.
+- Older sounds open with each clip's effects moved into a chain named "<clip> FX" (the sound doesn't change).
+  Sounds saved by 0.16 use format 6.
+
+**Layout:** the narrow reserved column left of the timeline and the "Timeline" titles are gone, as is the overview
+strip. The top toolbar has edit shortcuts: Marker (M), Trim start / end to playhead (Q / W), Reverse, Crossfade
+Overlaps and Group / Ungroup (Ctrl+G).
+
 ## Timing and navigation (0.15, engine 0.11.0)
 
 - **Snap targets:** the Snap menu (toolbar) holds the time grid (ms steps, or 24 / 30 / 60 fps for syncing with
@@ -242,9 +265,8 @@ The **Audio Export** dock bakes the whole sound (every clip, clip and master cha
 - **Time selection:** right-click the ruler for Loop Selection, Split Clips at Selection, Delete Inside Selection (cuts
   the clips at the edges and removes the parts inside; nothing moves), Zoom to Selection, Clear. Delete with no clips
   selected removes the audio inside; Esc clears it.
-- **Navigation:** Z zooms to the time selection or the selected clips; a zoom slider sits in the Timeline header; the
-  **overview** strip above the ruler shows the whole sound (click or drag to move the view, drag the box's edges to
-  zoom); hovering a clip shows its file, length, gain, pitch, pan, offset, fades and effects.
+- **Navigation:** Z zooms to the time selection or the selected clips; a zoom slider sits above the grid; hovering a
+  clip shows its file, length, gain, pitch, pan, offset, fades and chain.
 
 Sounds saved by 0.15 use format 5 (markers).
 

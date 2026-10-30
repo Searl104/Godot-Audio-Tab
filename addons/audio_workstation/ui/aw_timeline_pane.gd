@@ -6,7 +6,6 @@ extends VBoxContainer
 var doc: AWDocument
 var grid: AWClipGrid
 var headers: AWRowHeaders
-var overview: AWOverview
 var zoom_slider: HSlider
 
 var _ruler: AWTimeRuler
@@ -20,9 +19,6 @@ func setup(p_doc: AWDocument) -> void:
 func _ready() -> void:
 	add_theme_constant_override("separation", 0)
 	var header := HBoxContainer.new()
-	var title := Label.new()
-	title.text = "  Timeline"
-	header.add_child(title)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(spacer)
@@ -44,16 +40,6 @@ func _ready() -> void:
 	fit.pressed.connect(fit_all)
 	header.add_child(fit)
 	add_child(header)
-
-	var over_row := HBoxContainer.new()
-	over_row.add_theme_constant_override("separation", 0)
-	var over_pad := Control.new()
-	over_row.add_child(over_pad)
-	overview = AWOverview.new()
-	overview.setup(doc)
-	overview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	over_row.add_child(overview)
-	add_child(over_row)
 
 	var ruler_row := HBoxContainer.new()
 	ruler_row.add_theme_constant_override("separation", 0)
@@ -86,7 +72,6 @@ func _ready() -> void:
 	add_child(scroll)
 	var sync_corner := func() -> void:
 		corner.custom_minimum_size.x = AWRowHeaders.COLLAPSED_WIDTH if headers.collapsed else AWRowHeaders.WIDTH
-		over_pad.custom_minimum_size.x = corner.custom_minimum_size.x
 		corner.text = "▸ Rows" if headers.collapsed else "◂ Rows"
 	corner.pressed.connect(func() -> void: headers.set_collapsed(not headers.collapsed))
 	headers.collapsed_changed.connect(sync_corner)
