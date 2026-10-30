@@ -146,7 +146,7 @@ public:
 	// track plus its optional LFO, converted exactly like AWChain.sample_norm()/sample().
 	// spec: track (index in the Animation, -1 = none), scale (AWCurve.Scale), lo/hi (parameter
 	// range), static_norm (height used when the track has no keys), lfo (Dictionary with
-	// shape, min, max, freq, fade_in, fade_out, start, end, seed; empty = none).
+	// shape, min, max, freq, fade_in, fade_out, start, end, seed, accel, smooth; empty = none).
 	// unit: 0 parameter value, 1 curve height 0..1, 2 linear gain from dB (<= -59.9 dB is
 	// silence), 3 playback rate from semitones, 4 curve height without the LFO.
 	PackedFloat32Array sample_curve(const Ref<Animation> &p_anim, const Dictionary &p_spec, double p_start, double p_step, int64_t p_count, int64_t p_unit) const;

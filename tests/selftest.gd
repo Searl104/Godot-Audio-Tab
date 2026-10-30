@@ -621,6 +621,8 @@ static func sampler_tests(_screen: AWMainScreen) -> void:
 			l.fade_in_sec = 0.3
 			l.fade_out_sec = 0.6
 			l.random_seed = shape * 7 + 1
+			l.freq_accel = [0.0, 2.5, -1.2, 4.0, -6.0][shape]
+			l.fade_smoothing = [0.0, 0.5, 1.0, 0.3, 0.8][shape]
 			var r := ch.curve_range(curve)
 			l.min_value = lerpf(r.x, r.y, 0.15)
 			l.max_value = lerpf(r.x, r.y, 0.85)
@@ -989,8 +991,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.4.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.4.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.4.2" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.4.2"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -1429,10 +1431,10 @@ static func run(screen: AWMainScreen) -> void:
 	g._menu_curve = wet2
 	g._on_menu(44)
 	await frames(tree, 4)
-	var panel := screen.curves.lfo_panel
-	check(panel.visible and d.lfo_curve == wet2 and d.active_curve == wet2, "right-click > Edit LFO opens the panel")
+	var panel := screen.lfo_panel
+	check(panel._curve == wet2 and d.lfo_curve == wet2 and d.active_curve == wet2, "right-click > Edit LFO opens it in the LFO dock")
 	var fk := panel.find_child("freq_hz_knob", true, false) as AWKnob
-	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 5, "five knobs; Freq is logarithmic")
+	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 7, "seven knobs; Freq is logarithmic")
 	var f0 := lf.freq_hz
 	click(fk, Vector2(40, 40))
 	move(fk, Vector2(40, -20))
@@ -1448,6 +1450,34 @@ static func run(screen: AWMainScreen) -> void:
 	d.undo()
 	var fadek := panel.find_child("fade_in_sec_knob", true, false) as AWKnob
 	check(is_equal_approx(fadek.binding.hi, maxf(lf.span(), 0.01)), "Fade In knob ranges over the LFO span")
+
+	# Freq acceleration and fade smoothing (model, then knobs).
+	var ml := AWLfo.new()
+	ml.freq_hz = 4.0
+	ml.start_sec = 0.0
+	ml.end_sec = 4.0
+	check(is_equal_approx(ml.phase(0.5), 2.0), "phase without acceleration is freq * time")
+	ml.freq_accel = 4.0
+	check(is_equal_approx(ml.phase(0.5), 2.5) and is_equal_approx(ml.time_of_phase(2.5), 0.5), "positive accel speeds the LFO up (phase 2.5 at 0.5 s)")
+	ml.freq_accel = -8.0
+	check(is_equal_approx(ml.phase(1.0), 1.0) and is_equal_approx(ml.phase(3.0), 1.0), "negative accel stops at 0 Hz and holds the phase")
+	check(is_inf(ml.time_of_phase(1.5)), "a stopped LFO never reaches a later phase")
+	ml.fade_in_sec = 1.0
+	ml.fade_out_sec = 0.0
+	check(is_equal_approx(ml.envelope(0.25), 0.25), "straight fade is linear")
+	ml.fade_smoothing = 1.0
+	check(is_equal_approx(ml.envelope(0.25), 0.15625) and is_equal_approx(ml.envelope(1.0), 1.0) and is_equal_approx(ml.envelope(0.5), 0.5), "smoothing eases the fade (0.156 at a quarter, ends unchanged)")
+	var ak := panel.find_child("freq_accel_knob", true, false) as AWKnob
+	var sk := panel.find_child("fade_smoothing_knob", true, false) as AWKnob
+	check(ak != null and ak.bipolar and sk != null, "Accel (bipolar) and Smoothing knobs exist")
+	ak.open_entry()
+	ak._entry.text_submitted.emit("-2.5")
+	check(is_equal_approx(lf.freq_accel, -2.5), "typing -2.5 sets the acceleration")
+	sk.open_entry()
+	sk._entry.text_submitted.emit("0.6")
+	check(is_equal_approx(lf.fade_smoothing, 0.6), "typing 0.6 sets the smoothing")
+	d.undo(); d.undo()
+	check(lf.freq_accel == 0.0 and lf.fade_smoothing == 0.0, "both are undoable")
 
 	print("--- LFO list ---")
 	var mlim: AWEffect = p.master_chain.effects[1]
@@ -1547,11 +1577,9 @@ static func run(screen: AWMainScreen) -> void:
 	if shots:
 		d.seek(1.1)
 		await shot(tree, "aw_lfo_panel.png")
-		(screen.curves.lfo_panel.find_children("*", "ScrollContainer", true, false)[0] as ScrollContainer).scroll_vertical = 500
-		await shot(tree, "aw_lfo_panel_list.png")
 	d.close_lfo()
 	await frames(tree, 4)
-	check(not screen.curves.lfo_panel.visible, "close hides the panel (LFO stays)")
+	check(screen.lfo_panel._curve == null and wet2.lfo == lf, "deselecting empties the editor, the LFO stays on its curve")
 	check(wet2.lfo == lf, "LFO kept after closing")
 
 	print("--- LFO sync ---")

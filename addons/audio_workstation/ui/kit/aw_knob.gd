@@ -39,6 +39,8 @@ func setup(p_binding: AWParamBinding, p_accent: Color, p_diameter := 64.0) -> vo
 	focus_mode = Control.FOCUS_NONE
 	mouse_default_cursor_shape = Control.CURSOR_VSIZE
 	tooltip_text = "%s\nDrag: change   Shift: fine   Wheel: step   Double-click: type a value   Ctrl+click: reset\nRight-click: curve options" % binding.label
+	if binding.tooltip != "":
+		tooltip_text = binding.label + ": " + binding.tooltip + "\n" + tooltip_text.substr(tooltip_text.find("\n") + 1)
 
 
 func _n(v: float) -> float:

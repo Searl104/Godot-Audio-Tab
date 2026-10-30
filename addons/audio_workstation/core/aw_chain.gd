@@ -207,6 +207,7 @@ func native_spec(curve: AWCurve) -> Dictionary:
 			"shape": l.shape, "min": l.min_value, "max": l.max_value, "freq": l.freq_hz,
 			"fade_in": l.fade_in_sec, "fade_out": l.fade_out_sec,
 			"start": l.start_sec, "end": l.end_sec, "seed": l.random_seed,
+			"accel": l.freq_accel, "smooth": l.fade_smoothing,
 		}
 	return spec
 

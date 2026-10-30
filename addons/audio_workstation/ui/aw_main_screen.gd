@@ -16,6 +16,7 @@ var curves: AWCurvePane
 var chain_panel: AWChainPanel
 var export_panel: AWExportPanel
 var detail_panel: AWEffectDetail
+var lfo_panel: AWLfoPanel
 
 var _status: Label
 var _dialog: FileDialog
@@ -63,6 +64,8 @@ func _ready() -> void:
 	export_panel.browse_requested.connect(func() -> void: _on_request("export_browse"))
 	detail_panel = AWEffectDetail.new()
 	detail_panel.setup(doc)
+	lfo_panel = AWLfoPanel.new()
+	lfo_panel.setup(doc)
 	vsplit.add_child(top)
 
 	chain_panel = AWChainPanel.new()

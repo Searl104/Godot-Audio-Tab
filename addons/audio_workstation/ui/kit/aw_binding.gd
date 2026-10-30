@@ -29,6 +29,8 @@ var default := 0.0
 ## Property mode only: show values formatted like this effect parameter (Hz, dB ...).
 var like_effect := ""
 var like_param := ""
+## Extra help shown in the control's tooltip.
+var tooltip := ""
 var _orig := 0.0
 
 
