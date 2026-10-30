@@ -56,6 +56,8 @@ var active_curve: AWCurve = null
 var solo_curve: AWCurve = null
 ## Curve whose LFO panel is open (null = closed).
 var lfo_curve: AWCurve = null
+## The LFO panel stays open showing the list of all LFOs even when none is being edited.
+var lfo_list_open := false
 
 # Views
 var timeline_view := AWTimeView.new()
@@ -887,6 +889,51 @@ func open_lfo(chain: AWChain, c: AWCurve) -> void:
 	lfo_curve = c
 	lfo_panel_changed.emit()
 	curve_view_changed.emit()
+
+
+func toggle_lfo_list() -> void:
+	lfo_list_open = not lfo_list_open
+	lfo_panel_changed.emit()
+
+
+## Every LFO in the project, Master first then clips in timeline order:
+## [{chain, curve, clip (null for Master), label "Clip 2\\Low Pass\\Cutoff"}].
+func all_lfos() -> Array:
+	var out := []
+	_collect_lfos(out, project.master_chain, null, "Master")
+	for clip in project.clips:
+		_collect_lfos(out, clip.chain, clip, clip.name)
+	return out
+
+
+func _collect_lfos(out: Array, ch: AWChain, clip: AWClip, owner_name: String) -> void:
+	for c in ch.curves:
+		if c.lfo == null:
+			continue
+		var e := ch.effect_of(c)
+		if e == null:
+			continue
+		var same := 0
+		var nth := 0
+		for o in ch.effects:
+			if o.effect_type == e.effect_type:
+				same += 1
+				if o == e:
+					nth = same
+		var ename := e.effect_type + (" #%d" % nth if same > 1 else "")
+		out.append({"chain": ch, "curve": c, "clip": clip,
+			"label": "%s\\%s\\%s" % [owner_name, ename, AWEffectLibrary.param_label(e.effect_type, c.param)]})
+
+
+## Jumps to an LFO from all_lfos(): selects its clip (or the Master tab) and opens it.
+func goto_lfo(entry: Dictionary) -> void:
+	var clip: AWClip = entry["clip"]
+	if clip != null:
+		if focus_clip != clip or chain_tab != ChainTab.CLIP:
+			select_clip(clip)
+	else:
+		set_chain_tab(ChainTab.MASTER)
+	open_lfo(entry["chain"], entry["curve"])
 
 
 func close_lfo() -> void:

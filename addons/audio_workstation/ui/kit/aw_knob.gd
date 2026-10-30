@@ -1,8 +1,9 @@
 @tool
 class_name AWKnob
 extends Control
-## Rotary control bound to one effect parameter. Drag up/down (Shift = fine), wheel,
-## double-click to reset, right-click for curve options. When the parameter is driven
+## Rotary control bound to one parameter. Drag up/down (Shift = fine), wheel, double-click
+## to type an exact value (Enter applies, Esc cancels; "2k" works), Ctrl+click to reset,
+## right-click for curve options. When the parameter is driven
 ## by a curve it shows the live value, ringed in the automation colour, and a click
 ## selects the curve instead of editing.
 
@@ -24,6 +25,7 @@ var bipolar := false
 var _start_norm := 0.0
 var _press_y := 0.0
 var _pressed := false
+var _entry: LineEdit
 
 signal touched
 
@@ -36,7 +38,7 @@ func setup(p_binding: AWParamBinding, p_accent: Color, p_diameter := 64.0) -> vo
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	focus_mode = Control.FOCUS_NONE
 	mouse_default_cursor_shape = Control.CURSOR_VSIZE
-	tooltip_text = "%s\nDrag: change   Shift: fine   Wheel: step   Double-click: reset\nRight-click: curve options" % binding.label
+	tooltip_text = "%s\nDrag: change   Shift: fine   Wheel: step   Double-click: type a value   Ctrl+click: reset\nRight-click: curve options" % binding.label
 
 
 func _n(v: float) -> float:
@@ -106,8 +108,10 @@ func _gui_input(event: InputEvent) -> void:
 				touched.emit()
 				if binding.has_curve():
 					binding.select_curve()
-				elif mb.double_click:
+				elif mb.ctrl_pressed:
 					binding.reset()
+				elif mb.double_click:
+					open_entry()
 				else:
 					binding.begin()
 					_pressed = true
@@ -132,3 +136,40 @@ func _gui_input(event: InputEvent) -> void:
 		var k := 0.1 if mm.shift_pressed else 1.0
 		binding.preview(_v(_start_norm + (_press_y - mm.position.y) / DRAG_PX * k))
 		queue_redraw()
+
+
+## Shows a text field over the value for typing an exact number.
+func open_entry() -> void:
+	if binding == null or binding.has_curve():
+		return
+	if _entry == null:
+		_entry = LineEdit.new()
+		_entry.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_entry.select_all_on_focus = true
+		_entry.text_submitted.connect(_on_entry_submitted)
+		_entry.focus_exited.connect(close_entry)
+		_entry.gui_input.connect(func(e: InputEvent) -> void:
+			if e is InputEventKey and e.pressed and e.keycode == KEY_ESCAPE:
+				close_entry()
+				_entry.accept_event())
+		add_child(_entry)
+	var fs := get_theme_default_font_size()
+	_entry.size = Vector2(minf(size.x, 84.0), fs + 12.0)
+	_entry.position = Vector2((size.x - _entry.size.x) * 0.5, diameter + 4.0)
+	_entry.text = binding.edit_text()
+	_entry.visible = true
+	_entry.grab_focus()
+	_entry.select_all()
+
+
+func close_entry() -> void:
+	if _entry:
+		_entry.visible = false
+
+
+func _on_entry_submitted(t: String) -> void:
+	var v := binding.parse_text(t)
+	if not is_nan(v):
+		binding.set_value(snappedf(v, binding.step))
+	close_entry()
+	queue_redraw()

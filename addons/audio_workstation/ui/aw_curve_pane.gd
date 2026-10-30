@@ -12,6 +12,7 @@ var _owner_label: Label
 var _clip_time: Button
 var _project_time: Button
 var _hbar: HScrollBar
+var _lfos_btn: Button
 
 
 func setup(p_doc: AWDocument) -> void:
@@ -52,6 +53,12 @@ func _ready() -> void:
 	_clip_time.pressed.connect(func() -> void: doc.set_curve_time(AWDocument.CurveTime.CLIP))
 	_project_time.pressed.connect(func() -> void: doc.set_curve_time(AWDocument.CurveTime.PROJECT))
 	header.add_child(VSeparator.new())
+	_lfos_btn = AWTheme.button(self, "LFOs", &"", "List every LFO in the project; click one to edit it")
+	_lfos_btn.toggle_mode = true
+	_lfos_btn.pressed.connect(doc.toggle_lfo_list)
+	header.add_child(_lfos_btn)
+	doc.lfo_panel_changed.connect(func() -> void:
+		_lfos_btn.set_pressed_no_signal(doc.lfo_list_open or doc.lfo_curve != null))
 	var frame := AWTheme.button(self, "Frame", &"", "Frame the curves (F)")
 	frame.pressed.connect(doc.frame_curves)
 	header.add_child(frame)

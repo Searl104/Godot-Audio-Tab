@@ -837,9 +837,20 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	check(fine > c0 and fine < up, "Shift drags finely (%.0f Hz vs %.0f Hz)" % [fine, up])
 	d.undo()
 	d.set_param(lp, "cutoff_hz", 6000.0)
-	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, true)
-	check(lp.get_param("cutoff_hz") == 2000.0, "double-click resets to the default")
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, false, false, true)
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, false)
+	check(lp.get_param("cutoff_hz") == 2000.0, "Ctrl+click resets to the default")
 	d.undo(); d.undo()
+	# Typed entry: double-click opens a field; "3k" sets 3000 Hz, Esc cancels.
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, true)
+	click(k, Vector2(40, 40), MOUSE_BUTTON_LEFT, false)
+	check(k._entry != null and k._entry.visible and k._entry.text == "2000", "double-click opens the entry field with the current value")
+	k._entry.text = "3k"
+	k._entry.text_submitted.emit("3k")
+	check(lp.get_param("cutoff_hz") == 3000.0 and not k._entry.visible, "typing 3k sets 3000 Hz and closes the field")
+	check(is_nan(k.binding.parse_text("abc")) and k.binding.parse_text("-6 dB") == -6.0 and k.binding.parse_text(".5") == 0.5, "entry parsing: numbers, units and junk")
+	d.undo()
+	check(lp.get_param("cutoff_hz") == 2000.0, "the typed value is one undo step")
 	check(lp.get_param("cutoff_hz") == 2000.0, "undo walks back through the knob edits")
 
 	# A curve takes over the knob; the other axis of the handle still works.
@@ -933,8 +944,9 @@ static func panel_tests(screen: AWMainScreen) -> void:
 	click(k1, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
 	var kg := eq.get_param("band_db/100_hz")
 	check(kg > 4.0 and kg <= 18.0 and ep.selected == 1, "knob drag raises its band and selects it (%.1f dB)" % kg)
-	click(k1, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, true)
-	check(eq.get_param("band_db/100_hz") == 0.0, "double-click resets a band knob")
+	click(k1, Vector2(40, 40), MOUSE_BUTTON_LEFT, true, false, false, true)
+	click(k1, Vector2(40, 40), MOUSE_BUTTON_LEFT, false)
+	check(eq.get_param("band_db/100_hz") == 0.0, "Ctrl+click resets a band knob")
 	var ec := d.make_curve(ch, eq, "band_db/320_hz")
 	await frames(tree, 2)
 	ep.refresh()
@@ -1419,22 +1431,49 @@ static func run(screen: AWMainScreen) -> void:
 	await frames(tree, 4)
 	var panel := screen.curves.lfo_panel
 	check(panel.visible and d.lfo_curve == wet2 and d.active_curve == wet2, "right-click > Edit LFO opens the panel")
-	var fs := panel.find_child("freq_hz_slider", true, false) as HSlider
-	var ff := panel.find_child("freq_hz_field", true, false) as SpinBox
-	check(fs != null and ff != null and fs.exp_edit, "Freq has a log slider and a field")
+	var fk := panel.find_child("freq_hz_knob", true, false) as AWKnob
+	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 5, "five knobs; Freq is logarithmic")
 	var f0 := lf.freq_hz
-	fs.drag_started.emit()
-	fs.value = 7.5
-	fs.drag_ended.emit(true)
-	check(is_equal_approx(lf.freq_hz, 7.5), "Freq slider drag sets 7.5 Hz")
+	click(fk, Vector2(40, 40))
+	move(fk, Vector2(40, -20))
+	click(fk, Vector2(40, -20), MOUSE_BUTTON_LEFT, false)
+	check(lf.freq_hz > f0 * 2.0, "Freq knob drag raises the rate (%.2f Hz)" % lf.freq_hz)
 	d.undo()
-	check(is_equal_approx(lf.freq_hz, f0), "slider drag is one undo step")
-	var mf := panel.find_child("max_value_field", true, false) as SpinBox
-	mf.value = 0.95
-	check(is_equal_approx(lf.max_value, 0.95), "Max field sets the value")
-	await frames(tree, 2)
-	check(is_equal_approx((panel.find_child("max_value_slider", true, false) as HSlider).value, 0.95), "slider follows the field")
+	check(is_equal_approx(lf.freq_hz, f0), "knob drag is one undo step")
+	var mk := panel.find_child("max_value_knob", true, false) as AWKnob
+	mk.open_entry()
+	mk._entry.text_submitted.emit("0.95")
+	check(is_equal_approx(lf.max_value, 0.95), "typing 0.95 into Max sets the value")
+	check(mk.binding.text() == AWEffectLibrary.format_value("Reverb", "wet", 0.95), "Max shows like its parameter (%s)" % mk.binding.text())
 	d.undo()
+	var fadek := panel.find_child("fade_in_sec_knob", true, false) as AWKnob
+	check(is_equal_approx(fadek.binding.hi, maxf(lf.span(), 0.01)), "Fade In knob ranges over the LFO span")
+
+	print("--- LFO list ---")
+	var mlim: AWEffect = p.master_chain.effects[1]
+	var mkey: String = AWEffectLibrary.param_schema(mlim.effect_type).keys()[0]
+	var mcurve := d.make_curve(p.master_chain, mlim, mkey)
+	d.add_lfo(p.master_chain, mcurve)
+	await frames(tree, 4)
+	var lfo_list := d.all_lfos()
+	var labels_now: Array = lfo_list.map(func(e: Dictionary) -> String: return e["label"])
+	var want_clip: String = c4.name + "\\Reverb\\Wet"
+	var want_master: String = "Master\\%s\\%s" % [mlim.effect_type, AWEffectLibrary.param_label(mlim.effect_type, mkey)]
+	check(labels_now.has(want_clip) and labels_now.has(want_master), "all_lfos lists clip and master LFOs: %s" % str(labels_now))
+	check(labels_now[0] == want_master, "Master comes first in the list")
+	check(panel.list_buttons.size() == lfo_list.size() and panel.list_buttons.any(func(b: Button) -> bool: return b.text == want_master), "the panel shows one button per LFO")
+	panel.list_buttons[labels_now.find(want_master)].pressed.emit()
+	await frames(tree, 4)
+	check(d.chain_tab == AWDocument.ChainTab.MASTER and d.lfo_curve == mcurve and panel.visible, "clicking a Master LFO jumps to the Master chain and opens it")
+	panel.list_buttons[labels_now.find(want_clip)].pressed.emit()
+	await frames(tree, 4)
+	check(d.chain_tab == AWDocument.ChainTab.CLIP and d.focus_clip == c4 and d.lfo_curve == wet2, "clicking a clip LFO selects that clip and opens it")
+	d.remove_curve(p.master_chain, mcurve)
+	await frames(tree, 3)
+	check(panel.list_buttons.size() == lfo_list.size() - 1, "the list follows LFOs being removed")
+	d.open_lfo(ch, wet2)
+	await frames(tree, 3)
+
 	var shape_btns: Array = panel.find_children("*", "Button", true, false).filter(func(b: Button) -> bool: return b.button_group != null)
 	check(shape_btns.size() == 5, "five shape buttons")
 	(shape_btns[1] as Button).pressed.emit()
@@ -1508,6 +1547,8 @@ static func run(screen: AWMainScreen) -> void:
 	if shots:
 		d.seek(1.1)
 		await shot(tree, "aw_lfo_panel.png")
+		(screen.curves.lfo_panel.find_children("*", "ScrollContainer", true, false)[0] as ScrollContainer).scroll_vertical = 500
+		await shot(tree, "aw_lfo_panel_list.png")
 	d.close_lfo()
 	await frames(tree, 4)
 	check(not screen.curves.lfo_panel.visible, "close hides the panel (LFO stays)")
@@ -1573,7 +1614,7 @@ static func run(screen: AWMainScreen) -> void:
 	d.undo()
 	check(wet2.lfo == lf, "undo remove LFO")
 	var guard := 0
-	while wet2.lfo != null and guard < 12:
+	while wet2.lfo != null and guard < 40:
 		d.undo()
 		guard += 1
 	check(wet2.lfo == null, "undo all the way back to no LFO")

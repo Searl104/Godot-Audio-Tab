@@ -20,8 +20,16 @@ var unit: String
 var label: String
 ## How a 0..1 control position maps to the value: AWCurve.Scale.LINEAR / LOG / FADER.
 var scale: int
-var _orig := 0.0
 var dragging := false
+## Property mode (e.g. an LFO field): the object and property edited instead of an effect
+## parameter. Such a binding has no curve of its own.
+var target: Object
+var prop := ""
+var default := 0.0
+## Property mode only: show values formatted like this effect parameter (Hz, dB ...).
+var like_effect := ""
+var like_param := ""
+var _orig := 0.0
 
 
 func _init(p_doc: AWDocument, p_chain: AWChain, p_effect: AWEffect, p_param: String, p_scale := -1) -> void:
@@ -29,6 +37,8 @@ func _init(p_doc: AWDocument, p_chain: AWChain, p_effect: AWEffect, p_param: Str
 	chain = p_chain
 	effect = p_effect
 	param = p_param
+	if p_effect == null:
+		return
 	var spec := AWEffectLibrary.param_spec(effect.effect_type, param)
 	lo = spec[0]
 	hi = spec[1]
@@ -38,12 +48,34 @@ func _init(p_doc: AWDocument, p_chain: AWChain, p_effect: AWEffect, p_param: Str
 	scale = p_scale if p_scale >= 0 else AWEffectLibrary.default_scale(effect.effect_type, param)
 
 
+## A binding to a plain property of a model object (undoable through the document).
+static func for_property(p_doc: AWDocument, p_target: Object, p_prop: String, p_label: String, p_lo: float, p_hi: float,
+		p_step: float, p_default: float, p_unit := "", p_scale := AWCurve.Scale.LINEAR) -> AWParamBinding:
+	var b := AWParamBinding.new(p_doc, null, null, "")
+	b.target = p_target
+	b.prop = p_prop
+	b.label = p_label
+	b.lo = p_lo
+	b.hi = p_hi
+	b.step = p_step
+	b.default = p_default
+	b.unit = p_unit
+	b.scale = p_scale
+	return b
+
+
+func is_property() -> bool:
+	return prop != ""
+
+
 func default_value() -> float:
+	if is_property():
+		return default
 	return AWEffectLibrary.param_spec(effect.effect_type, param)[2]
 
 
 func curve() -> AWCurve:
-	return chain.get_curve(effect.id, param)
+	return null if is_property() else chain.get_curve(effect.id, param)
 
 
 func has_curve() -> bool:
@@ -51,7 +83,7 @@ func has_curve() -> bool:
 
 
 func value() -> float:
-	return effect.get_param(param)
+	return target.get(prop) if is_property() else effect.get_param(param)
 
 
 func live_value() -> float:
@@ -71,7 +103,31 @@ func from_norm(n: float) -> float:
 
 
 func text(v := NAN) -> String:
-	return AWEffectLibrary.format_value(effect.effect_type, param, live_value() if is_nan(v) else v)
+	var x := live_value() if is_nan(v) else v
+	if is_property():
+		if like_effect != "":
+			return AWEffectLibrary.format_value(like_effect, like_param, x)
+		var decimals := 0 if step >= 1.0 else (1 if step >= 0.1 else 2)
+		return String.num(x, decimals) + (" " + unit if unit != "" else "")
+	return AWEffectLibrary.format_value(effect.effect_type, param, x)
+
+
+## The value as typed into an entry field (no unit).
+func edit_text() -> String:
+	var decimals := 0 if step >= 1.0 else (1 if step >= 0.1 else (2 if step >= 0.01 else 3))
+	return String.num(value(), decimals)
+
+
+## Parses what the user typed ("2000", "2k", "-6 dB", "0.25"). NAN when it isn't a number.
+func parse_text(t: String) -> float:
+	var re := RegEx.create_from_string("^\\s*([+-]?(?:\\d+\\.?\\d*|\\.\\d+))\\s*(k?)")
+	var m := re.search(t.to_lower())
+	if m == null:
+		return NAN
+	var v := m.get_string(1).to_float()
+	if m.get_string(2) == "k":
+		v *= 1000.0
+	return v
 
 
 func begin() -> void:
@@ -80,7 +136,11 @@ func begin() -> void:
 
 
 func preview(v: float) -> void:
-	doc.preview_param(effect, param, clampf(v, lo, hi))
+	v = clampf(v, lo, hi)
+	if is_property():
+		doc.preview_set(target, {prop: v})
+	else:
+		doc.preview_param(effect, param, v)
 
 
 ## Ends a drag: puts the original back and records the change as one undo step.
@@ -89,12 +149,20 @@ func commit() -> void:
 		return
 	dragging = false
 	var now := value()
-	doc.preview_param(effect, param, _orig)
-	doc.set_param(effect, param, now)
+	if is_property():
+		doc.preview_set(target, {prop: _orig})
+		doc.set_props(target, {prop: now}, "Edit " + label)
+	else:
+		doc.preview_param(effect, param, _orig)
+		doc.set_param(effect, param, now)
 
 
 func set_value(v: float) -> void:
-	doc.set_param(effect, param, clampf(v, lo, hi))
+	v = clampf(v, lo, hi)
+	if is_property():
+		doc.set_props(target, {prop: v}, "Edit " + label)
+	else:
+		doc.set_param(effect, param, v)
 
 
 func reset() -> void:
@@ -118,7 +186,9 @@ func open_menu(owner: Control, pos: Vector2, menu: PopupMenu = null) -> void:
 		m.id_pressed.connect(on_menu)
 	var c := curve()
 	m.clear()
-	if c == null:
+	if is_property():
+		m.add_item("Reset to Default", 3)
+	elif c == null:
 		m.add_item("Make Curve", 1)
 		m.add_item("Add LFO…", 20)
 		m.add_item("Reset to Default", 3)

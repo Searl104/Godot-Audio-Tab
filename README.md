@@ -189,3 +189,7 @@ Effects can have a custom detail panel. It opens in the **Audio Effect** dock (b
 - `ui/kit/`: `AWKnob` (optional bipolar and view range), `AWResponsePlot` (log-frequency plot with draggable handles). Gestures: drag, Shift = fine, wheel, double-click = reset, right-click = curve options. A driven parameter shows a yellow dotted ring and a click selects its curve.
 - `ui/kit/aw_panel_registry.gd`: effect type to panel. To add one, subclass `AWEffectPanel` (`ui/panels/`), register it there.
 - `core/aw_filter_response.gd`: the drawn response mirrors the engine's biquads; the self-test compares it with the engine's measured output.
+
+The LFO panel uses the same kit: a waveform preview, shape buttons, and knobs for Freq, Max, Min, Fade In and Fade Out (`AWParamBinding.for_property` edits any model property with the same undo behaviour). Below them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header opens the panel with just the list.
+
+Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k` works, Enter applies, Esc cancels), **Ctrl+click to reset**, right-click for options.
