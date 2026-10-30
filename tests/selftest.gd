@@ -1345,6 +1345,364 @@ static func export_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	d.set_export_path("assets/sfx/jump.wav")
 	DirAccess.remove_absolute(abs_path)
 
+static func _render_project(p: AWProject, secs: float) -> PackedVector2Array:
+	var e := AWEngine.new()
+	e.set_project(p)
+	return e.render_preview_range(0.0, secs)
+
+
+static func load_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var e := d.engine
+	var sine := "/tmp/aw_load_sine.wav"
+	write_wav(sine, 4.0, func(i: int, rt: int) -> Vector2i:
+		var v := int(8000.0 * sin(TAU * 200.0 * i / rt))
+		return Vector2i(v, v))
+	# A busy project: 48 clips, each with Delay, Reverb and Chorus, plus a master chain.
+	var p := AWProject.create_default()
+	p.clips.clear()
+	for i in 48:
+		var c := AWClip.new()
+		c.name = "c%d" % i
+		c.source_path = sine
+		c.start_sec = float(i % 12) * 0.5
+		c.length_sec = 3.0
+		c.chain = AWChain.create("Source")
+		for t in ["Delay", "Reverb", "Chorus"]:
+			c.chain.effects.append(AWEffect.create(t, c.chain.new_effect_id()))
+		p.clips.append(c)
+	d.set_project(p)
+	check(e.get_load().size() == 2, "load: get_load returns [average, peak]")
+	var t0 := Time.get_ticks_usec()
+	var out := e.render_preview_range(0.0, 8.0)
+	var secs := (Time.get_ticks_usec() - t0) / 1e6
+	var speed := 8.0 / maxf(secs, 1e-6)
+	print("LOAD busy project: 8 s rendered in %.2f s (%.1fx real time)" % [secs, speed])
+	check(out.size() > 0 and speed > 1.5, "load: a busy project (48 clips x 3 effects) renders faster than real time (%.1fx)" % speed)
+
+	# Playing while the plan changes constantly stays alive and reports a sane load.
+	d.seek(0.0)
+	d.play_pause()
+	for i in 40:
+		d.set_props(p.clips[i % p.clips.size()], {"muted": i % 2 == 0}, "Mute")
+		await tree.process_frame
+	var l := e.get_load()
+	check(is_finite(float(l[0])) and is_finite(float(l[1])) and float(l[1]) >= 0.0, "load: meter reports finite numbers while playing and editing")
+	print("LOAD while playing: avg %.3f peak %.3f" % [float(l[0]), float(l[1])])
+	d.stop()
+	screen.toolbar_update_cpu()
+	d.new_project()
+
+
+static func recovery_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	AWRecovery.discard()
+	d.new_project()
+	check(not AWRecovery.exists(), "recovery: none for a fresh sound")
+	d.tick_recovery(10.0)
+	check(not AWRecovery.exists(), "recovery: nothing written while clean")
+
+	# An edit starts the countdown; the copy appears after the quiet period, not before.
+	d.set_props(d.project.clips[0], {"name": "Recovered clip"}, "Rename")
+	check(d.is_dirty(), "recovery: edit makes it dirty")
+	d.tick_recovery(0.1)
+	d.tick_recovery(AWDocument.RECOVERY_DELAY - 1.0)
+	check(not AWRecovery.exists(), "recovery: not written before the delay")
+	d.tick_recovery(2.0)
+	check(AWRecovery.exists(), "recovery: written after the delay")
+	check(AWRecovery.info().original == "", "recovery: records no original for an unsaved sound")
+
+	# Restore into a different state.
+	d.new_project()
+	check(not AWRecovery.exists(), "recovery: a deliberate New discards it")
+	d.set_props(d.project.clips[0], {"name": "Recovered clip"}, "Rename")
+	d.write_recovery()
+	d.set_props(d.project.clips[0], {"name": "Something else"}, "Rename")
+	check(d.restore_recovery(), "recovery: restore succeeds")
+	check(d.project.clips[0].name == "Recovered clip" and d.is_dirty(), "recovery: restored content, marked unsaved")
+	d.tick_recovery(0.1)
+	d.tick_recovery(AWDocument.RECOVERY_DELAY + 1.0)
+	check(AWRecovery.exists(), "recovery: restored work is protected again")
+
+	# A save removes it.
+	check(d.save_project("user://aw_recovery_save.tres"), "recovery: save ok")
+	check(not AWRecovery.exists() and not d.is_dirty(), "recovery: removed by a clean save")
+
+	# Remembers the file the sound belongs to.
+	d.set_props(d.project.clips[0], {"name": "Edited again"}, "Rename")
+	d.tick_recovery(0.1)
+	d.tick_recovery(AWDocument.RECOVERY_DELAY + 1.0)
+	check(AWRecovery.info().original == "user://aw_recovery_save.tres", "recovery: remembers the original file")
+	d.new_project()
+	check(not AWRecovery.exists(), "recovery: discarded when the user starts over")
+
+	# Damaged recovery copy: handled, then removed.
+	var f := FileAccess.open(AWRecovery.PATH, FileAccess.WRITE)
+	f.store_string("junk")
+	f.close()
+	check(not d.restore_recovery() and not AWRecovery.exists(), "recovery: unreadable copy is refused and removed")
+
+	# Opening from the FileSystem dock.
+	d.new_project()
+	screen.open_from_editor("user://aw_recovery_save.tres")
+	check(d.project_path == "user://aw_recovery_save.tres", "recovery: open_from_editor opens the sound")
+	d.new_project()
+
+
+static func source_tests(_tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	DirAccess.make_dir_recursive_absolute("/tmp/aw_src/a/deep")
+	DirAccess.make_dir_recursive_absolute("/tmp/aw_src/b")
+	var gen := func(i: int, rt: int) -> Vector2i:
+		var v := int(9000.0 * sin(TAU * 220.0 * i / rt))
+		return Vector2i(v, v)
+	write_wav("/tmp/aw_src/a/deep/boom.wav", 0.5, gen)
+	write_wav("/tmp/aw_src/b/tick.wav", 0.5, gen)
+	var p := AWProject.create_default()
+	p.clips[0].source_path = "/tmp/aw_src/a/deep/boom.wav"
+	p.clips[1].source_path = "/tmp/aw_src/a/deep/boom.wav"
+	p.clips[2].source_path = "/tmp/aw_src/b/tick.wav"
+	d.set_project(p)
+	check(d.missing_paths().is_empty(), "sources: nothing missing at first")
+	check(not d.is_clip_missing(p.clips[0]), "sources: present clip not marked")
+
+	# Missing files are marked, but the project still opens.
+	var path := "user://aw_src_test.tres"
+	check(d.save_project(path), "sources: saved")
+	DirAccess.remove_absolute("/tmp/aw_src/a/deep/boom.wav")
+	check(d.load_project(path), "sources: opens with a missing file")
+	check(d.missing_paths().size() == 1 and d.is_clip_missing(d.project.clips[0]) and d.is_clip_missing(d.project.clips[1]), "sources: both clips of the missing file are marked")
+	check(not d.is_clip_missing(d.project.clips[2]), "sources: other clip not marked")
+	check(d.project.clips[0].source_path == "/tmp/aw_src/a/deep/boom.wav", "sources: missing path kept so it can be relinked")
+
+	# Relink one file: all clips that used it follow, and undo restores.
+	write_wav("/tmp/aw_src/b/boom2.wav", 0.5, gen)
+	d.relink_clip(d.project.clips[0], "/tmp/aw_src/b/boom2.wav")
+	check(d.missing_paths().is_empty() and d.project.clips[1].source_path == "/tmp/aw_src/b/boom2.wav", "sources: relink moves every clip using the file")
+	d.undo()
+	check(d.is_clip_missing(d.project.clips[0]) and d.project.clips[1].source_path == "/tmp/aw_src/a/deep/boom.wav", "sources: relink undone")
+	d.redo()
+	check(d.missing_paths().is_empty(), "sources: relink redone")
+	d.relink_clip(d.project.clips[0], "/tmp/aw_src/nothing.wav")
+	check(d.project.clips[0].source_path == "/tmp/aw_src/b/boom2.wav", "sources: relink to a missing file refused")
+
+	# Relink from a folder, found by file name.
+	d.undo()
+	check(d.relink_in_folder("/tmp/aw_src/empty_nowhere") == 0, "sources: folder without the file relinks nothing")
+	write_wav("/tmp/aw_src/a/deep/boom.wav", 0.5, gen)
+	check(d.relink_in_folder("/tmp/aw_src/a") == 2 and d.missing_paths().is_empty(), "sources: folder search relinks by name, recursively")
+
+	# Moved files are followed by UID (only for files Godot knows; here, check the mechanism).
+	var q := AWProject.create_default()
+	q.clips[0].source_path = "/tmp/aw_src/a/deep/boom.wav"
+	q.clips[0].source_uid = "uid://notarealuid"
+	check(AWProjectIO.refresh_sources(q).is_empty() and q.clips[0].source_path == "/tmp/aw_src/a/deep/boom.wav", "sources: unknown uid leaves path alone")
+	check(AWProjectIO.path_for_uid("") == "" and AWProjectIO.uid_for_path("/tmp/aw_src/b/tick.wav") == "", "sources: files outside the project have no uid")
+
+	# Menu offers relink only for a missing clip.
+	DirAccess.remove_absolute("/tmp/aw_src/a/deep/boom.wav")
+	d.refresh_sources()
+	check(d.is_clip_missing(d.project.clips[0]), "sources: refresh re-detects missing files")
+	d.relink_requested.connect(func(_c: AWClip, m: String) -> void: print("relink asked: ", m), CONNECT_ONE_SHOT)
+	d.relink_requested.emit(d.project.clips[0], "file")
+	d.new_project()
+
+
+static func save_open_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	var d := screen.doc
+	var rate := int(AudioServer.get_mix_rate())
+	var sine := "/tmp/aw_save_sine.wav"
+	write_wav(sine, 1.5, func(i: int, rt: int) -> Vector2i:
+		var v := int(12000.0 * sin(TAU * 330.0 * i / rt))
+		return Vector2i(v, v))
+	var path := "user://aw_save_test.tres"
+	var abs_path := ProjectSettings.globalize_path(path)
+	DirAccess.remove_absolute(abs_path)
+
+	# A project that uses most of the model: sources, chains, curves, an LFO, export settings.
+	var p := AWProject.create_default()
+	for c in p.clips:
+		c.source_path = sine
+	var bed: AWClip = p.clips[3]
+	var delay := AWEffect.create("Delay", bed.chain.new_effect_id())
+	delay.params["tap1_delay_ms"] = 180.0
+	bed.chain.effects.append(delay)
+	var wet := bed.chain.get_curve(bed.chain.effects[2].id, "wet")
+	var lfo := AWLfo.new()
+	lfo.shape = AWLfo.Shape.TRIANGLE
+	lfo.freq_hz = 7.5
+	lfo.freq_accel = 0.8
+	lfo.fade_smoothing = 0.3
+	lfo.max_value = 0.7
+	lfo.min_value = 0.2
+	lfo.end_sec = 2.0
+	wet.lfo = lfo
+	p.export_format = "ogg"
+	p.export_ogg_quality = 7.5
+	p.export_end_sec = 4.5
+	p.export_path = "assets/sfx/saved_test.ogg"
+	p.title = "Round trip"
+	var before := _render_project(p, 3.5)
+
+	# Save and open: the same sound, sample for sample.
+	d.set_project(p)
+	check(d.save_project(abs_path) and FileAccess.file_exists(abs_path), "save: the file is written")
+	check(not FileAccess.file_exists(abs_path.get_basename() + ".aw_saving.tres"), "save: no temporary file is left behind")
+	var r := AWProjectIO.open(abs_path)
+	check(r.ok and r.repairs.is_empty(), "open: a file we saved opens with nothing repaired (%s)" % str(r.repairs))
+	var q: AWProject = r.project
+	var after := _render_project(q, 3.5)
+	var worst := 0.0
+	var peak := 0.0
+	for i in mini(before.size(), after.size()):
+		worst = maxf(worst, maxf(absf(before[i].x - after[i].x), absf(before[i].y - after[i].y)))
+		peak = maxf(peak, absf(before[i].x))
+	check(before.size() == after.size() and peak > 0.05 and worst < 1e-5, "save and open: the render matches sample for sample to within -100 dB (sizes %d/%d, peak %.2f, worst %s)" % [before.size(), after.size(), peak, str(worst)])
+	check(q.title == "Round trip" and q.clips.size() == p.clips.size() and q.export_format == "ogg" and is_equal_approx(q.export_ogg_quality, 7.5) and is_equal_approx(q.export_end_sec, 4.5) and q.export_path == "assets/sfx/saved_test.ogg", "open: title, clips and export settings come back")
+	var qwet := q.clips[3].chain.get_curve(q.clips[3].chain.effects[2].id, "wet")
+	check(qwet != null and qwet.lfo != null and qwet.lfo.shape == AWLfo.Shape.TRIANGLE and is_equal_approx(qwet.lfo.freq_accel, 0.8) and is_equal_approx(qwet.lfo.fade_smoothing, 0.3), "open: the LFO and its new controls come back")
+	check(q.clips[3].chain.get_keys(qwet).size() == bed.chain.get_keys(wet).size() and q.clips[3].chain.effects.size() == bed.chain.effects.size(), "open: curve keys and effects come back")
+	check(is_equal_approx(q.clips[3].chain.effects[bed.chain.effects.size() - 1].get_param("tap1_delay_ms"), 180.0), "open: effect settings come back")
+
+	# Dirty flag, title and undo history.
+	check(not d.is_dirty() and d.file_label() == "aw_save_test.tres", "dirty: just saved is clean (%s)" % d.file_label())
+	d.toggle_loop()
+	check(d.is_dirty() and d.file_label() == "aw_save_test.tres*", "dirty: an edit shows the star (%s)" % d.file_label())
+	d.undo()
+	check(not d.is_dirty(), "dirty: undoing back to the saved state is clean again")
+	d.set_export_ogg_quality(3.0)
+	check(d.is_dirty(), "dirty: an export setting counts too, though it isn't undoable")
+	var fl: Label = screen.find_child("FileName", true, false)
+	check(fl != null and fl.text == "aw_save_test.tres*", "toolbar shows the file name and star (%s)" % (fl.text if fl else "?"))
+	check(d.save_project(abs_path) and not d.is_dirty(), "dirty: saving clears it")
+	d.toggle_loop()
+	check(d.can_undo() and d.is_dirty(), "history: there is something to undo before opening")
+	check(d.load_project(abs_path) and not d.can_undo() and not d.is_dirty() and d.project_path == abs_path, "open: undo history is cleared and the file is clean")
+
+	# Unsaved changes: New and Open ask first.
+	var ran := [0]
+	d.toggle_loop()
+	screen.ask_discard(func() -> void: ran[0] += 1)
+	check(ran[0] == 0 and screen._confirm.visible, "unsaved: the question is shown and nothing has run yet")
+	screen._confirm.custom_action.emit(&"discard")
+	check(ran[0] == 1 and not screen._confirm.visible, "unsaved: Don't Save runs the action")
+	d.save_project(abs_path)
+	screen.ask_discard(func() -> void: ran[0] += 1)
+	check(ran[0] == 2, "unsaved: with no changes the action runs at once")
+	d.toggle_loop()
+	screen.ask_discard(func() -> void: ran[0] += 1)
+	screen._confirm.canceled.emit()
+	screen._confirm.hide()
+	check(ran[0] == 2 and not screen._pending_after_ask.is_valid(), "unsaved: Cancel does nothing")
+	d.save_project(abs_path)
+	d.new_project()
+	check(d.project_path == "" and d.file_label() == "Untitled" and not d.can_undo(), "new: an untitled sound, history cleared")
+	var fm: MenuButton = null
+	for ch in screen.get_child(0).get_children():
+		if ch is MenuButton and (ch as MenuButton).text == "File":
+			fm = ch
+	var items: Array[String] = []
+	if fm:
+		for i in fm.get_popup().item_count:
+			items.append(fm.get_popup().get_item_text(i))
+	check(items.has("Export Sound") and not items.has("Export WAV...") and not items.has("Export as AudioStream..."), "File menu: Export Sound replaces the old export stubs (%s)" % str(items))
+
+	# Failures leave things alone.
+	var before_bytes := FileAccess.get_file_as_bytes(abs_path)
+	check(not d.save_project("user://aw_no_such_dir/x.tres") and FileAccess.get_file_as_bytes(abs_path) == before_bytes, "save: an unwritable path fails with a message and harms nothing")
+	var junk := ProjectSettings.globalize_path("user://aw_junk.tres")
+	var jf := FileAccess.open(junk, FileAccess.WRITE)
+	jf.store_string("this is not a resource {{{")
+	jf.close()
+	var rj := AWProjectIO.open(junk)
+	check(not rj.ok and rj.error != "", "open: a damaged file gives a message, not a crash (%s)" % rj.error)
+	var other := ProjectSettings.globalize_path("user://aw_other.tres")
+	ResourceSaver.save(Animation.new(), other)
+	var ro := AWProjectIO.open(other)
+	check(not ro.ok and ro.error.contains("isn't an Audio Workstation sound"), "open: another kind of resource is refused (%s)" % ro.error)
+	var rm := AWProjectIO.open(ProjectSettings.globalize_path("user://aw_missing_file.tres"))
+	check(not rm.ok and rm.error.contains("doesn't exist"), "open: a missing file is reported")
+	var newer := AWProject.new()
+	newer.format_version = 99
+	var newer_path := ProjectSettings.globalize_path("user://aw_newer.tres")
+	ResourceSaver.save(newer, newer_path)
+	var rn := AWProjectIO.open(newer_path)
+	check(not rn.ok and rn.error.contains("newer version"), "open: a file from a newer version is refused (%s)" % rn.error)
+	var was := d.project
+	check(not d.load_project(junk) and d.project == was, "open: a failed open keeps the current sound")
+
+	# Migration: older files are brought up one version at a time.
+	var old := AWProject.new()
+	old.title = "old"
+	old.format_version = 1
+	var old_path := ProjectSettings.globalize_path("user://aw_old.tres")
+	ResourceSaver.save(old, old_path)
+	AWProjectIO.migrations[1] = func(pr: AWProject) -> void: pr.title += "+migrated"
+	var rold := AWProjectIO.open(old_path)
+	AWProjectIO.migrations = {}
+	check(rold.ok and rold.project.title == "old+migrated" and rold.project.format_version == AWProject.FORMAT_VERSION and str(rold.repairs).contains("Updated from format 1"), "open: an older format is migrated (%s)" % str(rold.repairs))
+
+	# Repair: a damaged project is made safe, and the engine can still render it.
+	var bad := AWProject.new()
+	bad.length_sec = NAN
+	bad.export_bit_depth = 24
+	bad.export_format = "mp3"
+	bad.master_chain = null
+	var c1 := AWClip.create("good", 0.0, 1.0, 0, Color.RED)
+	c1.source_path = sine
+	var c2 := AWClip.create("broken", NAN, INF, -3, Color.BLUE)
+	c2.source_path = sine
+	c2.chain = null
+	var c3 := AWClip.create("odd chain", 0.5, 1.0, 1, Color.GREEN)
+	c3.source_path = sine
+	var ghost := AWEffect.create("Reverb", 5)
+	ghost.effect_type = "Flanger9000"
+	var rv := AWEffect.create("Reverb", 6)
+	rv.params["room_size"] = 7.5
+	rv.params["bogus"] = 1.0
+	rv.params["wet"] = NAN
+	var rv2 := AWEffect.create("Reverb", 6)
+	c3.chain.effects.assign([c3.chain.effects[0], ghost, rv, rv2, null])
+	var orphan := AWCurve.new()
+	orphan.effect_id = 99
+	orphan.param = "wet"
+	var dupe_a := AWCurve.new()
+	dupe_a.effect_id = 6
+	dupe_a.param = "wet"
+	var dupe_b := AWCurve.new()
+	dupe_b.effect_id = 6
+	dupe_b.param = "wet"
+	c3.chain.curves.assign([orphan, dupe_a, dupe_b, null])
+	bad.clips.assign([c1, null, c2, c3])
+	var rep := AWProjectIO.sanitize(bad)
+	check(rep.size() >= 10 and bad.length_sec == 4.0 and bad.export_bit_depth == 16 and bad.export_format == "wav" and bad.master_chain != null, "repair: project fields and master chain are fixed (%d repairs)" % rep.size())
+	check(bad.clips.size() == 3 and is_finite(bad.clips[1].start_sec) and is_finite(bad.clips[1].length_sec) and bad.clips[1].row >= 0 and bad.clips[1].chain != null, "repair: the empty clip is dropped, the broken one gets safe values and a chain")
+	var fx: Array[AWEffect] = bad.clips[2].chain.effects
+	var ids := {}
+	var unique := true
+	for e in fx:
+		unique = unique and not ids.has(e.id)
+		ids[e.id] = true
+	check(fx.size() == 3 and fx[0].effect_type == "Clip" and unique and bad.clips[2].chain.next_effect_id > 6, "repair: unknown and empty effects removed, ids unique, source card first")
+	var rp: AWEffect = fx[1]
+	check(is_equal_approx(rp.get_param("room_size"), 1.0) and not rp.params.has("bogus") and is_equal_approx(rp.get_param("wet"), 0.5), "repair: settings clamped, unknown dropped, NaN reset")
+	check(bad.clips[2].chain.curves.is_empty() or bad.clips[2].chain.curves.size() == 1, "repair: orphan, duplicate and empty curves removed (%d left)" % bad.clips[2].chain.curves.size())
+	var rb := _render_project(bad, 2.0)
+	var finite := true
+	for fr in rb:
+		finite = finite and is_finite(fr.x) and is_finite(fr.y)
+	check(rb.size() > 0 and finite, "repair: the engine renders the repaired project without NaN")
+	check(AWProjectIO.sanitize(bad).is_empty(), "repair: a second pass finds nothing more")
+
+	# Export into the project folder (res://) works, not only user://.
+	var res_target := "res://aw_res_export_test.wav"
+	var rex: Dictionary = await AWExporter.new().run(q, res_target, 16)
+	check(rex.ok and FileAccess.file_exists(res_target), "export: a res:// target works (%s)" % str(rex.error))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(res_target))
+	for f in [abs_path, junk, other, newer_path, old_path]:
+		DirAccess.remove_absolute(f)
+	d.set_project(AWProject.create_default())
+
 
 static func get_process_delta(tree: SceneTree) -> float:
 	return maxf(1.0 / 60.0, get_delta_guess(tree))
@@ -1377,8 +1735,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.8.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.8.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.8.1" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.8.1"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -2088,4 +2446,9 @@ static func run(screen: AWMainScreen) -> void:
 		await shot(tree, "aw_clip1_project_time.png")
 		d.set_chain_tab(AWDocument.ChainTab.MASTER)
 		await shot(tree, "aw_master.png")
+	print("--- save and open ---")
+	await save_open_tests(tree, screen)
+	await source_tests(tree, screen)
+	await recovery_tests(tree, screen)
+	await load_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

@@ -13,6 +13,9 @@ extends Resource
 
 @export var name: String = ""
 @export_file("*.wav", "*.ogg", "*.mp3") var source_path: String = ""
+## The file's Godot UID (uid://...), so the clip still finds its sound after the file is moved or
+## renamed in the editor. Empty for files outside the project.
+@export var source_uid: String = ""
 ## Project time where the clip starts.
 @export var start_sec: float = 0.0
 ## Clip (audio) time covered by the clip. Its length on the timeline is play_length().

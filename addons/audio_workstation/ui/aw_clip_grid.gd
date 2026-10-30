@@ -324,6 +324,10 @@ func _open_menu(pos: Vector2) -> void:
 		_menu.add_item("Unmute" if _menu_clip.muted else "Mute", 5)
 		_menu.add_separator()
 		_menu.add_item("Delete", 6)
+		if doc.is_clip_missing(_menu_clip):
+			_menu.add_separator()
+			_menu.add_item("Relink Sound File...", 7)
+			_menu.add_item("Relink From Folder...", 8)
 	else:
 		_menu.add_item("Select All", 10)
 		_menu.add_item("Clear Selection", 11)
@@ -340,6 +344,8 @@ func _on_menu(id: int) -> void:
 		4: doc.duplicate_selected()
 		5: doc.set_props(_menu_clip, {"muted": not _menu_clip.muted}, "Mute Clip")
 		6: doc.delete_selected_clips()
+		7: doc.relink_requested.emit(_menu_clip, "file")
+		8: doc.relink_requested.emit(_menu_clip, "folder")
 		10: doc.select_all_clips()
 		11: doc.clear_selection()
 		12: doc.seek(_menu_t)
@@ -473,7 +479,17 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 
 	var font := get_theme_default_font()
 	var fs := get_theme_default_font_size() - 3
-	var label := c.name + ("  (muted)" if c.muted else "")
+	var missing := doc.is_clip_missing(c)
+	if missing:
+		var red := Color("#e5484d")
+		draw_rect(Rect2(r.position.x, r.position.y + 13.0, r.size.x, r.size.y - 13.0), Color(red, 0.18))
+		var hx := r.position.x - r.size.y
+		while hx < r.end.x:
+			var a := Vector2(maxf(hx, r.position.x), r.end.y - (maxf(hx, r.position.x) - hx))
+			var b := Vector2(minf(hx + r.size.y, r.end.x), r.end.y - (minf(hx + r.size.y, r.end.x) - hx))
+			draw_line(a, b, Color(red, 0.35), 1.0)
+			hx += 12.0
+	var label := c.name + ("  (muted)" if c.muted else "") + ("  (sound file missing)" if missing else "")
 	draw_string(font, r.position + Vector2(5, 10), label, HORIZONTAL_ALIGNMENT_LEFT, maxf(r.size.x - 10.0, 0.0), fs, c_text)
 	var fx_count := c.chain.effects.size() - 1 if c.chain else 0
 	if fx_count > 0 and r.size.x > 90.0:
@@ -484,7 +500,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 	var focused := c == doc.focus_clip and doc.chain_tab == AWDocument.ChainTab.CLIP
 	if focused:
 		draw_rect(Rect2(r.position.x, r.end.y - 3.0, r.size.x, 3.0), c_acc)
-	draw_rect(r, c_text if selected else base.lightened(0.1), false, 2.0 if selected else 1.0)
+	draw_rect(r, Color("#e5484d") if missing else (c_text if selected else base.lightened(0.1)), false, 2.0 if (selected or missing) else 1.0)
 	if selected and r.size.x > 24.0:
 		draw_rect(Rect2(r.position.x + fi - 3, r.position.y, 6, 6), c_text)
 		draw_rect(Rect2(r.end.x - fo - 3, r.position.y, 6, 6), c_text)

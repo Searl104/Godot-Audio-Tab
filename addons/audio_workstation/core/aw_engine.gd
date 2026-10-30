@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 7:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 8:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -221,6 +221,14 @@ func get_source_length(path: String) -> float:
 
 ## Renders [from_sec, from_sec + length_sec) of the current plan, offline. Used by tests and
 ## (later) baking. Needs the native core.
+## [recent average, recent peak] share of the real-time budget the audio thread uses (1.0 = no
+## headroom left; above that you hear dropouts). [0, 0] without the engine.
+func get_load() -> Array:
+	if core == null:
+		return [0.0, 0.0]
+	return core.call("get_load")
+
+
 func render_preview_range(from_sec: float, length_sec: float) -> PackedVector2Array:
 	if core == null:
 		return PackedVector2Array()

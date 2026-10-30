@@ -20,6 +20,9 @@ signal message(text: String)
 ## The LFO panel opened, closed, or switched curve.
 signal lfo_panel_changed
 ## Export bit depth, tail or file name changed (not a sound edit, so no plan rebuild).
+signal file_state_changed
+## A missing clip asked to be relinked: mode "file" (pick the file) or "folder" (search a folder).
+signal relink_requested(clip: AWClip, mode: String)
 signal export_settings_changed
 signal export_progress(fraction: float)
 signal export_finished(result: Dictionary)
@@ -44,6 +47,10 @@ var exporting := false
 var _exporter: AWExporter
 var undo_redo: EditorUndoRedoManager
 var project_path := ""
+## What the last Open had to repair (for the tests and the status line).
+var last_repairs: Array = []
+var _saved_version := 0
+var _touched := false
 
 # Transport
 var playing := false
@@ -94,6 +101,7 @@ func _init(p_undo_redo: EditorUndoRedoManager, p_engine: AWEngine) -> void:
 
 func set_project(p: AWProject) -> void:
 	project = p
+	_recompute_missing()
 	selection.clear()
 	focus_clip = p.clips[p.clips.size() - 1] if not p.clips.is_empty() else null
 	active_curve = null
@@ -109,20 +117,232 @@ func set_project(p: AWProject) -> void:
 
 
 func new_project() -> void:
+	_cancel_export_for_switch()
+	AWRecovery.discard()
 	project_path = ""
 	set_project(AWProject.create_default())
+	_reset_history()
+	message.emit("New sound.")
 
 
-func save_project(path: String) -> void:
-	message.emit("Save isn't implemented yet (interface phase): %s" % path) # TODO(logic): ResourceSaver
+## Writes the project to `path` (a .tres or .res). Returns true on success.
+func save_project(path: String) -> bool:
+	var err := AWProjectIO.save(project, path)
+	if err != OK:
+		message.emit("Couldn't save %s: %s." % [path, error_string(err)])
+		return false
+	project_path = path
+	_mark_clean()
+	message.emit("Saved %s." % path.get_file())
+	if Engine.is_editor_hint():
+		EditorInterface.get_resource_filesystem().scan()
+	return true
 
 
-func load_project(path: String) -> void:
-	message.emit("Open isn't implemented yet (interface phase): %s" % path) # TODO(logic): ResourceLoader
+## Opens a saved sound, replacing the current one (the caller asks about unsaved changes first).
+## Damaged files are repaired as far as possible; the status line says what was changed.
+func load_project(path: String) -> bool:
+	var r := AWProjectIO.open(path)
+	if not r.ok:
+		message.emit(str(r.error))
+		return false
+	_cancel_export_for_switch()
+	AWRecovery.discard()
+	set_project(r.project)
+	project_path = path
+	_reset_history()
+	var repairs: Array = r.repairs
+	if repairs.is_empty():
+		message.emit("Opened %s." % path.get_file())
+	else:
+		message.emit("Opened %s. Repaired %d thing%s: %s" % [path.get_file(), repairs.size(), "" if repairs.size() == 1 else "s", str(repairs[0])])
+	last_repairs = repairs
+	var missing := missing_paths()
+	if not missing.is_empty():
+		message.emit("%s %d sound file%s can't be found. Those clips are marked in red and stay silent; right-click one to relink." % [_status_head(path, repairs), missing.size(), "" if missing.size() == 1 else "s"])
+	return true
+
+
+func _status_head(path: String, repairs: Array) -> String:
+	return "Opened %s." % path.get_file() + (" Repaired %d thing%s." % [repairs.size(), "" if repairs.size() == 1 else "s"] if not repairs.is_empty() else "")
+
+
+# --- Missing sound files ---------------------------------------------------------
+
+## Clips whose sound file can't be found (marked in red, silent).
+var _missing := {}
+
+
+func _recompute_missing() -> void:
+	_missing.clear()
+	if project == null:
+		return
+	for c in project.clips:
+		if c != null and c.source_path != "" and not AWProjectIO.source_exists(c.source_path):
+			_missing[c.source_path] = true
+
+
+func is_clip_missing(c: AWClip) -> bool:
+	return c != null and c.source_path != "" and _missing.has(c.source_path)
+
+
+func missing_paths() -> PackedStringArray:
+	return PackedStringArray(_missing.keys())
+
+
+## Follows files that were moved or renamed in the editor (by UID) and re-checks which are missing.
+func refresh_sources() -> void:
+	if project == null:
+		return
+	var before := _missing.size()
+	var moved := AWProjectIO.refresh_sources(project)
+	_recompute_missing()
+	if not moved.is_empty():
+		touch()
+		project_changed.emit(true)
+		message.emit("Followed %d moved sound file%s." % [moved.size(), "" if moved.size() == 1 else "s"])
+	elif before != _missing.size():
+		project_changed.emit(false)
+
+
+## Points every clip that uses the missing file at `new_path` (one undo step).
+func relink_clip(clip: AWClip, new_path: String) -> void:
+	if clip == null or new_path == "" or not AWProjectIO.source_exists(new_path):
+		message.emit("That file can't be found.")
+		return
+	var old_path := clip.source_path
+	var now: Dictionary = {}
+	var was: Dictionary = {}
+	for c in project.clips:
+		if c.source_path == old_path:
+			was[c] = [c.source_path, c.source_uid]
+			now[c] = [new_path, AWProjectIO.uid_for_path(new_path)]
+	_do_undo("Relink Source", _apply_sources.bind(now), _apply_sources.bind(was))
+	message.emit("Relinked %d clip%s to %s." % [now.size(), "" if now.size() == 1 else "s", new_path.get_file()])
+
+
+## Looks for every missing file by name under `dir` and relinks what it finds. Returns the number of
+## clips relinked.
+func relink_in_folder(dir: String) -> int:
+	var index := AWProjectIO.index_audio_files(dir)
+	var now: Dictionary = {}
+	var was: Dictionary = {}
+	for c in project.clips:
+		if is_clip_missing(c):
+			var hit: String = index.get(c.source_path.get_file(), "")
+			if hit != "":
+				was[c] = [c.source_path, c.source_uid]
+				now[c] = [hit, AWProjectIO.uid_for_path(hit)]
+	if now.is_empty():
+		message.emit("None of the missing files are in %s." % dir)
+		return 0
+	_do_undo("Relink Sources", _apply_sources.bind(now), _apply_sources.bind(was))
+	var left := missing_paths().size()
+	message.emit("Relinked %d clip%s from %s. %d file%s still missing." % [now.size(), "" if now.size() == 1 else "s", dir, left, "" if left == 1 else "s"])
+	return now.size()
+
+
+func _apply_sources(map: Dictionary) -> void:
+	for c: AWClip in map:
+		c.source_path = map[c][0]
+		c.source_uid = map[c][1]
+	_recompute_missing()
+	project_changed.emit(true)
+
+
+## The file name for the title: "Untitled" when never saved, with a star while there are changes.
+func file_label() -> String:
+	var n := project_path.get_file() if project_path != "" else "Untitled"
+	return n + ("*" if is_dirty() else "")
+
+
+## True when the sound has changes that aren't in the file on disk (or it was never saved).
+func is_dirty() -> bool:
+	return _touched or _history().get_version() != _saved_version
+
+
+## Marks changes that don't go through undo (export settings, curve display).
+func touch() -> void:
+	if not _touched:
+		_touched = true
+	file_state_changed.emit()
+
+
+func _mark_clean() -> void:
+	AWRecovery.discard()
+	_recovery_wait = -1.0
+	_touched = false
+	_saved_version = _history().get_version()
+	file_state_changed.emit()
+
+
+# --- Recovery copy ---------------------------------------------------------------
+
+## Seconds after the last change before the recovery copy is written.
+const RECOVERY_DELAY := 5.0
+var _recovery_wait := -1.0
+var _recovery_version := -1
+var recovery_enabled := true
+
+
+## Called every frame by the main screen. Writes the recovery copy once edits have been quiet for a moment.
+func tick_recovery(delta: float) -> void:
+	if not recovery_enabled or project == null:
+		return
+	if not is_dirty():
+		_recovery_wait = -1.0
+		return
+	var v := _history().get_version()
+	if v != _recovery_version:
+		_recovery_version = v
+		_recovery_wait = RECOVERY_DELAY
+		return
+	if _recovery_wait < 0.0:
+		return
+	_recovery_wait -= delta
+	if _recovery_wait <= 0.0:
+		_recovery_wait = -1.0
+		write_recovery()
+
+
+func write_recovery() -> bool:
+	return AWRecovery.write(project, project_path) == OK
+
+
+## Brings back the sound from the recovery copy. It counts as unsaved.
+func restore_recovery() -> bool:
+	var info := AWRecovery.info()
+	var r := AWProjectIO.open(AWRecovery.PATH)
+	if not r.ok:
+		message.emit("The recovery copy couldn't be opened: %s" % str(r.error))
+		AWRecovery.discard()
+		return false
+	_cancel_export_for_switch()
+	set_project(r.project)
+	project_path = str(info.original)
+	_reset_history()
+	_touched = true
+	_recovery_version = -1
+	last_repairs = r.repairs
+	file_state_changed.emit()
+	message.emit("Restored your unsaved work. Save it to keep it.")
+	return true
+
+
+func _reset_history() -> void:
+	_history().clear_history()
+	_mark_clean()
+	transport_changed.emit()
+
+
+func _cancel_export_for_switch() -> void:
+	if exporting:
+		cancel_export()
 
 
 func set_export_bit_depth(bits: int) -> void:
 	project.export_bit_depth = bits
+	touch()
 	export_settings_changed.emit()
 
 
@@ -141,16 +361,19 @@ func set_export_format(format: String) -> void:
 	var old := p.get_extension().to_lower()
 	if AWProject.FORMATS.has(old) or old == "":
 		project.export_path = (p.get_basename() if old != "" else p.trim_suffix(".")) + "." + format
+	touch()
 	export_settings_changed.emit()
 
 
 func set_export_ogg_quality(q: float) -> void:
 	project.export_ogg_quality = clampf(q, 0.0, 10.0)
+	touch()
 	export_settings_changed.emit()
 
 
 func set_export_path(path: String) -> void:
 	project.export_path = path.strip_edges()
+	touch()
 	export_settings_changed.emit()
 
 
@@ -212,10 +435,6 @@ func export_wav(path: String) -> void:
 func cancel_export() -> void:
 	if _exporter != null:
 		_exporter.cancel()
-
-
-func export_audio_stream(path: String) -> void:
-	message.emit("AudioStream export isn't implemented yet (interface phase): %s" % path) # TODO(logic)
 
 
 # --- Undo / redo --------------------------------------------------------------
@@ -631,6 +850,7 @@ func add_clip_from_path(path: String, row: int, start: float) -> AWClip:
 	var clip := AWClip.create(path.get_file().get_basename(), maxf(0.0, start), 1.0, maxi(row, 0),
 		AWProject.CLIP_COLORS[used % AWProject.CLIP_COLORS.size()])
 	clip.source_path = path
+	clip.source_uid = AWProjectIO.uid_for_path(path)
 	var length := engine.get_source_length(path)
 	if length > 0.0:
 		clip.length_sec = length

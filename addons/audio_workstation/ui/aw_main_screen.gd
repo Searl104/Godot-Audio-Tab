@@ -21,6 +21,13 @@ var lfo_panel: AWLfoPanel
 var _status: Label
 var _dialog: FileDialog
 var _dialog_action := ""
+var _confirm: ConfirmationDialog
+var _pending_after_ask := Callable()
+var _after_save := Callable()
+var _relink_clip: AWClip
+var _toolbar: AWToolbar
+var _recovery: ConfirmationDialog
+var recovery_prompt_in_tests := false
 
 
 func setup(plugin: EditorPlugin) -> void:
@@ -34,6 +41,7 @@ func _ready() -> void:
 	add_theme_constant_override("separation", 2)
 
 	var toolbar := AWToolbar.new()
+	_toolbar = toolbar
 	toolbar.setup(doc)
 	toolbar.request.connect(_on_request)
 	add_child(toolbar)
@@ -81,7 +89,15 @@ func _ready() -> void:
 
 	_dialog = FileDialog.new()
 	_dialog.file_selected.connect(_on_dialog_path)
+	_dialog.dir_selected.connect(_on_dialog_path)
+	doc.relink_requested.connect(func(clip: AWClip, mode: String) -> void:
+		_relink_clip = clip
+		_show_dialog("relink_" + mode))
+	if Engine.is_editor_hint():
+		EditorInterface.get_resource_filesystem().filesystem_changed.connect(doc.refresh_sources)
 	add_child(_dialog)
+	_build_confirm()
+	_build_recovery_prompt()
 	set_process(true)
 
 
@@ -101,6 +117,7 @@ func _make_reserved_column() -> Control:
 
 func _process(delta: float) -> void:
 	engine.process(delta)
+	doc.tick_recovery(delta)
 	if is_visible_in_tree():
 		doc.tick_preview(delta)
 
@@ -145,18 +162,97 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-# --- File actions (dialogs only; the handlers are stubs) ----------------------
+# --- File actions -------------------------------------------------------------
+
+## Runs `then` now, or after the user has decided what to do with unsaved changes.
+func ask_discard(then: Callable) -> void:
+	if not doc.is_dirty():
+		then.call()
+		return
+	_pending_after_ask = then
+	_confirm.dialog_text = "Save changes to %s before continuing?" % (doc.project_path.get_file() if doc.project_path != "" else "the untitled sound")
+	_confirm.popup_centered()
+
+
+func _build_confirm() -> void:
+	_confirm = ConfirmationDialog.new()
+	_confirm.title = "Unsaved Changes"
+	_confirm.ok_button_text = "Save"
+	_confirm.add_button("Don't Save", true, "discard")
+	_confirm.confirmed.connect(func() -> void:
+		var then := _pending_after_ask
+		_pending_after_ask = Callable()
+		if doc.project_path != "":
+			if doc.save_project(doc.project_path) and then.is_valid():
+				then.call()
+		else:
+			_after_save = then
+			_on_request("save_as"))
+	_confirm.custom_action.connect(func(act: StringName) -> void:
+		if act == &"discard":
+			_confirm.hide()
+			var then := _pending_after_ask
+			_pending_after_ask = Callable()
+			if then.is_valid():
+				then.call())
+	_confirm.canceled.connect(func() -> void: _pending_after_ask = Callable())
+	add_child(_confirm)
+
+
+## Offers the sound that was being edited when the editor last closed without saving.
+func _build_recovery_prompt() -> void:
+	if not AWRecovery.exists() or (OS.get_environment("AW_TEST") != "" and not recovery_prompt_in_tests):
+		return
+	var info := AWRecovery.info()
+	var when := Time.get_datetime_string_from_unix_time(int(info.time), true) if info.time > 0.0 else "earlier"
+	var what: String = info.original.get_file() if info.original != "" else "an untitled sound"
+	_recovery = ConfirmationDialog.new()
+	_recovery.title = "Restore Unsaved Work?"
+	_recovery.dialog_text = "The editor closed before %s was saved (last change %s). Restore it?" % [what, when]
+	_recovery.ok_button_text = "Restore"
+	_recovery.cancel_button_text = "Discard"
+	_recovery.confirmed.connect(func() -> void: doc.restore_recovery())
+	_recovery.canceled.connect(AWRecovery.discard)
+	add_child(_recovery)
+	_recovery.popup_centered.call_deferred()
+
+
+## Opens a saved sound from the FileSystem dock (after asking about unsaved changes).
+func open_from_editor(path: String) -> void:
+	ask_discard(func() -> void: doc.load_project(path))
+
+
+## Saves for Ctrl+S in the editor: the open sound if it has a file, otherwise asks where.
+func save_from_editor() -> void:
+	if doc.is_dirty():
+		_on_request("save")
+
+
+func toolbar_update_cpu() -> void:
+	if _toolbar:
+		_toolbar.update_cpu()
+
 
 func _on_request(action: String) -> void:
 	match action:
 		"new":
-			doc.new_project()
+			ask_discard(doc.new_project)
+			return
+		"open":
+			ask_discard(func() -> void: _show_dialog("open"))
 			return
 		"save":
 			if doc.project_path != "":
 				doc.save_project(doc.project_path)
 				return
 			action = "save_as"
+		"export":
+			doc.export_now()
+			return
+	_show_dialog(action)
+
+
+func _show_dialog(action: String) -> void:
 	_dialog_action = action
 	_dialog.clear_filters()
 	_dialog.access = FileDialog.ACCESS_RESOURCES
@@ -169,26 +265,37 @@ func _on_request(action: String) -> void:
 		"save_as":
 			_dialog.title = "Save Sound As"
 			_dialog.add_filter("*.tres, *.res", "Audio Workstation Sound")
-		"export_wav":
-			_dialog.title = "Export WAV"
+		"relink_file":
+			_dialog.title = "Find the Sound File"
 			_dialog.access = FileDialog.ACCESS_FILESYSTEM
-			_dialog.add_filter("*.wav", "WAV")
+			_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+			_dialog.add_filter("*.wav, *.ogg, *.mp3", "Audio file")
+		"relink_folder":
+			_dialog.title = "Search This Folder for the Missing Files"
+			_dialog.access = FileDialog.ACCESS_FILESYSTEM
+			_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
 		"export_browse":
 			_dialog.title = "Export To"
-			_dialog.access = FileDialog.ACCESS_RESOURCES
-			_dialog.add_filter("*.wav", "WAV")
-		"export_stream":
-			_dialog.title = "Export as AudioStream"
-			_dialog.add_filter("*.tres, *.res", "AudioStreamWAV resource")
+			_dialog.add_filter("*.wav, *.ogg", "Audio file")
 	_dialog.popup_centered_ratio(0.6)
 
 
 func _on_dialog_path(path: String) -> void:
 	match _dialog_action:
-		"open": doc.load_project(path)
+		"open":
+			doc.load_project(path)
 		"save_as":
-			doc.project_path = path
-			doc.save_project(path)
-		"export_wav": doc.export_wav(path)
+			if path.get_extension().to_lower() not in ["tres", "res"]:
+				path += ".tres"
+			var ok := doc.save_project(path)
+			var then := _after_save
+			_after_save = Callable()
+			if ok and then.is_valid():
+				then.call()
+		"relink_file":
+			doc.relink_clip(_relink_clip, ProjectSettings.localize_path(path))
+		"relink_folder":
+			doc.relink_in_folder(ProjectSettings.localize_path(path))
 		"export_browse": doc.set_export_path(path.trim_prefix("res://"))
-		"export_stream": doc.export_audio_stream(path)
+
+

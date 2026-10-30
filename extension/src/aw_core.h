@@ -107,6 +107,9 @@ private:
 	std::vector<std::shared_ptr<const Plan>> retired; // freed on the main thread only
 
 	FxRuntime fx; // audio thread only
+	// Effect memory for the newest plan, built on the main thread so the audio thread only swaps
+	// pointers (the swap hands the old runtime back here, to be freed on the main thread).
+	std::unique_ptr<FxRuntime> staged_fx; // guarded by plan_mutex
 
 	// An offline render in progress (export): the plan it started with, its effect state and position.
 	std::shared_ptr<const Plan> off_plan;
@@ -114,6 +117,8 @@ private:
 	int64_t off_pos = 0;
 	uint32_t off_rng = 0x9E3779B9u;
 	std::unique_ptr<aw::Encoder> off_enc; // Ogg encoder when one is configured
+	std::atomic<float> load_avg{ 0.0f };
+	std::atomic<float> load_peak{ 0.0f };
 	std::atomic<bool> playing{ false };
 	std::atomic<int64_t> position{ 0 };
 	std::atomic<bool> loop_enabled{ false };
@@ -177,6 +182,8 @@ public:
 	PackedInt32Array get_effect_types() const;
 	// Bumped when the plugin needs new behaviour from the engine (older libraries show as out of date).
 	int64_t get_api_level() const;
+	// Share of the real-time budget the audio thread used while playing: [recent average, recent peak], 0..1+.
+	Array get_load() const;
 	int64_t get_plan_end() const;
 	// Offline render in chunks with continuous effect state, straight to PCM bytes (see aw_core.cpp).
 	int64_t export_begin(int64_t p_from_frame);
