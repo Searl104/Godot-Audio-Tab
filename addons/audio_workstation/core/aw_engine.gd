@@ -299,17 +299,6 @@ func _voice_for(clip: AWClip, start_frame: int) -> Dictionary:
 	return voice
 
 
-## Effects the native engine can run so far: card name -> [type id, parameter keys in the
-## order the engine expects, whether it rings on after its input stops (needs a tail)]. Cards of other types are skipped until they are ported.
-const NATIVE_EFFECTS := {
-	"Low Pass": [1, ["cutoff_hz", "resonance"], true],
-	"High Pass": [2, ["cutoff_hz", "resonance"], true],
-	"Band Pass": [3, ["cutoff_hz", "resonance"], true],
-	"EQ": [4, ["band_db/32_hz", "band_db/100_hz", "band_db/320_hz", "band_db/1000_hz", "band_db/3200_hz", "band_db/10000_hz"], true],
-	"Amplify": [5, ["volume_db"], false],
-}
-
-
 ## Where the sound ends (the export marker), in seconds.
 func _end_sec() -> float:
 	return _project.export_end_resolved() if _project != null else 0.0
@@ -321,7 +310,7 @@ static func chain_rings(chain: AWChain) -> bool:
 		return false
 	for i in range(1, chain.effects.size()):
 		var e: AWEffect = chain.effects[i]
-		if not e.bypass and NATIVE_EFFECTS.has(e.effect_type) and NATIVE_EFFECTS[e.effect_type][2]:
+		if not e.bypass and AWEffectLibrary.engine_rings(e.effect_type):
 			return true
 	return false
 
@@ -338,13 +327,12 @@ func _clip_effects(clip: AWClip, step_sec: float, tail_sec: float) -> Array:
 	var wsig := AWClipWarp.signature(clip)
 	for i in range(1, ch.effects.size()):
 		var e: AWEffect = ch.effects[i]
-		if e.bypass or not NATIVE_EFFECTS.has(e.effect_type):
+		if e.bypass or AWEffectLibrary.engine_id(e.effect_type) == 0:
 			continue
-		var info: Array = NATIVE_EFFECTS[e.effect_type]
 		var tables: Array = []
-		for key: String in info[1]:
+		for key: String in AWEffectLibrary.engine_keys(e.effect_type):
 			tables.append(_fx_table(ch, e, key, warp, wsig, n, step_sec))
-		out.append({"type": info[0], "params": tables, "step": RATE_STEP})
+		out.append({"type": AWEffectLibrary.engine_id(e.effect_type), "params": tables, "step": RATE_STEP})
 	return out
 
 
@@ -397,13 +385,12 @@ func _master_plan() -> Dictionary:
 	var length_sec := maxf(_project.content_end_sec(), _end_sec())
 	for i in range(1, mc.effects.size()):
 		var e: AWEffect = mc.effects[i]
-		if e.bypass or not NATIVE_EFFECTS.has(e.effect_type):
+		if e.bypass or AWEffectLibrary.engine_id(e.effect_type) == 0:
 			continue
-		var info: Array = NATIVE_EFFECTS[e.effect_type]
 		var tables: Array = []
-		for key: String in info[1]:
+		for key: String in AWEffectLibrary.engine_keys(e.effect_type):
 			tables.append(_table(mc, e, key, length_sec, step_sec, AWSampler.VALUE))
-		fx.append({"type": info[0], "params": tables, "step": RATE_STEP})
+		fx.append({"type": AWEffectLibrary.engine_id(e.effect_type), "params": tables, "step": RATE_STEP})
 	if not fx.is_empty():
 		plan["effects"] = fx
 	# The sound ends at the export marker, whatever the clips and tails add up to.

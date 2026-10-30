@@ -773,6 +773,18 @@ static func panel_tests(screen: AWMainScreen) -> void:
 			worst = maxf(worst, absf(_measured_db(core, hz, [_fx(4, g2)]) - AWFilterResponse.eq_db(hz, g2p, sr)))
 		check(worst < 0.5, "response vs engine: EQ within %.2f dB" % worst)
 
+	if e.core != null:
+		var ids: PackedInt32Array = e.core.call("get_effect_types")
+		var lib_ids := PackedInt32Array()
+		for t: String in AWEffectLibrary.EFFECTS:
+			if AWEffectLibrary.engine_id(t) != 0:
+				lib_ids.append(AWEffectLibrary.engine_id(t))
+		var a := Array(ids)
+		var b := Array(lib_ids)
+		a.sort()
+		b.sort()
+		check(a == b, "library engine ids match the engine's effect types %s" % str(a))
+		check(AWEffectLibrary.engine_keys("EQ").size() == 6 and AWEffectLibrary.engine_keys("Low Pass") == ["cutoff_hz", "resonance"], "engine parameter order comes from the schema")
 	check(AWPanelRegistry.has_panel("Low Pass") and AWPanelRegistry.has_panel("EQ") and not AWPanelRegistry.has_panel("Reverb"), "registry: panels for Low Pass and EQ only")
 	check(AWPanelRegistry.create("Reverb") == null, "registry: no panel falls back to the generic rows")
 
