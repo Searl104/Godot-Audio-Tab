@@ -82,7 +82,7 @@ static func signature(clip: AWClip) -> Array:
 	var l := curve.lfo
 	var lfo: Array = []
 	if l != null and l.enabled:
-		lfo = [l.shape, l.max_value, l.min_value, l.freq_hz, l.fade_in_sec, l.fade_out_sec, l.start_sec, l.end_sec, l.random_seed, l.freq_accel, l.fade_smoothing]
+		lfo = l.signature()
 	return [hash(ch.get_keys(curve)), curve.scale, src.get_param("pitch_semitones"), lfo]
 
 

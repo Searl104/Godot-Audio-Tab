@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 9:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 10:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -467,5 +467,5 @@ static func _curve_signature(chain: AWChain, curve: AWCurve, length_sec: float, 
 	var l := curve.lfo
 	var lfo: Array = []
 	if l != null and l.enabled:
-		lfo = [l.shape, l.max_value, l.min_value, l.freq_hz, l.fade_in_sec, l.fade_out_sec, l.start_sec, l.end_sec, l.random_seed, l.freq_accel, l.fade_smoothing]
+		lfo = l.signature()
 	return [hash(chain.get_keys(curve)), curve.scale, chain.curve_range(curve), snappedf(length_sec, 0.0001), step_sec, unit, lfo]

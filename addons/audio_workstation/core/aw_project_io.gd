@@ -233,6 +233,16 @@ static func _sanitize_curve(ch: AWChain, c: AWCurve, label: String, rep: Array) 
 		l.freq_hz = clampf(l.freq_hz if _fin(l.freq_hz) else 4.0, 0.05, 20.0)
 		l.freq_accel = clampf(l.freq_accel if _fin(l.freq_accel) else 0.0, -5.0, 5.0)
 		l.fade_smoothing = clampf(l.fade_smoothing if _fin(l.fade_smoothing) else 0.0, 0.0, 1.0)
+		for prop: Array in [["depth", 0.1, 0.0, 1.0], ["phase_deg", 0.0, 0.0, 360.0], ["jitter_rate", 0.0, 0.0, 1.0],
+				["jitter_depth", 0.0, 0.0, 1.0], ["glide", 0.0, 0.0, 1.0], ["decay_sec", 0.0, 0.0, 60.0]]:
+			var v: float = l.get(prop[0])
+			var fixed := clampf(v if _fin(v) else float(prop[1]), float(prop[2]), float(prop[3]))
+			if fixed != v:
+				l.set(prop[0], fixed)
+				rep.append("An LFO's %s was out of range; fixed." % prop[0])
+		if l.mode != AWLfo.Mode.ABSOLUTE and l.mode != AWLfo.Mode.RELATIVE:
+			l.mode = AWLfo.Mode.ABSOLUTE
+			rep.append("An LFO had an unknown mode; set to Absolute.")
 		l.fade_in_sec = maxf(l.fade_in_sec if _fin(l.fade_in_sec) else 0.0, 0.0)
 		l.fade_out_sec = maxf(l.fade_out_sec if _fin(l.fade_out_sec) else 0.0, 0.0)
 		if not _fin(l.max_value):

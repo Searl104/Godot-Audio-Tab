@@ -755,6 +755,29 @@ static func sampler_tests(_screen: AWMainScreen) -> void:
 			l.min_value = lerpf(r.x, r.y, 0.15)
 			l.max_value = lerpf(r.x, r.y, 0.85)
 			lfo_options.append(l)
+		# The newer parameters: Relative mode, Phase, Jitter, Glide, Decay (with Accel too).
+		for shape in 5:
+			for variant in 2:
+				var l2 := AWLfo.new()
+				l2.shape = shape
+				l2.freq_hz = [1.3, 6.0, 9.0, 2.5, 7.0][shape]
+				l2.start_sec = 0.2
+				l2.end_sec = 2.9
+				l2.fade_in_sec = 0.2
+				l2.fade_out_sec = 0.3
+				l2.random_seed = shape * 3 + 5 + variant
+				l2.freq_accel = [0.0, 1.5, -0.8, 0.0, 2.0][shape] * variant
+				l2.mode = (shape + variant) % 2
+				l2.depth = [0.25, 0.1, 0.4, 0.05, 0.3][shape]
+				l2.phase_deg = [0.0, 90.0, 180.0, 270.0, 45.0][shape]
+				l2.jitter_rate = [0.5, 1.0, 0.3, 0.8, 1.0][shape]
+				l2.jitter_depth = [0.4, 0.0, 1.0, 0.6, 0.9][shape]
+				l2.glide = [0.5, 0.3, 0.7, 1.0, 0.6][shape] * variant
+				l2.decay_sec = [0.0, 0.8, 0.0, 1.5, 0.5][shape]
+				var r2 := ch.curve_range(curve)
+				l2.min_value = lerpf(r2.x, r2.y, 0.2)
+				l2.max_value = lerpf(r2.x, r2.y, 0.7)
+				lfo_options.append(l2)
 		for l in lfo_options:
 			curve.lfo = l
 			for unit in [AWSampler.VALUE, AWSampler.NORM, AWSampler.BASE_NORM]:
@@ -768,6 +791,7 @@ static func sampler_tests(_screen: AWMainScreen) -> void:
 						return
 				cases += 1
 	check(true, "native sampler equals the GDScript reference: %d curve/LFO/unit combinations, worst relative error %.8f" % [cases, worst])
+	lfo_param_tests(ch)
 	# Gain / rate units, and sampling at arbitrary times.
 	var gcurve := ch.get_curve(src.id, "gain_db")
 	gcurve.lfo = null
@@ -1487,6 +1511,153 @@ static func reexport_tests(tree: SceneTree, _screen: AWMainScreen) -> void:
 	EditorInterface.get_resource_filesystem().scan()
 
 
+## What the newer LFO parameters do, on the GDScript reference (the native sampler matches it, above).
+static func lfo_param_tests(ch: AWChain) -> void:
+	var wet: AWCurve = null
+	for c in ch.curves:
+		if c.param == "wet":
+			wet = c
+	var keys := ch.get_keys(wet)
+	ch.set_keys(wet, [{"t": 0.0, "v": 0.2, "in": Vector2.ZERO, "out": Vector2.ZERO, "mode": AWCurve.HandleMode.LINEAR},
+		{"t": 4.0, "v": 0.8, "in": Vector2.ZERO, "out": Vector2.ZERO, "mode": AWCurve.HandleMode.LINEAR}])
+	var mk := func() -> AWLfo:
+		var l := AWLfo.new()
+		l.start_sec = 0.0
+		l.end_sec = 4.0
+		l.fade_in_sec = 0.0
+		l.fade_out_sec = 0.0
+		l.freq_hz = 2.0
+		l.min_value = 0.0
+		l.max_value = 1.0
+		return l
+
+	# Defaults reproduce the old formula exactly (old sounds don't change).
+	var l0: AWLfo = mk.call()
+	wet.lfo = l0
+	var same := true
+	for i in 200:
+		var t := i * 0.019
+		same = same and absf(ch.sample_norm(wet, t) - (0.5 + 0.5 * sin(TAU * 2.0 * t))) < 1e-9
+	check(same, "lfo params: defaults give the same sine as before")
+
+	# Relative: wobbles ±Depth around the drawn ramp instead of replacing it.
+	var lr: AWLfo = mk.call()
+	lr.mode = AWLfo.Mode.RELATIVE
+	lr.depth = 0.1
+	wet.lfo = lr
+	var dev := 0.0
+	var mean := 0.0
+	for i in 400:
+		var t := i * 0.01
+		var d := ch.sample_norm(wet, t) - ch.base_norm(wet, t)
+		dev = maxf(dev, absf(d))
+		mean += d / 400.0
+	check(absf(dev - 0.1) < 0.002 and absf(mean) < 0.01, "lfo params: Relative swings ±Depth around the curve (max %.3f, mean %.4f)" % [dev, mean])
+	check(lr.summary("Reverb", "wet").contains("±10%"), "lfo params: summary shows the relative depth (%s)" % lr.summary("Reverb", "wet"))
+
+	# Phase 90°: a sine starts at the top.
+	var lp: AWLfo = mk.call()
+	lp.phase_deg = 90.0
+	wet.lfo = lp
+	check(absf(ch.sample_norm(wet, 0.0) - 1.0) < 1e-6, "lfo params: Phase 90° starts a sine at its peak")
+
+	# Jitter: cycle lengths vary, the phase still only moves forward, and it's repeatable.
+	var lj: AWLfo = mk.call()
+	lj.jitter_rate = 1.0
+	lj.random_seed = 4
+	var lens := []
+	var prev_edge := 0.0
+	var mono := true
+	var last := -INF
+	for i in 2000:
+		var p := lj.warped_phase(i * 0.002)
+		mono = mono and p >= last
+		last = p
+	for k in range(1, 8):
+		var edge := lj.time_of_warped_phase(float(k))
+		lens.append(edge - prev_edge)
+		prev_edge = edge
+	var lmin: float = lens.min()
+	var lmax: float = lens.max()
+	check(mono and lmax / lmin > 1.15 and lmin > 0.0, "lfo params: Jitter varies cycle lengths (%.3f to %.3f s) and the phase never runs backwards" % [lmin, lmax])
+	var lj2: AWLfo = lj.duplicate()
+	check(is_equal_approx(lj.warped_phase(1.234), lj2.warped_phase(1.234)), "lfo params: Jitter is repeatable for a seed")
+	var lj3: AWLfo = lj.duplicate()
+	lj3.random_seed = 9
+	check(not is_equal_approx(lj.warped_phase(1.234), lj3.warped_phase(1.234)), "lfo params: another seed gives other cycles")
+
+	# Jitter depth: cycle peaks differ.
+	var ld: AWLfo = mk.call()
+	ld.jitter_depth = 1.0
+	ld.random_seed = 2
+	var peaks := []
+	for k in 6:
+		peaks.append(absf(ld.swing((k + 0.25) / 2.0)))
+	check((peaks.max() as float) - (peaks.min() as float) > 0.2 and (peaks.max() as float) <= 1.0, "lfo params: Jit Depth varies the cycle heights (%s)" % str(peaks))
+
+	# Glide: 0 keeps the hard square; 1 turns it into the sine.
+	var lg: AWLfo = mk.call()
+	lg.shape = AWLfo.Shape.SQUARE
+	var hard := lg.shape_at(0.24) == 1.0 and lg.shape_at(0.26) == 1.0 and lg.shape_at(0.51) == 0.0
+	lg.glide = 1.0
+	var sine_like := true
+	for i in 50:
+		var p := i * 0.021
+		sine_like = sine_like and absf(lg.shape_at(p) - (0.5 + 0.5 * sin(TAU * p))) < 1e-9
+	check(hard and sine_like, "lfo params: Glide 0 keeps Square hard, Glide 100% makes it a sine")
+	var lrnd: AWLfo = mk.call()
+	lrnd.shape = AWLfo.Shape.RANDOM
+	lrnd.glide = 1.0
+	var max_step := 0.0
+	for i in range(1, 2000):
+		max_step = maxf(max_step, absf(lrnd.shape_at(i * 0.001) - lrnd.shape_at((i - 1) * 0.001)))
+	check(max_step < 0.01, "lfo params: Glide makes Random a smooth drift (largest step %.4f)" % max_step)
+	var lsaw: AWLfo = mk.call()
+	lsaw.shape = AWLfo.Shape.SAW
+	lsaw.glide = 0.4
+	var saw_step := 0.0
+	for i in range(1, 2000):
+		saw_step = maxf(saw_step, absf(lsaw.shape_at(i * 0.001) - lsaw.shape_at((i - 1) * 0.001)))
+	check(saw_step < 0.02, "lfo params: Glide removes the Saw's reset jump (largest step %.4f)" % saw_step)
+
+	# Decay: the swing halves every Decay seconds, back towards the curve.
+	var lde: AWLfo = mk.call()
+	lde.decay_sec = 1.0
+	lde.phase_deg = 90.0
+	check(absf(lde.envelope(1.0) - 0.5) < 1e-6 and absf(lde.envelope(2.0) - 0.25) < 1e-6, "lfo params: Decay halves the swing every second (%.3f, %.3f)" % [lde.envelope(1.0), lde.envelope(2.0)])
+
+	# Repair clamps the new fields; save and open keeps them.
+	var bad := AWProject.create_default()
+	var bc := AWClip.create("c", 0.0, 1.0, 0, Color.RED)
+	bad.clips.append(bc)
+	var bcurve := AWCurve.new()
+	bcurve.effect_id = bc.chain.effects[0].id
+	bcurve.param = "gain_db"
+	bc.chain.curves.append(bcurve)
+	var bl: AWLfo = mk.call()
+	bl.depth = 5.0
+	bl.glide = -1.0
+	bl.decay_sec = NAN
+	bcurve.lfo = bl
+	var rep := AWProjectIO.sanitize(bad)
+	check(bl.depth == 1.0 and bl.glide == 0.0 and bl.decay_sec == 0.0 and rep.size() >= 3, "lfo params: repair clamps out-of-range values (%d repairs)" % rep.size())
+	bl.mode = AWLfo.Mode.RELATIVE
+	bl.depth = 0.33
+	bl.phase_deg = 120.0
+	bl.jitter_rate = 0.4
+	bl.jitter_depth = 0.2
+	bl.glide = 0.6
+	bl.decay_sec = 2.5
+	var path := "user://aw_lfo_params.tres"
+	check(AWProjectIO.save(bad, path, false) == OK, "lfo params: saved")
+	var back := AWProjectIO.open(path)
+	var lb: AWLfo = back.project.clips[0].chain.curves[0].lfo if back.ok else null
+	check(lb != null and lb.signature() == bl.signature(), "lfo params: save and open keep every LFO setting")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	wet.lfo = null
+	ch.set_keys(wet, keys)
+
+
 static func empty_start_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	d.new_project()
@@ -1946,8 +2117,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.8.2" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.8.2"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.9.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.9.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -2402,7 +2573,7 @@ static func run(screen: AWMainScreen) -> void:
 	var panel := screen.lfo_panel
 	check(panel._curve == wet2 and d.lfo_curve == wet2 and d.active_curve == wet2, "right-click > Edit LFO opens it in the LFO dock")
 	var fk := panel.find_child("freq_hz_knob", true, false) as AWKnob
-	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 7, "seven knobs; Freq is logarithmic")
+	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 13, "thirteen knobs; Freq is logarithmic")
 	var f0 := lf.freq_hz
 	click(fk, Vector2(40, 40))
 	move(fk, Vector2(40, -20))
@@ -2488,8 +2659,20 @@ static func run(screen: AWMainScreen) -> void:
 	d.open_lfo(ch, wet2)
 	await frames(tree, 3)
 
-	var shape_btns: Array = panel.find_children("*", "Button", true, false).filter(func(b: Button) -> bool: return b.button_group != null)
+	var shape_btns: Array = panel.find_children("*", "Button", true, false).filter(func(b: Button) -> bool: return b.button_group != null and not String(b.name).begins_with("Mode"))
 	check(shape_btns.size() == 5, "five shape buttons")
+	var rel_btn: Button = panel.find_child("ModeRelative", true, false)
+	var abs_btn: Button = panel.find_child("ModeAbsolute", true, false)
+	check(rel_btn != null and abs_btn != null and abs_btn.button_pressed, "Absolute / Relative buttons, Absolute by default")
+	check(panel.knobs["max_value"].visible and not panel.knobs["depth"].visible, "Absolute shows Max and Min, hides Depth")
+	rel_btn.pressed.emit()
+	await frames(tree, 2)
+	check(lf.mode == AWLfo.Mode.RELATIVE and panel.knobs["depth"].visible and not panel.knobs["max_value"].visible and not panel.knobs["min_value"].visible, "Relative picks the mode and swaps Max/Min for Depth")
+	d.undo()
+	await frames(tree, 2)
+	check(lf.mode == AWLfo.Mode.ABSOLUTE and panel.knobs["max_value"].visible, "mode change undoes")
+	for knob_prop in ["phase_deg", "jitter_rate", "jitter_depth", "glide", "decay_sec"]:
+		check(panel.knobs.has(knob_prop), "LFO dock has a %s knob" % knob_prop)
 	(shape_btns[1] as Button).pressed.emit()
 	check(lf.shape == AWLfo.Shape.TRIANGLE, "shape button picks Triangle")
 	d.undo()
@@ -2573,6 +2756,28 @@ static func run(screen: AWMainScreen) -> void:
 	if shots:
 		d.seek(1.1)
 		await shot(tree, "aw_lfo_panel.png")
+		# Relative mode with the newer parameters, scrolled to the knobs.
+		var saved_sig := lf.signature()
+		lf.mode = AWLfo.Mode.RELATIVE
+		lf.depth = 0.15
+		lf.jitter_rate = 0.6
+		lf.jitter_depth = 0.5
+		lf.decay_sec = 1.2
+		d.project_changed.emit(false)
+		var sc: ScrollContainer = screen.lfo_panel.get_child(0)
+		await frames(tree, 3)
+		sc.scroll_vertical = 150
+		await shot(tree, "aw_lfo_relative.png")
+		sc.scroll_vertical = 330
+		await shot(tree, "aw_lfo_knobs.png")
+		sc.scroll_vertical = 0
+		lf.mode = AWLfo.Mode.ABSOLUTE
+		lf.depth = 0.1
+		lf.jitter_rate = 0.0
+		lf.jitter_depth = 0.0
+		lf.decay_sec = 0.0
+		d.project_changed.emit(false)
+		check(lf.signature() == saved_sig, "LFO restored after the relative-mode screenshot")
 	d.close_lfo()
 	await frames(tree, 4)
 	check(screen.lfo_panel._curve == null and wet2.lfo == lf, "deselecting empties the editor, the LFO stays on its curve")

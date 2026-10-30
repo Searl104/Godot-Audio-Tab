@@ -20,4 +20,4 @@ It isn't loaded by the plugin. To run it:
    without `addons/audio_workstation/bin/` and `aw_engine.gdextension`).
 4. Remove the hook and the copy again.
 
-Last results (v0.12.1, Godot 4.7 stable, Linux, engine 0.8.2): 516 checks with the engine, 0 failures. Windows test pass of 0.12 / 0.8.1: 34 of 38 passed; three findings are fixed in 0.12.1, the fourth was not an issue.
+Last results (v0.13.0, Godot 4.7 stable, Linux, engine 0.9.0): 541 checks with the engine, 0 failures. Windows test pass of 0.12 / 0.8.1: 34 of 38 passed; three findings are fixed in 0.12.1, the fourth was not an issue.

@@ -194,7 +194,17 @@ Curves are not limited to the clip: keys can sit anywhere up to one hour, so a t
 - `ui/kit/aw_panel_registry.gd`: effect type to panel. To add one, subclass `AWEffectPanel` (`ui/panels/`), register it there.
 - `core/aw_filter_response.gd`: the drawn response mirrors the engine's biquads; the self-test compares it with the engine's measured output.
 
-The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 or newer (the engine evaluates Accel and Smoothing natively).
+The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, Fade In, Fade Out and **Smoothing** (eases the fades). Since 0.13 (engine 0.9.0):
+- **Absolute / Relative:** Absolute swings between Max and Min, replacing the drawn curve while it runs. Relative wobbles
+  ±**Depth** (a share of the parameter's range) around the drawn curve, so a falling pitch curve keeps falling with
+  vibrato on top. The curve graph shows the ±Depth band.
+- **Phase:** where the cycle starts (0 to 360°).
+- **Jitter / Jit Depth:** each cycle gets a slightly different length or height (repeatable for the seed), so the
+  movement sounds less mechanical.
+- **Glide:** softens the jumps of Square, Saw and Random; at 100% Square becomes a sine and Random a smooth drift.
+- **Decay:** the swing halves every this many seconds, dying away into the drawn curve (springs, settling objects).
+
+Sounds saved by 0.13 use format 3; older versions refuse them rather than dropping these settings. Beside them, **All LFOs** lists every LFO in the project as `Clip 2\Low Pass\Cutoff` (Master first); click one to select its clip and open it. The **LFOs** button in the curve header brings the dock up. Needs engine 0.4.2 or newer (the engine evaluates Accel and Smoothing natively).
 
 Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k` works, Enter applies, Esc cancels), **Ctrl+click to reset**, right-click for options.
 

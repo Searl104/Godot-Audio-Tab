@@ -167,9 +167,12 @@ func sample_norm(curve: AWCurve, local_time: float) -> float:
 	var e := l.envelope(local_time)
 	if e <= 0.0:
 		return b
+	var sw := l.swing(local_time)
+	if l.mode == AWLfo.Mode.RELATIVE:
+		return clampf(b + l.depth * sw * e, 0.0, 1.0)
 	var lo := to_norm(curve, minf(l.min_value, l.max_value))
 	var hi := to_norm(curve, maxf(l.min_value, l.max_value))
-	var w := lo + (hi - lo) * l.wave(local_time)
+	var w := lo + (hi - lo) * (0.5 + 0.5 * sw)
 	return clampf(b + (w - b) * e, 0.0, 1.0)
 
 
@@ -211,6 +214,8 @@ func native_spec(curve: AWCurve) -> Dictionary:
 			"fade_in": l.fade_in_sec, "fade_out": l.fade_out_sec,
 			"start": l.start_sec, "end": l.end_sec, "seed": l.random_seed,
 			"accel": l.freq_accel, "smooth": l.fade_smoothing,
+			"mode": l.mode, "depth": l.depth, "phase": l.phase_deg / 360.0, "jit_rate": l.jitter_rate,
+			"jit_depth": l.jitter_depth, "glide": l.glide, "decay": l.decay_sec,
 		}
 	return spec
 

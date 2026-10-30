@@ -2,7 +2,8 @@
 class_name AWLfoPanel
 extends VBoxContainer
 ## Content of the "Audio LFO" dock, laid out as one column so it suits a tall, narrow dock: the open
-## LFO (waveform preview, shape, knobs for Freq, Accel, Max, Min, Fade In, Fade Out and Smoothing),
+## LFO (waveform preview, shape, Absolute / Relative, knobs for Freq, Accel, Max / Min or Depth, Phase,
+## Fade In, Fade Out, Smoothing, Jitter, Jit Depth, Glide and Decay),
 ## then every LFO in the project as "Clip 2\\Low Pass\\Cutoff"; click one to jump to it. Every change is undoable; knob drags
 ## preview live and commit as one step.
 
@@ -180,6 +181,27 @@ func _build_editor() -> void:
 	_refreshers.append(sync_shape)
 	left.add_child(shapes)
 
+	# Absolute (swing between Min and Max) or Relative (wobble around the drawn curve).
+	var modes := HBoxContainer.new()
+	modes.add_theme_constant_override("separation", 2)
+	var mgroup := ButtonGroup.new()
+	var mode_buttons: Array[Button] = []
+	for m: Array in [[AWLfo.Mode.ABSOLUTE, "Absolute", "Swing between Min and Max, replacing the drawn curve while it runs"],
+			[AWLfo.Mode.RELATIVE, "Relative", "Wobble ±Depth around the drawn curve, so the curve's own movement stays"]]:
+		var mb := Button.new()
+		mb.text = m[1]
+		mb.tooltip_text = m[2]
+		mb.toggle_mode = true
+		mb.button_group = mgroup
+		mb.focus_mode = Control.FOCUS_NONE
+		mb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		mb.name = "Mode" + m[1]
+		var mv: int = m[0]
+		mb.pressed.connect(func() -> void: doc.set_props(l, {"mode": mv}, "LFO Mode"))
+		modes.add_child(mb)
+		mode_buttons.append(mb)
+	left.add_child(modes)
+
 	# Knobs wrap to the dock's width.
 	var flow := HFlowContainer.new()
 	flow.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -201,8 +223,26 @@ func _build_editor() -> void:
 	var fout := AWParamBinding.for_property(doc, l, "fade_out_sec", "Fade Out", 0.0, span, 0.01, 0.25, "s")
 	var smooth := AWParamBinding.for_property(doc, l, "fade_smoothing", "Smoothing", 0.0, 1.0, 0.01, 0.0)
 	smooth.tooltip = "0 = straight fade ramps, 1 = fully eased"
+	var depth := AWParamBinding.for_property(doc, l, "depth", "Depth", 0.0, 1.0, 0.001, 0.1, "%")
+	depth.unit_factor = 100.0
+	depth.power = 2.0
+	depth.tooltip = "Relative mode: the wobble goes ± this share of the parameter's range around the drawn curve."
+	var phase := AWParamBinding.for_property(doc, l, "phase_deg", "Phase", 0.0, 360.0, 1.0, 0.0, "°")
+	phase.tooltip = "Where the cycle starts when the LFO begins."
+	var jrate := AWParamBinding.for_property(doc, l, "jitter_rate", "Jitter", 0.0, 1.0, 0.01, 0.0, "%")
+	jrate.unit_factor = 100.0
+	jrate.tooltip = "Randomizes the length of each cycle (100% = about ±50%). Uses the seed."
+	var jdepth := AWParamBinding.for_property(doc, l, "jitter_depth", "Jit Depth", 0.0, 1.0, 0.01, 0.0, "%")
+	jdepth.unit_factor = 100.0
+	jdepth.tooltip = "Randomizes the height of each cycle. Uses the seed."
+	var glide := AWParamBinding.for_property(doc, l, "glide", "Glide", 0.0, 1.0, 0.01, 0.0, "%")
+	glide.unit_factor = 100.0
+	glide.tooltip = "Softens the jumps of Square, Saw and Random. At 100% Square becomes a sine and Random a smooth drift."
+	var decay := AWParamBinding.for_property(doc, l, "decay_sec", "Decay", 0.0, 60.0, 0.01, 0.0, "s")
+	decay.power = 3.0
+	decay.tooltip = "The swing halves every this many seconds, dying away into the drawn curve. 0 = off."
 	accel.tooltip = "How fast the frequency changes, in milli-Hz per second (1000 = 1 Hz every second). Fine near the middle, wide at the ends. Negative slows down and stops at 0 Hz."
-	for b: AWParamBinding in [freq, accel, vmax, vmin, fin, fout, smooth]:
+	for b: AWParamBinding in [freq, accel, vmax, vmin, depth, phase, fin, fout, smooth, jrate, jdepth, glide, decay]:
 		var k := AWKnob.new()
 		k.setup(b, col, 48)
 		k.bipolar = b.prop == "freq_accel"
@@ -213,8 +253,17 @@ func _build_editor() -> void:
 			if b.prop.begins_with("fade_") and b.prop != "fade_smoothing":
 				b.hi = maxf(l.span(), 0.01)
 			k.refresh())
+	var sync_mode := func() -> void:
+		var rel := l.mode == AWLfo.Mode.RELATIVE
+		mode_buttons[0].set_pressed_no_signal(not rel)
+		mode_buttons[1].set_pressed_no_signal(rel)
+		knobs["max_value"].visible = not rel
+		knobs["min_value"].visible = not rel
+		knobs["depth"].visible = rel
+	sync_mode.call()
+	_refreshers.append(sync_mode)
 
-	var note := AWTheme.dim_label("Freq runs on the clip's clock, so it slows down when Pitch drops. Accel drifts the frequency over time. The fades blend from the drawn curve into the LFO and back; Smoothing eases them. Double-click a knob to type a value.", 0.6)
+	var note := AWTheme.dim_label("Freq runs on the clip's clock, so it slows down when Pitch drops. Accel drifts the frequency over time. The fades blend from the drawn curve into the LFO and back; Smoothing eases them. Jitter and Jit Depth make each cycle a little different; Decay lets the swing die away. Double-click a knob to type a value.", 0.6)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.custom_minimum_size.x = 200
 	note.add_theme_font_size_override("font_size", get_theme_default_font_size() - 2)
@@ -264,6 +313,8 @@ class _Preview extends Control:
 			return
 		var t4 := lfo.time_of_phase(4.0) - lfo.start_sec # time to four cycles (INF if it never gets there)
 		var window := minf(lfo.span(), (t4 if is_finite(t4) else lfo.span()) + lfo.fade_in_sec + lfo.fade_out_sec)
+		if lfo.decay_sec > 0.0:
+			window = minf(lfo.span(), maxf(window, lfo.decay_sec * 3.0))
 		window = maxf(window, 0.05)
 		var pad := 6.0
 		var h := size.y - pad * 2.0
@@ -274,7 +325,7 @@ class _Preview extends Control:
 			var t := window * float(i) / n
 			var ts := lfo.start_sec + t
 			var amp := lfo.envelope(ts)
-			var y := 0.5 + (lfo.wave(ts) - 0.5) * amp
+			var y := 0.5 + 0.5 * lfo.swing(ts) * amp
 			pts.append(Vector2(size.x * float(i) / n, pad + (1.0 - y) * h))
 		draw_polyline(pts, color, 1.6, true)
 		for fx: float in [lfo.fades().x, window - lfo.fades().y]:
