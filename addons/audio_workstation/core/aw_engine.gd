@@ -39,7 +39,7 @@ func _init() -> void:
 	if ClassDB.class_exists(CORE_CLASS) and ClassDB.can_instantiate(CORE_CLASS):
 		var c: Object = ClassDB.instantiate(CORE_CLASS)
 		# A library built for an older plugin version lacks the methods this plugin calls: don't use it.
-		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 6:
+		if c.has_method("set_plan") and c.has_method("add_source") and c.has_method("get_api_level") and int(c.call("get_api_level")) >= 7:
 			core = c
 			core.call("set_sample_rate", AudioServer.get_mix_rate())
 			_sources = AWSourceCache.new(core)
@@ -240,6 +240,16 @@ func export_begin(from_sec := 0.0) -> int:
 ## The next `frames` of the export as PCM bytes: {data, peak, clipped, frames}.
 func export_next(frames: int, bits: int) -> Dictionary:
 	return core.call("export_next", frames, bits)
+
+
+## Picks a compressed format for the export (kind 1 = Ogg Vorbis, quality -0.1 .. 1.0).
+func export_configure(kind: int, quality: float, total_frames: int) -> bool:
+	return core != null and bool(core.call("export_configure", kind, quality, total_frames))
+
+
+## The last bytes of a compressed export, after the final export_next.
+func export_finish() -> PackedByteArray:
+	return core.call("export_finish")
 
 
 func export_end() -> void:

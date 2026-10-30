@@ -17,6 +17,10 @@ var _end: SpinBox
 var _auto: Button
 var _path: LineEdit
 var _warn: Label
+var _format: OptionButton
+var _depth_row: Control
+var _quality_row: Control
+var _quality: SpinBox
 var _export_btn: Button
 var _progress: ProgressBar
 var _result: Label
@@ -36,10 +40,15 @@ func _ready() -> void:
 	box.add_theme_constant_override("separation", 8)
 	add_child(box)
 
-	var fmt := OptionButton.new()
-	fmt.add_item("WAV")
-	fmt.focus_mode = Control.FOCUS_NONE
-	box.add_child(_row("Format", fmt))
+	_format = OptionButton.new()
+	for f: String in AWProject.FORMATS:
+		_format.add_item(AWProject.FORMAT_NAMES[f])
+	_format.focus_mode = Control.FOCUS_NONE
+	_format.tooltip_text = "WAV is lossless. Ogg Vorbis is lossy and much smaller. (For a compressed WAV, use Godot's QOA option when importing it.)"
+	_format.item_selected.connect(func(i: int) -> void:
+		if not _updating:
+			doc.set_export_format(AWProject.FORMATS[i]))
+	box.add_child(_row("Format", _format))
 
 	var group := ButtonGroup.new()
 	var depth := HBoxContainer.new()
@@ -50,7 +59,18 @@ func _ready() -> void:
 	depth.add_child(_depth_32)
 	_depth_16.pressed.connect(func() -> void: _on_depth(16))
 	_depth_32.pressed.connect(func() -> void: _on_depth(32))
-	box.add_child(_row("Bit depth", depth))
+	_depth_row = _row("Bit depth", depth)
+	box.add_child(_depth_row)
+	_quality = SpinBox.new()
+	_quality.min_value = 0.0
+	_quality.max_value = 10.0
+	_quality.step = 0.1
+	_quality.tooltip_text = "Ogg Vorbis quality, 0 to 10 (5 is about 160 kbit/s, 8 about 256)."
+	_quality.value_changed.connect(func(v: float) -> void:
+		if not _updating:
+			doc.set_export_ogg_quality(v))
+	_quality_row = _row("Quality", _quality)
+	box.add_child(_quality_row)
 
 	var rate := AWTheme.dim_label("%d Hz, project mix rate" % int(AudioServer.get_mix_rate()), 0.7)
 	box.add_child(_row("Sample rate", rate))
@@ -175,6 +195,11 @@ func _on_depth(bits: int) -> void:
 func _sync() -> void:
 	_updating = true
 	var p := doc.project
+	_format.select(maxi(0, AWProject.FORMATS.find(p.export_format)))
+	_depth_row.visible = p.export_format == "wav"
+	_quality_row.visible = p.export_format == "ogg"
+	_quality.value = p.export_ogg_quality
+	_path.placeholder_text = "assets/sfx/sound." + p.export_format
 	_depth_16.button_pressed = p.export_bit_depth == 16
 	_depth_32.button_pressed = p.export_bit_depth == 32
 	_end.value = doc.export_end_sec()

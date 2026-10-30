@@ -1,7 +1,7 @@
 @tool
 class_name AWExporter
 extends RefCounted
-## Bakes the whole sound (every clip, both chains, up to the end marker) to a WAV file.
+## Bakes the whole sound (every clip, both chains, up to the end marker) to a WAV or Ogg Vorbis file.
 ##
 ## It renders on its own AWEngine (own plan and effect state), so playback and editing carry on, and
 ## it uses the same native render code as the preview: what you hear is what is written. The render
@@ -23,11 +23,15 @@ func cancel() -> void:
 	cancelled = true
 
 
-func run(project: AWProject, path: String, bits: int) -> Dictionary:
+## `format` is "wav" (with `bits` 16 or 32) or "ogg" (Ogg Vorbis, lossy; `quality` 0 to 10).
+func run(project: AWProject, path: String, bits: int, format := "wav", quality := 5.0) -> Dictionary:
 	var res := {"ok": false, "error": "", "path": path, "frames": 0, "seconds": 0.0, "bytes": 0,
 		"peak_db": -INF, "clipped": 0, "cancelled": false}
-	if bits != 16 and bits != 32:
+	if format == "wav" and bits != 16 and bits != 32:
 		res.error = "Unsupported bit depth: %d." % bits
+		return res
+	if not AWProject.FORMATS.has(format):
+		res.error = "Unknown format: %s." % format
 		return res
 	var e := AWEngine.new()
 	if not e.is_available():
@@ -40,6 +44,10 @@ func run(project: AWProject, path: String, bits: int) -> Dictionary:
 		res.error = "Nothing to export: the sound has no length."
 		return res
 	var rate := int(AudioServer.get_mix_rate())
+	if format != "wav" and not e.export_configure(1, clampf(quality, 0.0, 10.0) / 10.0, total):
+		e.export_end()
+		res.error = "The %s encoder couldn't be set up for %d Hz." % [AWProject.FORMAT_NAMES[format], rate]
+		return res
 	var dir := path.get_base_dir()
 	if dir != "" and not DirAccess.dir_exists_absolute(dir):
 		var mk := DirAccess.make_dir_recursive_absolute(dir)
@@ -53,7 +61,7 @@ func run(project: AWProject, path: String, bits: int) -> Dictionary:
 		e.export_end()
 		res.error = "Couldn't write %s (%s)." % [part, error_string(FileAccess.get_open_error())]
 		return res
-	var header := _header(rate, bits, total, total * 2 * (bits / 8))
+	var header := _header(rate, bits, total, total * 2 * (bits / 8)) if format == "wav" else PackedByteArray()
 	f.store_buffer(header)
 	var tree := Engine.get_main_loop() as SceneTree
 	var chunk := maxi(1, int(CHUNK_SEC * rate))
@@ -64,7 +72,7 @@ func run(project: AWProject, path: String, bits: int) -> Dictionary:
 		if cancelled:
 			break
 		var n := mini(chunk, total - done)
-		var r := e.export_next(n, bits)
+		var r := e.export_next(n, bits if format == "wav" else 0)
 		f.store_buffer(r.data as PackedByteArray)
 		peak = maxf(peak, float(r.peak))
 		clipped += int(r.clipped)
@@ -72,8 +80,11 @@ func run(project: AWProject, path: String, bits: int) -> Dictionary:
 		progress.emit(float(done) / float(total))
 		if tree != null and done < total:
 			await tree.process_frame
+	if not cancelled and format != "wav":
+		f.store_buffer(e.export_finish())
 	e.export_end()
 	var write_err := f.get_error()
+	var file_bytes := f.get_position()
 	f.close()
 	if cancelled:
 		DirAccess.remove_absolute(part)
@@ -96,7 +107,7 @@ func run(project: AWProject, path: String, bits: int) -> Dictionary:
 	res.ok = true
 	res.frames = total
 	res.seconds = float(total) / float(rate)
-	res.bytes = header.size() + total * 2 * (bits / 8)
+	res.bytes = int(file_bytes)
 	res.peak_db = 20.0 * log(peak) / log(10.0) if peak > 0.0 else -INF
 	res.clipped = clipped
 	return res
@@ -140,6 +151,8 @@ static func summary(r: Dictionary) -> String:
 		return "Export failed: %s" % r.error if not r.cancelled else "Export cancelled."
 	var peak: String = "silent" if is_inf(float(r.peak_db)) else "peak %.1f dBFS" % float(r.peak_db)
 	var s := "Exported %s: %.2f s, %s, %s." % [str(r.path).get_file(), float(r.seconds), AWExportPanel._size_text(int(r.bytes)), peak]
+	if str(r.path).get_extension().to_lower() != "wav":
+		s += " Lossy."
 	if int(r.clipped) > 0:
 		s += " %d samples are over full scale and will clip. Lower the Output volume or add a Limiter." % int(r.clipped)
 	elif is_inf(float(r.peak_db)):

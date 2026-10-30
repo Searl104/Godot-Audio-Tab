@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "aw_effects.h"
+#include "aw_encoders.h"
 
 #include <godot_cpp/classes/animation.hpp>
 #include <godot_cpp/classes/audio_frame.hpp>
@@ -112,6 +113,7 @@ private:
 	FxRuntime off_rt;
 	int64_t off_pos = 0;
 	uint32_t off_rng = 0x9E3779B9u;
+	std::unique_ptr<aw::Encoder> off_enc; // Ogg encoder when one is configured
 	std::atomic<bool> playing{ false };
 	std::atomic<int64_t> position{ 0 };
 	std::atomic<bool> loop_enabled{ false };
@@ -180,6 +182,8 @@ public:
 	int64_t export_begin(int64_t p_from_frame);
 	Dictionary export_next(int64_t p_frames, int64_t p_bits);
 	void export_end();
+	bool export_configure(int64_t p_kind, double p_quality, int64_t p_total_frames);
+	PackedByteArray export_finish();
 
 	// --- Transport ---------------------------------------------------------------
 	void play(int64_t p_from_frame);

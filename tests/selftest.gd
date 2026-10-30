@@ -1186,6 +1186,18 @@ static func _read_wav(path: String) -> Dictionary:
 	return out
 
 
+## Relative error energy between decoded interleaved samples and the render (clamped to full scale).
+static func _rel_error(samples: PackedFloat32Array, ref: PackedVector2Array) -> float:
+	var err := 0.0
+	var energy := 0.0
+	for i in mini(ref.size(), samples.size() / 2):
+		var rx := clampf(ref[i].x, -1.0, 1.0)
+		var ry := clampf(ref[i].y, -1.0, 1.0)
+		err += (samples[i * 2] - rx) * (samples[i * 2] - rx) + (samples[i * 2 + 1] - ry) * (samples[i * 2 + 1] - ry)
+		energy += rx * rx + ry * ry
+	return err / maxf(energy, 1e-12)
+
+
 static func export_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	if screen.engine.core == null:
@@ -1253,6 +1265,37 @@ static func export_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	check(r16.ok and w16.ok and w16.bits == 16 and w16.format_tag == 1 and worst16 < 3.0 / 32768.0, "export: 16-bit file is PCM within 3 LSB of the render (worst %.1f LSB)" % (worst16 * 32768.0))
 	check(r16.ok and int(r16.bytes) == int(w16.file_bytes) and int(r16.bytes) == int(w16.frames) * 4 + 44, "export: a 16-bit file is header + 4 bytes a frame")
 
+	# Ogg Vorbis: Godot decodes it and it matches the render closely; higher quality means a bigger file.
+	var opath := ProjectSettings.globalize_path("user://aw_export_test.ogg")
+	var ro: Dictionary = await AWExporter.new().run(ep, opath, 16, "ogg", 5.0)
+	var obytes := FileAccess.get_file_as_bytes(opath)
+	check(ro.ok and obytes.size() > 1000 and obytes.slice(0, 4).get_string_from_ascii() == "OggS", "export Ogg: an Ogg file (%d bytes)" % obytes.size())
+	var ostream := AudioStreamOggVorbis.load_from_buffer(obytes)
+	check(ostream != null and absf(ostream.get_length() - length) < 0.05, "export Ogg: Godot loads it (%.3f s, wanted %.3f)" % [ostream.get_length() if ostream else -1.0, length])
+	if ostream != null:
+		var opb := ostream.instantiate_playback()
+		opb.start(0.0)
+		var dec_frames := PackedVector2Array()
+		var guard_o := 0
+		while dec_frames.size() < total and guard_o < 2000:
+			var got_o: PackedVector2Array = opb.mix_audio(1.0, mini(4096, total - dec_frames.size()))
+			if got_o.is_empty():
+				break
+			dec_frames.append_array(got_o)
+			guard_o += 1
+		var dec_samples := PackedFloat32Array()
+		dec_samples.resize(dec_frames.size() * 2)
+		for i in dec_frames.size():
+			dec_samples[i * 2] = dec_frames[i].x
+			dec_samples[i * 2 + 1] = dec_frames[i].y
+		var oerr := _rel_error(dec_samples, ref)
+		check(dec_frames.size() > total / 2 and oerr < 0.01, "export Ogg: decodes to within 20 dB of the render (error %.5f, %d frames)" % [oerr, dec_frames.size()])
+	var ro2: Dictionary = await AWExporter.new().run(ep, opath, 16, "ogg", 9.0)
+	check(ro2.ok and int(ro2.bytes) > int(ro.bytes), "export Ogg: quality 9 is larger than quality 5 (%d vs %d bytes)" % [int(ro2.bytes), int(ro.bytes)])
+	DirAccess.remove_absolute(opath)
+	var rbad: Dictionary = await AWExporter.new().run(ep, opath, 16, "mp3")
+	check(not rbad.ok and rbad.error.begins_with("Unknown format"), "export: an unknown format is refused")
+
 	# Cancel mid-way: no file appears, an existing file stays as it was.
 	var before := FileAccess.get_file_as_bytes(abs_path)
 	var ec := AWExporter.new()
@@ -1272,6 +1315,19 @@ static func export_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var empty := AWProject.new()
 	var re: Dictionary = await AWExporter.new().run(empty, abs_path, 16)
 	check(not re.ok and re.error.begins_with("Nothing to export"), "export: an empty project says so")
+
+	# Format choice in the document and the dock.
+	var xpf: AWExportPanel = screen.export_panel
+	d.set_export_path("assets/sfx/jump.wav")
+	d.set_export_format("ogg")
+	check(d.project.export_path == "assets/sfx/jump.ogg" and xpf._quality_row.visible and not xpf._depth_row.visible, "export dock: Ogg swaps the extension, shows Quality, hides Bit depth")
+	d.set_export_format("wav")
+	check(d.project.export_path == "assets/sfx/jump.wav" and xpf._depth_row.visible, "export dock: back to WAV")
+	d.set_export_path("assets/sfx/custom_name")
+	d.set_export_format("ogg")
+	check(d.project.export_path == "assets/sfx/custom_name.ogg", "export dock: a name without extension gets one")
+	d.set_export_format("wav")
+	d.set_export_path("assets/sfx/jump.wav")
 
 	# The dock: Export button runs it through the document and shows the result.
 	d.set_export_path(path)
@@ -1321,8 +1377,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.7.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.7.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.8.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.8.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)

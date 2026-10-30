@@ -42,6 +42,8 @@ void AWCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("export_begin", "from_frame"), &AWCore::export_begin);
 	ClassDB::bind_method(D_METHOD("export_next", "frames", "bits"), &AWCore::export_next);
 	ClassDB::bind_method(D_METHOD("export_end"), &AWCore::export_end);
+	ClassDB::bind_method(D_METHOD("export_configure", "kind", "quality", "total_frames"), &AWCore::export_configure);
+	ClassDB::bind_method(D_METHOD("export_finish"), &AWCore::export_finish);
 	ClassDB::bind_method(D_METHOD("render", "frames"), &AWCore::render);
 	ClassDB::bind_method(D_METHOD("get_frames_rendered"), &AWCore::get_frames_rendered);
 	ClassDB::bind_method(D_METHOD("reset"), &AWCore::reset);
@@ -665,7 +667,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 6; // 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 7; // 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
@@ -811,6 +813,7 @@ int64_t AWCore::export_begin(int64_t p_from_frame) {
 	off_plan = current_plan();
 	off_pos = std::max<int64_t>(0, p_from_frame);
 	off_rng = 0x9E3779B9u;
+	off_enc.reset();
 	if (!off_plan) {
 		return 0;
 	}
@@ -837,6 +840,28 @@ Dictionary AWCore::export_next(int64_t p_frames, int64_t p_bits) {
 	apply_master(*off_plan, off_pos, p_frames, buf.data(), &off_rt);
 	off_rt.next = off_pos + p_frames;
 	off_pos += p_frames;
+
+	if (off_enc) { // Ogg: encode, return the bytes produced so far
+		float peak = 0.0f;
+		int64_t clipped = 0;
+		for (int64_t i = 0; i < p_frames * 2; i++) {
+			const float a = std::fabs(buf[(size_t)i]);
+			peak = std::max(peak, a);
+			clipped += a > 1.0f ? 1 : 0;
+		}
+		std::vector<uint8_t> bytes;
+		off_enc->feed(buf.data(), p_frames, bytes);
+		PackedByteArray data;
+		data.resize((int64_t)bytes.size());
+		if (!bytes.empty()) {
+			std::memcpy(data.ptrw(), bytes.data(), bytes.size());
+		}
+		result["data"] = data;
+		result["peak"] = (double)peak;
+		result["clipped"] = clipped;
+		result["frames"] = p_frames;
+		return result;
+	}
 
 	const bool f32 = p_bits == 32;
 	PackedByteArray data;
@@ -872,7 +897,34 @@ Dictionary AWCore::export_next(int64_t p_frames, int64_t p_bits) {
 	return result;
 }
 
+// Chooses a compressed format for the export in progress: kind 1 = Ogg Vorbis (quality -0.1 .. 1.0).
+// Call after export_begin. Returns false if the encoder couldn't be set up. (p_total_frames is
+// kept for encoders whose headers need the length.)
+bool AWCore::export_configure(int64_t p_kind, double p_quality, int64_t p_total_frames) {
+	off_enc.reset();
+	(void)p_total_frames;
+	if (p_kind == 1) {
+		off_enc = aw::make_ogg_encoder((int)sample_rate, (float)p_quality);
+	}
+	return (bool)off_enc;
+}
+
+// The last bytes of a compressed export (call once after the final export_next).
+PackedByteArray AWCore::export_finish() {
+	PackedByteArray data;
+	if (off_enc) {
+		std::vector<uint8_t> bytes;
+		off_enc->finish(bytes);
+		data.resize((int64_t)bytes.size());
+		if (!bytes.empty()) {
+			std::memcpy(data.ptrw(), bytes.data(), bytes.size());
+		}
+	}
+	return data;
+}
+
 void AWCore::export_end() {
+	off_enc.reset();
 	off_plan.reset();
 	off_rt = FxRuntime();
 }
