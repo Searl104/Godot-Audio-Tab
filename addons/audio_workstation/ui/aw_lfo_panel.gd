@@ -197,7 +197,7 @@ func _build_editor() -> void:
 		b.like_effect = e.effect_type
 		b.like_param = _curve.param
 	var freq := AWParamBinding.for_property(doc, l, "freq_hz", "Freq", 0.05, 20.0, 0.01, 4.0, "Hz", AWCurve.Scale.LOG)
-	var accel := AWParamBinding.for_property(doc, l, "freq_accel", "Accel", -20.0, 20.0, 0.001, 0.0, "mHz/s")
+	var accel := AWParamBinding.for_property(doc, l, "freq_accel", "Accel", -5.0, 5.0, 0.001, 0.0, "mHz/s")
 	accel.unit_factor = 1000.0
 	accel.power = 3.0
 	var fin := AWParamBinding.for_property(doc, l, "fade_in_sec", "Fade In", 0.0, span, 0.01, 0.25, "s")

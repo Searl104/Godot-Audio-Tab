@@ -1475,7 +1475,7 @@ static func run(screen: AWMainScreen) -> void:
 	check(is_equal_approx(lf.freq_accel, -2.5) and ak.binding.text() == "-2500 mHz/s", "typing -2500 sets -2.5 Hz/s, shown as %s" % ak.binding.text())
 	var fine_a := ak.binding.from_norm(0.5 + 1.0 / 220.0)
 	var wide_a := ak.binding.from_norm(0.75)
-	check(absf(fine_a) <= 0.001 and absf(wide_a) > 1.0 and absf(ak.binding.to_norm(ak.binding.from_norm(0.8)) - 0.8) < 0.01, "Accel knob is fine near 0 and wide at the ends (1 px = %.3f Hz/s, 75%% = %.2f Hz/s)" % [fine_a, wide_a])
+	check(absf(fine_a) <= 0.001 and absf(wide_a) > 0.5 and absf(ak.binding.to_norm(ak.binding.from_norm(0.8)) - 0.8) < 0.01, "Accel knob is fine near 0 and wide at the ends (1 px = %.3f Hz/s, 75%% = %.2f Hz/s)" % [fine_a, wide_a])
 	sk.open_entry()
 	sk._entry.text_submitted.emit("0.6")
 	check(is_equal_approx(lf.fade_smoothing, 0.6), "typing 0.6 sets the smoothing")
