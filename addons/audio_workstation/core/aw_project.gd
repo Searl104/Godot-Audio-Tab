@@ -36,8 +36,9 @@ const CLIP_COLORS := [
 ## Where the exported sound ends (seconds): the marker on the timeline. The part after the last
 ## clip is the tail, where effects ring out. Negative = automatic (see export_end_resolved).
 @export var export_end_sec: float = -1.0
-## Relative to res:// (or an absolute path).
-@export var export_path: String = "assets/sfx/jump.wav"
+## Relative to res:// (or an absolute path). Empty = automatic: next to the saved sound file,
+## named after it (see AWDocument.export_auto_path).
+@export var export_path: String = ""
 
 
 const AUTO_TAIL_SEC := 2.5

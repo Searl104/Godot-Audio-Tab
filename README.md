@@ -226,6 +226,8 @@ The LFO editor is its own **Audio LFO** dock, a single column that suits a tall 
 - **Phase:** where the cycle starts (0 to 360°).
 - **Jitter / Jit Depth:** each cycle gets a slightly different length or height (repeatable for the seed), so the
   movement sounds less mechanical.
+- **Seed** (a field under the shape buttons, with **New** for a fresh one): the random pattern for the Random shape
+  and Jitter; the same seed always gives the same pattern.
 - **Glide:** softens the jumps of Square, Saw and Random; at 100% Square becomes a sine and Random a smooth drift.
 - **ADSR (0.17, engine 0.12.0):** the LFO's strength follows an envelope over its span. Attack rises from the drawn
   curve to the full swing, Decay falls to the **Sustain** level (Sustain 0% dies away into the drawn curve: springs,
@@ -241,6 +243,9 @@ Knob gestures: drag, Shift = fine, wheel, **double-click to type a value** (`2k`
 ## Export (milestone 5, engine 0.8.0)
 
 The **Audio Export** dock bakes the whole sound (every clip, clip and master chains, up to the end marker) to a file.
+- **Automatic file name (0.19.4):** with the file field left empty, the export goes next to the saved sound and is
+  named after it (`res://sfx/door_slam.tres` exports `res://sfx/door_slam.wav`); an unsaved sound uses its title.
+  The field shows that name as a hint; type a path to choose your own.
 - **Anywhere on disk (0.17):** Browse can pick a folder outside this project, for example another game's project.
   Paths inside `res://` are saved relative to the project; others are saved as absolute paths.
 - **Formats:** WAV (16-bit with TPDF dither, or 32-bit float) and Ogg Vorbis (variable bit rate, Quality 0 to 10 on
@@ -340,10 +345,10 @@ Frames never overlap.
 | Several clips at once | With several clips selected, Gain, Pitch and Pan on the Clip card change every selected clip by the same amount. |
 | Import here | Double-click empty grid space opens Import Sound at that spot. |
 
-**Row headers** (left of the grid; "◂ Rows" narrows them): a colour bar, the row's name (double-click to rename), and
-**M** (mute), **S** (solo; Ctrl+click solos only that row) and **L** (lock: its clips can't be selected or edited).
-Mute and Solo apply to the export as well; the Export dock warns while a Solo is on. Click a header to select its clips;
-right-click for Rename, Row Colour, Unmute All Rows and Clear All Solos. Sounds saved by 0.14 use format 4.
+**Row headers** (a narrow strip left of the grid): **M** (mute), **S** (solo; Ctrl+click solos only that row) and **L**
+(lock: its clips can't be selected or edited), stacked top to bottom. Since 0.19.4 rows have no names or colours;
+groups name things. Mute and Solo apply to the export as well; the Export dock warns while a Solo is on. Click a
+header to select its clips; right-click for Unmute All Rows and Clear All Solos. Sounds saved by 0.14 use format 4.
 
 ## Importing sounds (0.13)
 

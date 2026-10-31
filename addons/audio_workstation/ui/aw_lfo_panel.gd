@@ -202,6 +202,33 @@ func _build_editor() -> void:
 		mode_buttons.append(mb)
 	left.add_child(modes)
 
+	# Seed: the random pattern used by the Random shape and by Jitter. Same seed, same pattern.
+	var seed_row := HBoxContainer.new()
+	seed_row.add_theme_constant_override("separation", 4)
+	var seed_label := AWTheme.dim_label("Seed", 0.75)
+	seed_label.tooltip_text = "The random pattern for the Random shape and Jitter: the same seed always gives the same pattern."
+	seed_row.add_child(seed_label)
+	var seed_box := SpinBox.new()
+	seed_box.name = "SeedField"
+	seed_box.min_value = 0
+	seed_box.max_value = 99999
+	seed_box.step = 1
+	seed_box.rounded = true
+	seed_box.select_all_on_focus = true
+	seed_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	seed_box.tooltip_text = seed_label.tooltip_text
+	seed_box.set_value_no_signal(l.random_seed)
+	seed_box.value_changed.connect(func(v: float) -> void:
+		if int(v) != l.random_seed:
+			doc.set_props(l, {"random_seed": int(v)}, "LFO Seed"))
+	seed_row.add_child(seed_box)
+	var reroll := AWTheme.button(self, "New", &"RandomNumberGenerator", "Pick a new random seed")
+	reroll.name = "NewSeed"
+	reroll.pressed.connect(func() -> void: doc.set_props(l, {"random_seed": randi() % 100000}, "LFO Seed"))
+	seed_row.add_child(reroll)
+	left.add_child(seed_row)
+	_refreshers.append(func() -> void: seed_box.set_value_no_signal(l.random_seed))
+
 	# Knobs wrap to the dock's width.
 	var flow := HFlowContainer.new()
 	flow.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -246,7 +273,7 @@ func _build_editor() -> void:
 	var decay := AWParamBinding.for_property(doc, l, "decay_sec", "Decay", 0.0, 240.0, 0.01, 0.0, "s")
 	decay.power = 3.0
 	decay.tooltip = "Decay: after the Attack peak, the swing falls to the Sustain level over this time. 0 = straight to Sustain."
-	accel.tooltip = "How fast the frequency changes, in milli-Hz per second (1000 = 1 Hz every second). Fine near the middle, wide at the ends. Negative slows down and stops at 0 Hz."
+	accel.tooltip = "How fast the frequency changes, in tenths of a hertz per second (10 = 1 Hz every second; up to ±1000). Fine near the middle, wide at the ends. Negative slows down and stops at 0 Hz."
 	for b: AWParamBinding in [freq, accel, vmax, vmin, depth, phase, fin, decay, sus, fout, smooth, jrate, jdepth, glide]:
 		var k := AWKnob.new()
 		k.setup(b, col, 48)

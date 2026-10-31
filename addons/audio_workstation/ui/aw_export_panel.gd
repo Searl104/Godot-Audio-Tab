@@ -170,6 +170,7 @@ func _ready() -> void:
 
 	doc.export_settings_changed.connect(_sync)
 	doc.project_changed.connect(func(_s: bool) -> void: _sync())
+	doc.file_state_changed.connect(_sync)
 	_sync()
 
 
@@ -207,7 +208,8 @@ func _sync() -> void:
 	_depth_row.visible = p.export_format == "wav"
 	_quality_row.visible = p.export_format == "ogg"
 	_quality.value = p.export_ogg_quality
-	_path.placeholder_text = "assets/sfx/sound." + p.export_format
+	# Empty = automatic: shown as the placeholder (next to the saved sound, named after it).
+	_path.placeholder_text = doc.export_auto_path().trim_prefix("res://")
 	_depth_16.button_pressed = p.export_bit_depth == 16
 	_depth_32.button_pressed = p.export_bit_depth == 32
 	_end.value = doc.export_end_sec()

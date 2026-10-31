@@ -1,16 +1,16 @@
 @tool
 class_name AWRowHeaders
 extends Control
-## Strip left of the clip grid: one header per row (layer), aligned with the grid's rows.
-##
-##   ▌Footsteps            [M][S][🔒]
-##
-## Colour bar, name (double-click to rename), Mute, Solo (Ctrl+click: solo only this row) and Lock.
-## Mute and Solo also decide what is exported. Right-click: Rename, Colour.
+## Narrow strip left of the clip grid: one header per row (layer), aligned with the grid's rows.
+## Rows have no names or colours (groups name things since 0.19.4): just Mute, Solo (Ctrl+click:
+## solo only this row) and Lock, stacked vertically. Mute and Solo also decide what is exported.
+## Click a header to select its row's clips. Right-click: Unmute All Rows, Clear All Solos.
 
-const WIDTH := 130.0
-const COLLAPSED_WIDTH := 72.0
+const WIDTH := 28.0
+const COLLAPSED_WIDTH := 28.0
 const BTN := 18.0
+const MIN_BTN := 10.0
+const GAP := 2.0
 const PREF_COLLAPSED := "audio_workstation/grid/row_headers_collapsed"
 
 ## Narrow mode: colour bar and M / S / L only (the name shows in the tooltip).
@@ -85,12 +85,15 @@ func row_count() -> int:
 	return grid.row_count()
 
 
-## Button rectangles of a row: {"mute", "solo", "lock"}.
+## Button rectangles of a row: {"mute", "solo", "lock"}, stacked top to bottom and centred.
+## They shrink to fit short rows (down to MIN_BTN).
 func buttons(i: int) -> Dictionary:
 	var h := grid.row_height(i)
-	var y := grid.row_top(i) + (h - BTN) * 0.5
-	var x := size.x - 6.0 - BTN * 3.0 - 4.0
-	return {"mute": Rect2(x, y, BTN, BTN), "solo": Rect2(x + BTN + 2.0, y, BTN, BTN), "lock": Rect2(x + (BTN + 2.0) * 2.0, y, BTN, BTN)}
+	var b := clampf((h - 4.0 - GAP * 2.0) / 3.0, MIN_BTN, BTN)
+	var total := b * 3.0 + GAP * 2.0
+	var y := grid.row_top(i) + (h - total) * 0.5
+	var x := (size.x - b) * 0.5
+	return {"mute": Rect2(x, y, b, b), "solo": Rect2(x, y + b + GAP, b, b), "lock": Rect2(x, y + (b + GAP) * 2.0, b, b)}
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -109,8 +112,6 @@ func _gui_input(event: InputEvent) -> void:
 				doc.set_row_prop(i, "solo", not doc.project.row(i).solo if doc.project.row(i) else true)
 		elif (b.lock as Rect2).has_point(mb.position):
 			doc.set_row_prop(i, "locked", not doc.project.row_locked(i))
-		elif mb.double_click and not collapsed:
-			start_rename(i)
 		else:
 			# Click the header: select the row's clips.
 			var picked: Array[AWClip] = []
@@ -123,9 +124,6 @@ func _gui_input(event: InputEvent) -> void:
 	elif mb.button_index == MOUSE_BUTTON_RIGHT:
 		_menu_row = i
 		_menu.clear()
-		_menu.add_item("Rename Row", 1)
-		_menu.add_submenu_node_item("Row Colour", _color_menu)
-		_menu.add_separator()
 		_menu.add_item("Unmute All Rows", 2)
 		_menu.add_item("Clear All Solos", 3)
 		AWTheme.popup_at(_menu, self, mb.position)
@@ -189,22 +187,14 @@ func _draw() -> void:
 		var has_sel := doc.selection.any(func(c: AWClip) -> bool: return c.row == i)
 		if has_sel:
 			draw_rect(Rect2(0, y, size.x, h), Color(acc, 0.08))
-		var col: Color = r.color if r and r.color.a > 0.0 else Color(c_text, 0.15)
-		draw_rect(Rect2(0, y + 3.0, 4.0, h - 6.0), col)
-		var audible := doc.project.row_audible(i)
-		var name_col := Color(c_text, 0.9 if audible else 0.4)
-		var named := r != null and r.name != ""
-		if not named:
-			name_col.a *= 0.6
 		var b := buttons(i)
-		var name_w := (b.mute as Rect2).position.x - 14.0
-		if _edit_row != i and not collapsed:
-			draw_string(font, Vector2(10, y + h * 0.5 + fs * 0.35), AWTheme.middle_truncate(font, fs, doc.project.row_name(i), name_w), HORIZONTAL_ALIGNMENT_LEFT, name_w, fs, name_col)
-		_draw_toggle(b.mute, "M", r != null and r.muted, Color("#e0a33f"), font, bfs, c_text)
-		_draw_toggle(b.solo, "S", r != null and r.solo, Color("#e5d84d"), font, bfs, c_text)
-		_draw_toggle(b.lock, "L", r != null and r.locked, Color("#8fa3bf"), font, bfs, c_text)
-		if solo_on and not collapsed and not (r != null and r.solo) and not (r != null and r.muted):
-			draw_string(font, Vector2(10, y + h - 4.0), "silent", HORIZONTAL_ALIGNMENT_LEFT, name_w, bfs, Color(c_text, 0.35))
+		var bf := bfs if (b.mute as Rect2).size.y >= 15.0 else bfs - 1
+		_draw_toggle(b.mute, "M", r != null and r.muted, Color("#e0a33f"), font, bf, c_text)
+		_draw_toggle(b.solo, "S", r != null and r.solo, Color("#e5d84d"), font, bf, c_text)
+		_draw_toggle(b.lock, "L", r != null and r.locked, Color("#8fa3bf"), font, bf, c_text)
+		if solo_on and not (r != null and r.solo) and not (r != null and r.muted):
+			# Silent while another row or group is soloed: dim the row's header.
+			draw_rect(Rect2(0, y, size.x, h), Color(0, 0, 0, 0.25))
 	draw_line(Vector2(size.x - 0.5, 0), Vector2(size.x - 0.5, size.y), Color(0, 0, 0, 0.4))
 
 
@@ -223,4 +213,4 @@ func _get_tooltip(at: Vector2) -> String:
 		return "Solo this row (also in the export). Ctrl+click: solo only this row"
 	if (b.lock as Rect2).has_point(at):
 		return "Lock this row: its clips can't be selected or edited"
-	return "%s. Click: select its clips. Double-click: rename. Right-click: colour." % doc.project.row_name(i)
+	return "Row %d. Click: select its clips. Right-click: unmute all, clear solos." % (i + 1)
