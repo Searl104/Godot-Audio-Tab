@@ -33,7 +33,7 @@ var like_param := ""
 var tooltip := ""
 ## False: edits only this effect even with several clips selected (the Clips card rows).
 var spread := true
-## Property mode: shown (and typed) as value * unit_factor, e.g. 1000 to show Hz/s as mHz/s.
+## Property mode: shown (and typed) as value * unit_factor, e.g. 10 to show Hz/s as dHz/s.
 var unit_factor := 1.0
 ## > 1 makes small values fine and large ones coarse. Bipolar ranges (lo < 0): the middle is
 ## fine (value = hi * sign(x) * |x|^power for a knob position x in -1..1). Ranges from 0: the
