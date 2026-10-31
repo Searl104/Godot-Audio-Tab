@@ -41,6 +41,14 @@ func zoom_by(factor: float, anchor_x := -1.0) -> void:
 	changed.emit()
 
 
+## Sets the zoom so that time `t` sits at x = anchor_x.
+func set_scale_at(pps: float, anchor_x: float, t: float) -> void:
+	pixels_per_sec = clampf(pps, MIN_PPS, MAX_PPS)
+	scroll_x = (t - min_time) * pixels_per_sec - anchor_x
+	_clamp()
+	changed.emit()
+
+
 func scroll_to(px: float) -> void:
 	scroll_x = px
 	_clamp()

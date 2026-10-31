@@ -73,6 +73,8 @@ var _rename_group: AWGroup = null
 var _tops := PackedFloat32Array()
 var _hs := PackedFloat32Array()
 var _layout_dirty := true
+var _press_tops := PackedFloat32Array()
+var _press_hs := PackedFloat32Array()
 ## Callable(event) -> bool from the timeline pane: shared pan / zoom gestures.
 var nav := Callable()
 
@@ -341,6 +343,11 @@ func group_part_at(pos: Vector2) -> Array:
 func _begin_group_drag(g: AWGroup, kind: Drag) -> void:
 	_group = g
 	_drag = kind
+	# Rows are read off the layout as it was at the press: moving or resizing a group changes the
+	# layout (its strip band, collapsed rows), which must not feed back into the drag.
+	_layout()
+	_press_tops = _tops.duplicate()
+	_press_hs = _hs.duplicate()
 	_group_orig = {"start_sec": g.start_sec, "end_sec": g.end_sec, "row": g.row, "row_count": g.row_count}
 	_group_clips = doc.project.group_clips(g) if kind == Drag.GROUP_MOVE else ([] as Array[AWClip])
 	_group_clip_orig = {}
@@ -358,7 +365,7 @@ func _group_motion(pos: Vector2) -> void:
 		Drag.GROUP_MOVE:
 			var s: float = maxf(0.0, doc.snap_to(o.start_sec + t - _press_t, _targets))
 			var dt: float = s - o.start_sec
-			var drow := maxi(row_at(pos.y) - row_at(_press_pos.y), -int(o.row))
+			var drow := maxi(_press_row_at(pos.y) - _press_row_at(_press_pos.y), -int(o.row))
 			doc.preview_group(g, {"start_sec": o.start_sec + dt, "end_sec": o.end_sec + dt, "row": o.row + drow},
 				_group_clips, _group_clip_orig, dt, drow)
 		Drag.GROUP_L:
@@ -366,8 +373,20 @@ func _group_motion(pos: Vector2) -> void:
 		Drag.GROUP_R:
 			doc.preview_group(g, {"end_sec": maxf(doc.snap(t), o.start_sec + 0.05)})
 		Drag.GROUP_ROWS:
-			var last := maxi(row_at(pos.y), int(o.row))
+			var last := maxi(_press_row_at(pos.y), int(o.row))
 			doc.preview_group(g, {"row_count": last - int(o.row) + 1})
+
+
+## row_at() on the layout captured when the group drag began.
+func _press_row_at(y: float) -> int:
+	if y <= 0.0 or _press_tops.is_empty():
+		return 0
+	var n := _press_tops.size()
+	for r in n:
+		if _press_tops[r] + _press_hs[r] > y:
+			return r
+	var last_end := _press_tops[n - 1] + _press_hs[n - 1]
+	return n + int((y - last_end) / row_h)
 
 
 func _group_release() -> void:

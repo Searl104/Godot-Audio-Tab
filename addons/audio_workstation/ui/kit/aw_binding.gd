@@ -35,8 +35,9 @@ var tooltip := ""
 var spread := true
 ## Property mode: shown (and typed) as value * unit_factor, e.g. 1000 to show Hz/s as mHz/s.
 var unit_factor := 1.0
-## Bipolar ranges only: > 1 spreads the knob so the middle is fine and the ends coarse
-## (value = hi * sign(x) * |x|^power for a knob position x in -1..1).
+## > 1 makes small values fine and large ones coarse. Bipolar ranges (lo < 0): the middle is
+## fine (value = hi * sign(x) * |x|^power for a knob position x in -1..1). Ranges from 0: the
+## start is fine (value = hi * n^power for a knob position n in 0..1).
 var power := 1.0
 var _orig := 0.0
 
@@ -104,6 +105,8 @@ func live_value() -> float:
 
 
 func to_norm(v: float) -> float:
+	if power > 1.0 and hi > 0.0 and lo >= 0.0:
+		return pow(clampf(v / hi, 0.0, 1.0), 1.0 / power)
 	if power > 1.0 and hi > 0.0:
 		var x := clampf(v / hi, -1.0, 1.0)
 		return 0.5 + 0.5 * signf(x) * pow(absf(x), 1.0 / power)
@@ -111,6 +114,8 @@ func to_norm(v: float) -> float:
 
 
 func from_norm(n: float) -> float:
+	if power > 1.0 and hi > 0.0 and lo >= 0.0:
+		return snappedf(hi * pow(clampf(n, 0.0, 1.0), power), step)
 	if power > 1.0 and hi > 0.0:
 		var x := clampf(n, 0.0, 1.0) * 2.0 - 1.0
 		return snappedf(hi * signf(x) * pow(absf(x), power), step)
