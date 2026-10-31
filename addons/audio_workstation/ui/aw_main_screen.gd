@@ -177,10 +177,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			else:
 				handled = false
 		KEY_M:
-			if not ctrl:
-				doc.add_marker()
-			else:
+			# M mutes / unmutes the selected clips; Shift+M adds a marker at the playhead.
+			if ctrl:
 				handled = false
+			elif k.shift_pressed:
+				doc.add_marker()
+			elif not doc.selection.is_empty():
+				doc.toggle_mute_clips(doc.selection[0])
+			else:
+				doc.message.emit("Select clips to mute them (M). Shift+M adds a marker.")
 		KEY_Z:
 			if not ctrl:
 				zoom_to_selection()

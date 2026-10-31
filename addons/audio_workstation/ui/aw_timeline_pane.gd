@@ -20,7 +20,6 @@ const VALUE_WHEEL := 0.06
 
 var doc: AWDocument
 var grid: AWClipGrid
-var headers: AWRowHeaders
 var graph: AWCurveGraph
 var dots: AWCurveDots
 var axis: AWCurveAxis
@@ -63,16 +62,9 @@ func _ready() -> void:
 	axis = AWCurveAxis.new()
 	axis.setup(doc, graph)
 
-	# Ruler row: [rows corner] [ruler] [pad over the vertical bar and the right column]
+	# Ruler row: [ruler] [pad over the vertical bar and the right column]
 	var ruler_row := HBoxContainer.new()
 	ruler_row.add_theme_constant_override("separation", 0)
-	var corner := Button.new()
-	corner.flat = true
-	corner.focus_mode = Control.FOCUS_NONE
-	corner.name = "HeadersToggle"
-	corner.tooltip_text = "Rows: M mutes, S solos (Ctrl+click: only this row), L locks"
-	corner.disabled = true
-	ruler_row.add_child(corner)
 	_ruler = AWTimeRuler.new()
 	_ruler.setup(doc, doc.timeline_view, true)
 	_ruler.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -109,10 +101,6 @@ func _ready() -> void:
 	grid = AWClipGrid.new()
 	grid.setup(doc)
 	grid.nav = nav_input
-	headers = AWRowHeaders.new()
-	headers.setup(doc, grid)
-	headers.tooltip_text = " "
-	rows.add_child(headers)
 	rows.add_child(grid)
 	scroll.add_child(rows)
 	graph.nav = nav_input
@@ -128,11 +116,9 @@ func _ready() -> void:
 	body.add_child(_right)
 	add_child(body)
 
-	# Bottom: [pad under the row headers] [horizontal bar] [Fit] [pad under the right column]
+	# Bottom: [horizontal bar] [Fit] [pad under the right column]
 	var bottom := HBoxContainer.new()
 	bottom.add_theme_constant_override("separation", 0)
-	var hpad := Control.new()
-	bottom.add_child(hpad)
 	hbar = AWScaleBar.new(false)
 	hbar.name = "HScale"
 	bottom.add_child(hbar)
@@ -155,14 +141,6 @@ func _ready() -> void:
 	bottom.add_child(_bar_pad)
 	add_child(bottom)
 
-	var sync_corner := func() -> void:
-		var w := AWRowHeaders.COLLAPSED_WIDTH if headers.collapsed else AWRowHeaders.WIDTH
-		corner.custom_minimum_size.x = w
-		hpad.custom_minimum_size.x = w
-		graph.offset_left = w
-		corner.text = ""
-	headers.collapsed_changed.connect(sync_corner)
-	sync_corner.call()
 	_ruler_pad.custom_minimum_size.x = AWScaleBar.THICK
 
 	hbar.scrolled.connect(func(t: float) -> void:

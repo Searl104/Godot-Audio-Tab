@@ -128,7 +128,7 @@ func _ready() -> void:
 	box.add_child(_warn)
 	solo_note = Label.new()
 	solo_note.name = "SoloNote"
-	solo_note.text = "Solo is on: only soloed rows are exported (muted rows never are)."
+	solo_note.text = "Solo is on: only soloed groups are exported (muted clips and groups never are)."
 	solo_note.add_theme_color_override("font_color", Color("#e5d84d"))
 	solo_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	solo_note.custom_minimum_size.x = 200

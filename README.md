@@ -280,7 +280,7 @@ plays dry.
   Sounds saved by 0.16 use format 6.
 
 **Layout:** the narrow reserved column left of the timeline and the "Timeline" titles are gone, as is the overview
-strip. The top toolbar has edit shortcuts: Marker (M), Trim start / end to playhead (Q / W), Reverse, Crossfade
+strip. The top toolbar has edit shortcuts: Marker (Shift+M), Trim start / end to playhead (Q / W), Reverse, Crossfade
 Overlaps and Group / Ungroup (Ctrl+G).
 
 ## Timing and navigation (0.15, engine 0.11.0)
@@ -291,7 +291,7 @@ Overlaps and Group / Ungroup (Ctrl+G).
   guide line shows what a dragged clip snapped to. Both ends of a moved clip snap. Alt drags freely. Remembered.
 - **Transients** are found in each sound file (sharp rises above the recent level), so a layer's attack can be lined up
   with another's.
-- **Markers:** M adds one at the playhead; Ctrl+Left / Ctrl+Right jump between them. On the ruler: drag to move,
+- **Markers:** Shift+M adds one at the playhead (M mutes the selected clips since 0.19.5); Ctrl+Left / Ctrl+Right jump between them. On the ruler: drag to move,
   double-click to rename, right-click to delete or add one there. They show as dashed lines on the grid.
 - **Exported WAVs carry the markers as named cue points, and the loop region (when Loop is on) as a sampler loop** that
   Godot's WAV import picks up with Loop Mode "Detect From WAV". (Ogg files have neither.)
@@ -343,12 +343,12 @@ Frames never overlap.
 | Crossfade | Overlapping clips simply mix (that's layering). Select overlapping clips > right-click > Crossfade Overlaps: equal-power fades across each overlap. |
 | Groups | Ctrl+G draws a group frame around the selection; Ctrl+Shift+G removes it (see "Groups" below). |
 | Several clips at once | With several clips selected, Gain, Pitch and Pan on the Clip card change every selected clip by the same amount. |
-| Import here | Double-click empty grid space opens Import Sound at that spot. |
+| Mute | M mutes / unmutes the selected clips (also right-click > Mute). Muted clips are left out of the export. |
+| Import here | Right-click empty grid space > Import Sound... (since 0.19.5 a double-click no longer opens it). |
 
-**Row headers** (a narrow strip left of the grid): **M** (mute), **S** (solo; Ctrl+click solos only that row) and **L**
-(lock: its clips can't be selected or edited), stacked top to bottom. Since 0.19.4 rows have no names or colours;
-groups name things. Mute and Solo apply to the export as well; the Export dock warns while a Solo is on. Click a
-header to select its clips; right-click for Unmute All Rows and Clear All Solos. Sounds saved by 0.14 use format 4.
+**Rows** have no headers since 0.19.5: no names, colours, Mute, Solo or Lock. Mute clips with M and use a group's
+M / S to mute or solo several at once (both apply to the export; the Export dock warns while a group is soloed).
+Row settings saved by 0.14 to 0.19.4 stay in the file but no longer apply.
 
 ## Importing sounds (0.13)
 
