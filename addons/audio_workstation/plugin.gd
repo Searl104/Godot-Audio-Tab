@@ -8,6 +8,7 @@ var _main_screen: MainScreen
 var _export_dock: EditorDock
 var _detail_dock: EditorDock
 var _lfo_dock: EditorDock
+var _file_menu: AWFileMenu
 
 
 func _enter_tree() -> void:
@@ -44,10 +45,17 @@ func _enter_tree() -> void:
 	_main_screen.doc.detail_changed.connect(func() -> void:
 		if _main_screen.doc.detail_effect and _detail_dock:
 			_detail_dock.make_visible())
+	# FileSystem dock: right-click a sound > Edit in Audio Tab.
+	_file_menu = AWFileMenu.new()
+	_file_menu.screen = _main_screen
+	add_context_menu_plugin(EditorContextMenuPlugin.CONTEXT_SLOT_FILESYSTEM, _file_menu)
 	_make_visible(false)
 
 
 func _exit_tree() -> void:
+	if _file_menu:
+		remove_context_menu_plugin(_file_menu)
+		_file_menu = null
 	if _lfo_dock:
 		remove_dock(_lfo_dock)
 		_lfo_dock.queue_free()

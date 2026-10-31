@@ -27,6 +27,7 @@ enum EffectType {
 	FX_PHASER = 12,
 	FX_STEREO_ENHANCE = 13,
 	FX_GATE = 14,
+	FX_FILTER = 15,
 };
 
 // One automated parameter: entry i is the value at position i * step (frames); one entry

@@ -9,7 +9,37 @@ extends RefCounted
 
 ## version -> Callable(project) that brings a project of that version up by one. Empty until the
 ## format changes; the tests add one to prove the mechanism.
-static var migrations := {5: _split_clip_chains, 6: _lfo_adsr, 7: _group_frames}
+static var migrations := {5: _split_clip_chains, 6: _lfo_adsr, 7: _group_frames, 8: _filter_cards}
+
+
+## Format 8 -> 9: Low Pass / High Pass / Band Pass cards become Filter cards of that type at
+## 12 dB/oct (the same sound). Their curves stay (same ids and parameter names).
+static func _filter_cards(p: AWProject) -> void:
+	var chains: Array[AWChain] = [p.master_chain]
+	chains.append_array(p.chains)
+	for c in p.clips:
+		if c and c.chain:
+			chains.append(c.chain)
+	for g in p.groups:
+		if g and g.chain:
+			chains.append(g.chain)
+	for ch in chains:
+		if ch == null:
+			continue
+		for e in ch.effects:
+			if e and AWEffectLibrary.LEGACY_FILTERS.has(e.effect_type):
+				convert_to_filter_card(e)
+
+
+## Turns a legacy Low / High / Band Pass card into a Filter card in place.
+static func convert_to_filter_card(e: AWEffect) -> void:
+	var m: int = AWEffectLibrary.LEGACY_FILTERS[e.effect_type]
+	var p := e.params.duplicate()
+	e.effect_type = "Filter"
+	p["mode"] = float(m)
+	p["gain_db"] = 0.0
+	p["slope_db"] = 12.0
+	e.params = p
 
 
 ## Format 7 -> 8: clips that shared a group id become a group frame around them (from the first

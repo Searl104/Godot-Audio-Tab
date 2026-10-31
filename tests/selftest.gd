@@ -945,6 +945,28 @@ static func panel_tests(screen: AWMainScreen) -> void:
 		for hz: float in [60.0, 200.0, 640.0, 2000.0, 6000.0]:
 			worst = maxf(worst, absf(_measured_db(core, hz, [_fx(4, g2)]) - AWFilterResponse.eq_db(hz, g2p, sr)))
 		check(worst < 0.5, "response vs engine: EQ within %.2f dB" % worst)
+		# The Filter card: every type, slopes between the stages, drawn response = engine.
+		var cases := [[0, 0.5, 0.0, 6.0], [0, 0.5, 0.0, 9.0], [0, 0.8, 0.0, 12.0], [0, 0.5, 0.0, 30.0], [0, 0.5, 0.0, 48.0],
+			[1, 0.5, 0.0, 6.0], [1, 0.6, 0.0, 24.0], [1, 0.5, 0.0, 41.0], [2, 0.6, 0.0, 12.0], [2, 0.6, 0.0, 36.0],
+			[3, 0.6, 0.0, 12.0], [3, 0.4, 0.0, 24.0], [4, 0.5, 9.0, 12.0], [5, 0.5, -9.0, 12.0], [6, 0.7, 9.0, 12.0], [6, 0.5, -12.0, 12.0]]
+		var worst_card := 0.0
+		var worst_name := ""
+		for cs: Array in cases:
+			for hz: float in [150.0, 500.0, 1000.0, 2000.0, 6000.0]:
+				var want := AWFilterResponse.filter_card_db(hz, cs[0], 1000.0, cs[1], cs[2], cs[3], sr)
+				var got := _measured_db(core, hz, [_fx(15, [float(cs[0]), 1000.0, cs[1], cs[2], cs[3]])])
+				if want > -60.0 and absf(got - want) > worst_card:
+					worst_card = absf(got - want)
+					worst_name = "%s %.0f dB/oct at %.0f Hz" % [AWEffectLibrary.FILTER_MODES[cs[0]], cs[3], hz]
+		check(worst_card < 0.6, "response vs engine: Filter card, 7 types and blended slopes, within %.2f dB (worst %s)" % [worst_card, worst_name])
+		var steep := AWFilterResponse.filter_card_db(4000.0, 0, 1000.0, 0.5, 0.0, 48.0, sr)
+		var gentle := AWFilterResponse.filter_card_db(4000.0, 0, 1000.0, 0.5, 0.0, 6.0, sr)
+		check(steep < -40.0 and gentle > -16.0 and gentle < -9.0, "Filter: 48 dB/oct is far steeper than 6 dB/oct two octaves up (%.1f vs %.1f dB)" % [steep, gentle])
+		var s1 := AWFilterResponse.filter_card_db(3000.0, 0, 1000.0, 0.5, 0.0, 18.0, sr)
+		var s0 := AWFilterResponse.filter_card_db(3000.0, 0, 1000.0, 0.5, 0.0, 12.0, sr)
+		var s2 := AWFilterResponse.filter_card_db(3000.0, 0, 1000.0, 0.5, 0.0, 24.0, sr)
+		check(s1 < s0 and s1 > s2, "Filter: the slope is continuous (18 dB/oct lies between 12 and 24)")
+		check(absf(AWFilterResponse.filter_card_db(1000.0, 6, 1000.0, 0.5, 9.0, 12.0, sr) - 9.0) < 0.05 and absf(AWFilterResponse.filter_card_db(20.0, 4, 1000.0, 0.5, 9.0, 12.0, sr) - 9.0) < 0.5, "Filter: Peak and Low Shelf reach their gain")
 
 	if e.core != null:
 		var ids: PackedInt32Array = e.core.call("get_effect_types")
@@ -2843,6 +2865,80 @@ static func group_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 		await shot(tree, "aw_groups.png")
 
 
+static func filter_card_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	print("--- Filter card, Edit in Audio Tab ---")
+	var d := screen.doc
+	var names := AWEffectLibrary.addable_names()
+	check(names.has("Filter") and not names.has("Low Pass") and not names.has("High Pass") and not names.has("Band Pass"), "Filter card: in the + menu; the old Low / High / Band Pass cards are not")
+	var clips := _grid_project(d)
+	var ch := d.new_chain_for(clips[0])
+	var fe := d.add_effect(ch, "Filter")
+	check(fe.get_param("mode") == 0.0 and fe.get_param("slope_db") == 12.0 and AWEffectLibrary.engine_id("Filter") == 15, "Filter card: defaults to Low Pass, 12 dB/oct")
+	var panel := AWPanelRegistry.create("Filter") as AWFilterPanel
+	panel.setup(d, ch, fe, false)
+	screen.add_child(panel)
+	await frames(tree, 1)
+	check(panel.type_menu != null and panel.type_menu.item_count == 7 and panel.slope_knob.visible and not panel.gain_knob.visible, "Filter panel: a 7-type drop-down; Slope shows for pass types, Gain doesn't")
+	panel.type_menu.select(6)
+	panel.type_menu.item_selected.emit(6)
+	panel.refresh()
+	check(fe.get_param("mode") == 6.0 and panel.gain_knob.visible and not panel.slope_knob.visible, "Filter panel: picking Peak sets the type; Gain shows, Slope hides")
+	d.undo()
+	panel.refresh()
+	check(fe.get_param("mode") == 0.0 and panel.type_menu.selected == 0, "Filter panel: undo the type change (the menu follows)")
+	if OS.get_environment("AW_SHOTS") != "":
+		d.set_param(fe, "slope_db", 30.0)
+		d.set_param(fe, "resonance", 0.75)
+		panel.size = Vector2(560, 240)
+		panel.position = Vector2(220, 420)
+		panel.refresh()
+		await shot(tree, "aw_filter_card.png")
+	panel.queue_free()
+	var e := d.engine
+	if e.is_available():
+		# Rendered from the start so the filter has settled; measured 0.3 to 0.48 s in (before the next clip).
+		var srr := AudioServer.get_mix_rate()
+		var dry := _peak(e.render_preview_range(0.0, 0.6), int(0.3 * srr), int(0.48 * srr))
+		d.set_param(fe, "cutoff_hz", 40.0)
+		d.set_param(fe, "slope_db", 48.0)
+		var wet := _peak(e.render_preview_range(0.0, 0.6), int(0.3 * srr), int(0.48 * srr))
+		check(dry > 0.1 and wet < dry * 0.05, "Filter card: a steep 40 Hz low pass silences a 220 Hz clip in playback (%.3f -> %.4f)" % [dry, wet])
+
+	# Old sounds: Low / High / Band Pass cards become Filter cards; curves stay.
+	var old := AWProject.create_default()
+	var oc := AWClip.create("c", 0.0, 1.0, 0, Color.RED)
+	old.clips.append(oc)
+	var och := AWChain.new()
+	och.name = "Old FX"
+	var lp := AWEffect.create("Low Pass", och.new_effect_id())
+	lp.params["cutoff_hz"] = 800.0
+	var bp := AWEffect.create("Band Pass", och.new_effect_id())
+	och.effects.append_array([lp, bp])
+	old.chains.append(och)
+	oc.fx_chain = och
+	var cv := AWCurve.new()
+	cv.effect_id = lp.id
+	cv.param = "cutoff_hz"
+	och.curves.append(cv)
+	old.format_version = 8
+	var opath := ProjectSettings.globalize_path("user://aw_old8.tres")
+	ResourceSaver.save(old, opath)
+	var oo := AWProjectIO.open(opath)
+	var ne: Array = oo.project.chains[0].effects if oo.ok else []
+	check(ne.size() == 2 and ne[0].effect_type == "Filter" and ne[0].get_param("mode") == 0.0 and ne[0].get_param("cutoff_hz") == 800.0 and ne[0].get_param("slope_db") == 12.0 and ne[1].effect_type == "Filter" and ne[1].get_param("mode") == 2.0, "format 8: Low Pass and Band Pass cards open as Filter cards (same settings)")
+	check(oo.ok and oo.project.chains[0].curves.size() == 1 and oo.project.chains[0].effect_of(oo.project.chains[0].curves[0]) == ne[0], "format 8: their curves stay attached")
+	DirAccess.remove_absolute(opath)
+
+	# FileSystem > Edit in Audio Tab.
+	check(AWFileMenu.first_audio(PackedStringArray(["res://readme.md", "res://imptest.wav"])) == "res://imptest.wav" and AWFileMenu.first_audio(PackedStringArray(["res://a.tres"])) == "", "Edit in Audio Tab: offered for sound files only")
+	d.new_project()
+	screen.edit_sound_file("res://imptest.wav")
+	await frames(tree, 1)
+	check(d.project.clips.size() == 1 and d.project.clips[0].source_path == "res://imptest.wav" and is_zero_approx(d.project.clips[0].start_sec) and d.project.title == "imptest" and d.project_path == "", "Edit in Audio Tab: a new unsaved sound with the file as a clip at 0 s, named after it")
+	check(d.export_target() == "res://imptest_edit.wav", "Edit in Audio Tab: the automatic export never overwrites the source (%s)" % d.export_target())
+	d.new_project()
+
+
 static func navigation_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var d := screen.doc
 	var tl := screen.timeline
@@ -3526,8 +3622,8 @@ static func run(screen: AWMainScreen) -> void:
 	else:
 		check(eng.is_available(), "native core AWCore loaded")
 		var info := eng.get_info()
-		check(info.get("version") == "0.13.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
-		check(chip != null and chip.text.contains("Engine 0.13.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
+		check(info.get("version") == "0.14.0" and info.get("api") == "4.7" and info.get("godot_cpp") == "10.0.0-stable", "build info: %s" % str(info))
+		check(chip != null and chip.text.contains("Engine 0.14.0"), "toolbar says '%s'" % (chip.text if chip else "?"))
 		var rate: float = eng.core.call("get_sample_rate")
 		check(is_equal_approx(rate, AudioServer.get_mix_rate()), "core renders at the mix rate (%d Hz)" % int(rate))
 		var silent := eng.render_test(480)
@@ -4321,6 +4417,7 @@ static func run(screen: AWMainScreen) -> void:
 	await navigation_tests(tree, screen)
 	await layer_tests(tree, screen)
 	await group_tests(tree, screen)
+	await filter_card_tests(tree, screen)
 	await shared_chain_tests(tree, screen)
 	await editor_resource_tests(tree, screen)
 	print("SELFTEST DONE fails=%d" % fails)

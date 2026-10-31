@@ -118,6 +118,136 @@ public:
 	}
 };
 
+// The Filter card. Params: mode, cutoff_hz, resonance, gain_db, slope_db.
+// Modes: 0 low pass, 1 high pass, 2 band pass, 3 notch, 4 low shelf, 5 high shelf, 6 peak.
+// Pass and notch modes have a continuous slope (6 to 48 dB/oct): a one-pole stage and four
+// biquad stages always run, and the output blends between the depths either side of the slope
+// (slope / 12 stages), so automating it is smooth. The first biquad takes the resonance; the
+// others are Butterworth (Q 0.707). Band pass and notch start at one biquad (12 dB/oct).
+// Shelf and peak modes are one RBJ biquad using gain_db and the resonance as Q.
+class MultiFilterFx : public Effect {
+	static constexpr int STAGES = 4;
+	const EffectSpec *spec;
+	double sr;
+	Biquad bq[STAGES];
+	float pole_a = 1.0f;
+	float pole_z[2] = { 0, 0 };
+	float last[4] = { -1e9f, -1e9f, -1e9f, -1e9f };
+	int mode = 0;
+	float slope = 12.0f;
+
+public:
+	MultiFilterFx(const EffectSpec &p_spec, double p_sr) :
+			spec(&p_spec), sr(p_sr) {}
+	void rebind(const EffectSpec &p_spec) override { spec = &p_spec; }
+	void reset() override {
+		for (Biquad &b : bq) {
+			b.clear();
+		}
+		pole_z[0] = pole_z[1] = 0.0f;
+	}
+
+	static int mode_of(float v) {
+		return std::min(6, std::max(0, (int)std::lround(v)));
+	}
+
+	void design(int p_mode, float fc, float res, float gain) {
+		const double w0 = TWO_PI * clamp_hz(fc, sr) / sr;
+		const double cw = std::cos(w0), sw = std::sin(w0);
+		const double q0 = resonance_to_q(res);
+		pole_a = (float)(1.0 - std::exp(-TWO_PI * clamp_hz(fc, sr) / sr));
+		for (int i = 0; i < STAGES; i++) {
+			const double q = (i == 0 || p_mode == 2 || p_mode == 3) ? q0 : 0.70710678;
+			const double alpha = sw / (2.0 * q);
+			switch (p_mode) {
+				case 0:
+					bq[i].set((1 - cw) * 0.5, 1 - cw, (1 - cw) * 0.5, 1 + alpha, -2 * cw, 1 - alpha);
+					break;
+				case 1:
+					bq[i].set((1 + cw) * 0.5, -(1 + cw), (1 + cw) * 0.5, 1 + alpha, -2 * cw, 1 - alpha);
+					break;
+				case 2:
+					bq[i].set(alpha, 0, -alpha, 1 + alpha, -2 * cw, 1 - alpha);
+					break;
+				case 3:
+					bq[i].set(1, -2 * cw, 1, 1 + alpha, -2 * cw, 1 - alpha);
+					break;
+				default: {
+					const double A = std::pow(10.0, gain / 40.0);
+					const double sa = 2.0 * std::sqrt(A) * alpha;
+					if (p_mode == 4) {
+						bq[i].set(A * ((A + 1) - (A - 1) * cw + sa), 2 * A * ((A - 1) - (A + 1) * cw), A * ((A + 1) - (A - 1) * cw - sa),
+								(A + 1) + (A - 1) * cw + sa, -2 * ((A - 1) + (A + 1) * cw), (A + 1) + (A - 1) * cw - sa);
+					} else if (p_mode == 5) {
+						bq[i].set(A * ((A + 1) + (A - 1) * cw + sa), -2 * A * ((A - 1) + (A + 1) * cw), A * ((A + 1) + (A - 1) * cw - sa),
+								(A + 1) - (A - 1) * cw + sa, 2 * ((A - 1) - (A + 1) * cw), (A + 1) - (A - 1) * cw - sa);
+					} else {
+						bq[i].set(1 + alpha * A, -2 * cw, 1 - alpha * A, 1 + alpha / A, -2 * cw, 1 - alpha / A);
+					}
+					break;
+				}
+			}
+		}
+	}
+
+	void process(float *io, int64_t frames, int64_t pos0) override {
+		for (int64_t k = 0; k < frames; k += CONTROL_BLOCK) {
+			const int64_t n = std::min(CONTROL_BLOCK, frames - k);
+			const double pos = (double)(pos0 + k);
+			const int m = mode_of(spec->params[0].at(pos));
+			const float fc = spec->params[1].at(pos);
+			const float res = spec->params[2].at(pos);
+			const float gain = spec->params[3].at(pos);
+			slope = std::min(48.0f, std::max(6.0f, spec->params[4].at(pos)));
+			if ((float)m != last[0] || fc != last[1] || res != last[2] || gain != last[3]) {
+				if ((float)m != last[0]) {
+					reset(); // a different filter: start clean rather than ring on old state
+				}
+				last[0] = (float)m;
+				last[1] = fc;
+				last[2] = res;
+				last[3] = gain;
+				mode = m;
+				design(m, fc, res, gain);
+			}
+			float *p = io + k * 2;
+			if (mode >= 4) {
+				bq[0].run(p, n);
+				continue;
+			}
+			// Depth in stages: 0.5 = the one-pole (6 dB/oct), 1..4 = biquads.
+			float depth = slope / 12.0f;
+			if (mode >= 2) {
+				depth = std::max(depth, 1.0f);
+			}
+			for (int64_t i = 0; i < n; i++) {
+				for (int ch = 0; ch < 2; ch++) {
+					const float x = p[i * 2 + ch];
+					pole_z[ch] = flush(pole_z[ch] + pole_a * (x - pole_z[ch]));
+					const float y0 = mode == 1 ? x - pole_z[ch] : pole_z[ch];
+					float ys[STAGES + 1];
+					ys[0] = y0;
+					float v = x;
+					for (int s = 0; s < STAGES; s++) {
+						v = bq[s].tick(v, ch);
+						ys[s + 1] = v;
+					}
+					float y;
+					if (depth < 1.0f) {
+						const float t = (depth - 0.5f) / 0.5f;
+						y = ys[0] + (ys[1] - ys[0]) * t;
+					} else {
+						const int lo = std::min(STAGES, (int)std::floor(depth));
+						const float t = depth - (float)lo;
+						y = lo >= STAGES ? ys[STAGES] : ys[lo] + (ys[lo + 1] - ys[lo]) * t;
+					}
+					p[i * 2 + ch] = y;
+				}
+			}
+		}
+	}
+};
+
 // Params: six band gains in dB (32, 100, 320, 1k, 3.2k, 10k Hz).
 class Eq6Fx : public Effect {
 	static constexpr int BANDS = 6;
@@ -778,12 +908,14 @@ static size_t param_count(int type) {
 			return 3;
 		case FX_GATE:
 			return 6;
+		case FX_FILTER:
+			return 5;
 	}
 	return 0;
 }
 
 bool can_make(const EffectSpec &p_spec) {
-	return p_spec.type >= FX_LOW_PASS && p_spec.type <= FX_GATE && p_spec.params.size() >= param_count(p_spec.type);
+	return p_spec.type >= FX_LOW_PASS && p_spec.type <= FX_FILTER && p_spec.params.size() >= param_count(p_spec.type);
 }
 
 std::unique_ptr<Effect> make_effect(const EffectSpec &p_spec, double p_sr) {
@@ -817,6 +949,8 @@ std::unique_ptr<Effect> make_effect(const EffectSpec &p_spec, double p_sr) {
 			return std::make_unique<StereoEnhanceFx>(p_spec, p_sr);
 		case FX_GATE:
 			return std::make_unique<GateFx>(p_spec, p_sr);
+		case FX_FILTER:
+			return std::make_unique<MultiFilterFx>(p_spec, p_sr);
 	}
 	return nullptr;
 }

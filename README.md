@@ -307,6 +307,23 @@ Overlaps and Group / Ungroup (Ctrl+G).
 
 Sounds saved by 0.15 use format 5 (markers).
 
+## Filter card and Edit in Audio Tab (0.20, engine 0.14.0)
+
+- **Filter card** (+ menu > Filter): one card for every filter shape, replacing Low Pass, High Pass and Band Pass.
+  - **Type** drop-down: Low Pass, High Pass, Band Pass, Notch, Low Shelf, High Shelf, Peak.
+  - **Cutoff** and **Resonance** (for shelves and peak, Resonance is the Q).
+  - **Slope** (pass and notch types): a continuous 6 to 48 dB/oct knob that can be automated. The engine runs a
+    one-pole stage and four biquads and blends between the depths either side of the setting, so a sweep is smooth.
+    The first stage takes the resonance; band pass and notch start at 12 dB/oct.
+  - **Gain** (shelves and peak): -24 to +24 dB.
+  - The panel draws the exact response (checked against the engine for every type and blended slopes); drag its
+    handle for cutoff and resonance, or gain for shelves and peak.
+  - Sounds saved before 0.20 open with their Low / High / Band Pass cards turned into Filter cards of that type at
+    12 dB/oct (the same sound), curves included. Sounds saved by 0.20 use format 9.
+- **Edit in Audio Tab**: right-click a sound file in the FileSystem dock. It starts a new, unsaved sound with that
+  file as a clip at 0 s, named after it (after asking about unsaved changes), and switches to the Audio tab. The
+  automatic export name never overwrites the source file (it becomes `name_edit.wav` when they'd clash).
+
 ## Groups (0.19, engine 0.13.0)
 
 A group is a **frame on the grid**: a time span over one or more rows. Every clip that **starts** inside

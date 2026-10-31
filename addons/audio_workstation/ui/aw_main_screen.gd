@@ -240,6 +240,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 # --- File actions -------------------------------------------------------------
 
+## FileSystem > Edit in Audio Tab: a new sound around that file (after asking about unsaved changes).
+func edit_sound_file(path: String) -> void:
+	ask_discard(func() -> void:
+		doc.new_project_from_file(path)
+		if Engine.is_editor_hint():
+			EditorInterface.set_main_screen_editor("Audio"))
+
+
 ## Runs `then` now, or after the user has decided what to do with unsaved changes.
 func ask_discard(then: Callable) -> void:
 	if not doc.is_dirty():
