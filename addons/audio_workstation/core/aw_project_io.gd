@@ -375,7 +375,7 @@ static func _sanitize_curve(ch: AWChain, c: AWCurve, label: String, rep: Array) 
 	if c.lfo != null:
 		var l := c.lfo
 		l.freq_hz = clampf(l.freq_hz if _fin(l.freq_hz) else 4.0, 0.05, 20.0)
-		l.freq_accel = clampf(l.freq_accel if _fin(l.freq_accel) else 0.0, -5.0, 5.0)
+		l.freq_accel = clampf(l.freq_accel if _fin(l.freq_accel) else 0.0, -25.0, 25.0)
 		l.fade_smoothing = clampf(l.fade_smoothing if _fin(l.fade_smoothing) else 0.0, 0.0, 1.0)
 		for prop: Array in [["depth", 0.1, 0.0, 1.0], ["phase_deg", 0.0, 0.0, 360.0], ["jitter_rate", 0.0, 0.0, 1.0],
 				["jitter_depth", 0.0, 0.0, 1.0], ["glide", 0.0, 0.0, 1.0], ["decay_sec", 0.0, 0.0, 240.0], ["sustain", 1.0, 0.0, 1.0]]:
