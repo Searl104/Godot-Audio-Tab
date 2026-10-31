@@ -2537,22 +2537,25 @@ static func layer_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	check(absf(v.x_to_time(0.0) - (t0 + 100.0 / v.pixels_per_sec)) < 1e-3, "pan: middle-drag left moves time with the mouse")
 	mid_drag(grid, Vector2(200, 30), Vector2(0, -60))
 	check(absf(tl.row_scroll() - 60.0) < 1.5, "pan: middle-drag up scrolls the rows (%.0f px)" % tl.row_scroll())
-	var left := v.x_to_time(0.0)
+	var under := v.x_to_time(300.0)
 	var pps := v.pixels_per_sec
 	mid_drag(grid, Vector2(300, 30), Vector2(80, 0), true)
-	check(v.pixels_per_sec > pps * 1.8 and absf(v.x_to_time(0.0) - left) < 1e-3, "zoom: Shift+middle-drag right zooms time in, left edge fixed (%.0f -> %.0f px/s)" % [pps, v.pixels_per_sec])
+	check(v.pixels_per_sec > pps * 1.8 and absf(v.x_to_time(300.0) - under) < 1e-3, "zoom: Shift+middle-drag right zooms time in around the press (the moment under it stays: %.3f s)" % under)
 	tl.set_row_scroll(96.0)
+	await frames(tree, 1) # the scroll container moves the grid on its next layout pass
 	var rh := grid.row_h
-	var top_row := tl.row_scroll() / rh
-	mid_drag(grid, Vector2(300, 30), Vector2(0, 40), true)
+	var press_y := tl.row_scroll() + 30.0
+	var row_under := grid.y_to_rowf(press_y)
+	mid_drag(grid, Vector2(300, press_y), Vector2(0, 40), true)
 	await frames(tree, 1)
-	check(grid.row_h > rh * 1.3 and absf(tl.row_scroll() / grid.row_h - top_row) < 0.05, "zoom: Shift+middle-drag down makes rows taller, top row fixed (%.2f -> %.2f)" % [top_row, tl.row_scroll() / grid.row_h])
+	check(grid.row_h > rh * 1.3 and absf(grid.y_to_rowf(tl.row_scroll() + 30.0) - row_under) < 0.05, "zoom: Shift+middle-drag down makes rows taller around the press (row %.2f stays under it: %.2f)" % [row_under, grid.y_to_rowf(tl.row_scroll() + 30.0)])
 	# 1:1: a drag out and back in many small steps ends where it began, whatever the path.
 	var pps1 := v.pixels_per_sec
 	var rh1 := grid.row_h
 	var left1 := v.x_to_time(0.0)
 	var top1 := grid.y_to_rowf(tl.row_scroll())
-	var at := Vector2(300, 30)
+	var at := Vector2(300, tl.row_scroll() + 30.0)
+	var under1 := v.x_to_time(300.0)
 	var pe := InputEventMouseButton.new()
 	pe.button_index = MOUSE_BUTTON_MIDDLE
 	pe.pressed = true
@@ -2570,7 +2573,7 @@ static func layer_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 		me.global_position = grid.get_global_transform() * (at + off)
 		grid._gui_input(me)
 		if off == Vector2(40, 22):
-			mid_ok = absf(v.pixels_per_sec - pps1 * exp(40.0 * AWTimelinePane.ZOOM_DRAG)) < 0.5 and absf(v.x_to_time(0.0) - left1) < 1e-3
+			mid_ok = absf(v.pixels_per_sec - pps1 * exp(40.0 * AWTimelinePane.ZOOM_DRAG)) < 0.5 and absf(v.x_to_time(300.0) - under1) < 1e-3
 	var re := InputEventMouseButton.new()
 	re.button_index = MOUSE_BUTTON_MIDDLE
 	re.global_position = grid.get_global_transform() * at
@@ -2672,8 +2675,9 @@ static func layer_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	# Value axis: pan and zoom.
 	await frames(tree, 2)
 	d.value_view.reset()
+	var v_under := g.y_to_val_unclamped(40.0)
 	mid_drag(g, Vector2(100, 40), Vector2(0, 40), true)
-	check(d.value_view.span < 0.75 and is_equal_approx(d.value_view.hi(), 1.0), "values: Shift+middle-drag down zooms in, top value fixed (span %.2f)" % d.value_view.span)
+	check(d.value_view.span < 0.75 and absf(g.y_to_val_unclamped(40.0) - v_under) < 1e-3, "values: Shift+middle-drag down zooms in around the press (value %.2f stays under it; span %.2f)" % [v_under, d.value_view.span])
 	var lo0 := d.value_view.lo
 	var uh := g.unit_h()
 	mid_drag(g, Vector2(100, 40), Vector2(0, -20))
@@ -4037,6 +4041,11 @@ static func run(screen: AWMainScreen) -> void:
 	ak.open_entry()
 	ak._entry.text_submitted.emit("-2500")
 	check(is_equal_approx(lf.freq_accel, -2.5) and ak.binding.text() == "-2500 mHz/s", "typing -2500 sets -2.5 Hz/s, shown as %s" % ak.binding.text())
+	ak.open_entry()
+	ak._entry.text_submitted.emit("25000")
+	check(is_equal_approx(lf.freq_accel, 25.0), "Accel reaches 25000 mHz/s (25 Hz/s)")
+	ak.open_entry()
+	ak._entry.text_submitted.emit("-2500")
 	var fine_a := ak.binding.from_norm(0.5 + 1.0 / 220.0)
 	var wide_a := ak.binding.from_norm(0.75)
 	check(absf(fine_a) <= 0.001 and absf(wide_a) > 0.5 and absf(ak.binding.to_norm(ak.binding.from_norm(0.8)) - 0.8) < 0.01, "Accel knob is fine near 0 and wide at the ends (1 px = %.3f Hz/s, 75%% = %.2f Hz/s)" % [fine_a, wide_a])

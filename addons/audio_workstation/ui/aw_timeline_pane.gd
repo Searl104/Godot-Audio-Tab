@@ -9,7 +9,7 @@ extends VBoxContainer
 ##
 ## Navigation (both modes, on the active layer):
 ##   middle-drag pans; Shift+middle-drag zooms (right = time in, down = rows taller / values
-##   closer), anchored at the view's top-left; Ctrl+wheel zooms time, Shift+wheel scrolls time;
+##   closer), anchored at the press point (the pointer hides and returns there); Ctrl+wheel zooms time, Shift+wheel scrolls time;
 ##   wheel scrolls rows (values in curve mode); Alt+wheel = row height (value zoom).
 ##   Scrollbars: drag the thumb to scroll, its ends to zoom, double-click to fit.
 ##   Fit (where the scrollbars meet, or F) fits both axes.
@@ -403,10 +403,15 @@ func nav_input(event: InputEvent) -> bool:
 	var mb := event as InputEventMouseButton
 	if mb:
 		if mb.button_index == MOUSE_BUTTON_MIDDLE:
+			var was_zoom := _middle_zoom
 			_middle = mb.pressed
 			_middle_zoom = mb.pressed and mb.shift_pressed
 			if mb.pressed:
 				_begin_nav(mb.global_position)
+				if _middle_zoom:
+					_lock_cursor(true)
+			elif was_zoom:
+				_lock_cursor(false)
 			return true
 		if is_curve_mode() and mb.pressed and not mb.ctrl_pressed and not mb.meta_pressed and not mb.shift_pressed \
 				and mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
@@ -422,6 +427,9 @@ func nav_input(event: InputEvent) -> bool:
 	if mm and _middle:
 		if not (mm.button_mask & MOUSE_BUTTON_MASK_MIDDLE):
 			_middle = false
+			if _middle_zoom:
+				_middle_zoom = false
+				_lock_cursor(false)
 			return false
 		# From where the drag started (not step by step), so the result follows the mouse 1:1
 		# and coming back to the start undoes it.
@@ -442,9 +450,24 @@ var _nav0 := {}
 func _begin_nav(at: Vector2) -> void:
 	var v := doc.timeline_view
 	_nav_press = at
+	# Where the press landed: x on the time axis, y from the top of the visible rows / values.
+	var ax := at.x - grid.get_global_rect().position.x
+	var ay := at.y - _stack.get_global_rect().position.y
 	_nav0 = {"scroll_x": v.scroll_x, "pps": v.pixels_per_sec, "t0": v.x_to_time(0.0),
 		"row_scroll": row_scroll(), "row_h": grid.row_h, "top_row": grid.y_to_rowf(row_scroll()),
-		"lo": doc.value_view.lo, "span": doc.value_view.span, "unit_h": graph.unit_h()}
+		"lo": doc.value_view.lo, "span": doc.value_view.span, "unit_h": graph.unit_h(),
+		"ax": ax, "ay": ay, "t_at": v.x_to_time(ax), "row_at": grid.y_to_rowf(row_scroll() + ay),
+		"v_at": graph.y_to_val_unclamped(ay)}
+
+
+## While Shift+middle-dragging, the pointer is hidden and returns to where the drag began, so it
+## stays on the moment and row it was pressed on while the view stretches around it.
+func _lock_cursor(on: bool) -> void:
+	if OS.get_environment("AW_TEST") != "" or DisplayServer.get_name() == "headless":
+		return
+	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN if on else Input.MOUSE_MODE_VISIBLE
+	if not on:
+		Input.warp_mouse(_nav_press)
 
 
 ## Middle-drag by `d` pixels from the start: the content follows the mouse.
@@ -458,12 +481,14 @@ func pan_from_start(d: Vector2) -> void:
 
 
 ## Shift+middle-drag by `d` from the start: right = time in, down = rows taller (values closer),
-## with the time and row (value) at the top-left kept where they were.
+## anchored where the drag began: the moment and row (value) under the press stay under it.
 func zoom_from_start(d: Vector2) -> void:
-	doc.timeline_view.set_scale_at(_nav0.pps * exp(d.x * ZOOM_DRAG), 0.0, _nav0.t0)
+	doc.timeline_view.set_scale_at(_nav0.pps * exp(d.x * ZOOM_DRAG), _nav0.ax, _nav0.t_at)
 	if is_curve_mode():
-		var top: float = _nav0.lo + _nav0.span
 		var span := clampf(_nav0.span / exp(d.y * ZOOM_DRAG), AWValueView.MIN_SPAN, 1.0)
-		doc.value_view.set_range(top - span, top)
+		var k: float = (_nav0.v_at - _nav0.lo) / _nav0.span
+		var lo: float = _nav0.v_at - k * span
+		doc.value_view.set_range(lo, lo + span)
 	else:
-		set_row_height(_nav0.row_h * exp(d.y * ZOOM_DRAG), _nav0.top_row)
+		grid.set_row_height(_nav0.row_h * exp(d.y * ZOOM_DRAG))
+		set_row_scroll(grid.rowf_to_y(_nav0.row_at) - _nav0.ay)

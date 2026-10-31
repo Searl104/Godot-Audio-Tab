@@ -21,7 +21,7 @@ enum Mode { ABSOLUTE, RELATIVE }
 @export_range(0.05, 20.0, 0.01, "exp") var freq_hz: float = 4.0
 ## Frequency change per second (Hz/s; the panel shows mHz/s, positive speeds up, negative slows down). A slowing
 ## LFO stops at 0 Hz and holds its last phase.
-@export_range(-5.0, 5.0, 0.001) var freq_accel: float = 0.0
+@export_range(-25.0, 25.0, 0.001) var freq_accel: float = 0.0
 ## How the fades are shaped: 0 = straight ramps, 1 = fully eased (smoothstep).
 @export_range(0.0, 1.0, 0.01) var fade_smoothing: float = 0.0
 @export var fade_in_sec: float = 0.25

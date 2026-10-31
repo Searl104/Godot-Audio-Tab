@@ -57,8 +57,9 @@ switches to curve mode on its own; nothing switches back without you.
 
 **Navigation (0.18, both modes, on the active layer)**
 - Middle-drag pans time and rows (values in curve mode).
-- Shift+middle-drag zooms, anchored at the view's top-left: right zooms time in, down makes rows
-  taller (in curve mode: a closer value range).
+- Shift+middle-drag zooms around the point you pressed (since 0.19.2): right zooms time in, down makes
+  rows taller (in curve mode: a closer value range). The moment and row under the press stay put, the
+  pointer hides while you drag and comes back on that spot, and moving back to the start undoes it.
 - Scrollbars on both axes: drag the thumb to scroll, drag either end of it to zoom that axis (the
   other end stays put), double-click it to fit that axis. So a mouse without a middle button or a
   trackpad can do everything.
@@ -218,7 +219,7 @@ Curves are not limited to the clip: keys can sit anywhere up to one hour, so a t
 - `ui/kit/aw_panel_registry.gd`: effect type to panel. To add one, subclass `AWEffectPanel` (`ui/panels/`), register it there.
 - `core/aw_filter_response.gd`: the drawn response mirrors the engine's biquads; the self-test compares it with the engine's measured output.
 
-The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, shown in mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, **Attack, Decay, Sustain, Release** and **Smoothing** (shapes each envelope segment). Since 0.13 (engine 0.9.0):
+The LFO editor is its own **Audio LFO** dock, a single column that suits a tall side dock (lower right by default; it also works at the bottom). It has a waveform preview, shape buttons and knobs for Freq, **Accel** (frequency drift, ±25000 mHz/s, fine near zero; negative slows down and stops at 0 Hz), Max, Min, **Attack, Decay, Sustain, Release** and **Smoothing** (shapes each envelope segment). Since 0.13 (engine 0.9.0):
 - **Absolute / Relative:** Absolute swings between Max and Min, replacing the drawn curve while it runs. Relative wobbles
   ±**Depth** (a share of the parameter's range) around the drawn curve, so a falling pitch curve keeps falling with
   vibrato on top. The curve graph shows the ±Depth band.
