@@ -215,9 +215,9 @@ func _build_editor() -> void:
 	for b: AWParamBinding in [vmax, vmin]:
 		b.like_effect = e.effect_type
 		b.like_param = _curve.param
-	var freq := AWParamBinding.for_property(doc, l, "freq_hz", "Freq", 0.05, 20.0, 0.01, 4.0, "Hz", AWCurve.Scale.LOG)
-	var accel := AWParamBinding.for_property(doc, l, "freq_accel", "Accel", -25.0, 25.0, 0.001, 0.0, "mHz/s")
-	accel.unit_factor = 1000.0
+	var freq := AWParamBinding.for_property(doc, l, "freq_hz", "Freq", 0.05, 100.0, 0.01, 4.0, "Hz", AWCurve.Scale.LOG)
+	var accel := AWParamBinding.for_property(doc, l, "freq_accel", "Accel", -100.0, 100.0, 0.01, 0.0, "dHz/s")
+	accel.unit_factor = 10.0
 	accel.power = 3.0
 	var fin := AWParamBinding.for_property(doc, l, "fade_in_sec", "Attack", 0.0, span, 0.01, 0.25, "s")
 	fin.tooltip = "Attack: how long the swing takes to rise from nothing to full."

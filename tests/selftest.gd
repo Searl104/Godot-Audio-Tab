@@ -4002,7 +4002,7 @@ static func run(screen: AWMainScreen) -> void:
 	var panel := screen.lfo_panel
 	check(panel._curve == wet2 and d.lfo_curve == wet2 and d.active_curve == wet2, "right-click > Edit LFO opens it in the LFO dock")
 	var fk := panel.find_child("freq_hz_knob", true, false) as AWKnob
-	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and panel.knobs.size() == 14, "fourteen knobs; Freq is logarithmic")
+	check(fk != null and fk.binding.scale == AWCurve.Scale.LOG and is_equal_approx(fk.binding.hi, 100.0) and panel.knobs.size() == 14, "fourteen knobs; Freq is logarithmic, up to 100 Hz")
 	var f0 := lf.freq_hz
 	click(fk, Vector2(40, 40))
 	move(fk, Vector2(40, -20))
@@ -4039,13 +4039,13 @@ static func run(screen: AWMainScreen) -> void:
 	var sk := panel.find_child("fade_smoothing_knob", true, false) as AWKnob
 	check(ak != null and ak.bipolar and sk != null, "Accel (bipolar) and Smoothing knobs exist")
 	ak.open_entry()
-	ak._entry.text_submitted.emit("-2500")
-	check(is_equal_approx(lf.freq_accel, -2.5) and ak.binding.text() == "-2500 mHz/s", "typing -2500 sets -2.5 Hz/s, shown as %s" % ak.binding.text())
+	ak._entry.text_submitted.emit("-25")
+	check(is_equal_approx(lf.freq_accel, -2.5) and ak.binding.text() == "-25.0 dHz/s", "typing -25 sets -2.5 Hz/s, shown as %s" % ak.binding.text())
 	ak.open_entry()
-	ak._entry.text_submitted.emit("25000")
-	check(is_equal_approx(lf.freq_accel, 25.0), "Accel reaches 25000 mHz/s (25 Hz/s)")
+	ak._entry.text_submitted.emit("1000")
+	check(is_equal_approx(lf.freq_accel, 100.0) and ak.binding.text() == "1000.0 dHz/s", "Accel reaches 1000 dHz/s (100 Hz/s), shown as %s" % ak.binding.text())
 	ak.open_entry()
-	ak._entry.text_submitted.emit("-2500")
+	ak._entry.text_submitted.emit("-25")
 	var fine_a := ak.binding.from_norm(0.5 + 1.0 / 220.0)
 	var wide_a := ak.binding.from_norm(0.75)
 	check(absf(fine_a) <= 0.001 and absf(wide_a) > 0.5 and absf(ak.binding.to_norm(ak.binding.from_norm(0.8)) - 0.8) < 0.01, "Accel knob is fine near 0 and wide at the ends (1 px = %.3f Hz/s, 75%% = %.2f Hz/s)" % [fine_a, wide_a])
