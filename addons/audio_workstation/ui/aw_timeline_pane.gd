@@ -405,6 +405,8 @@ func nav_input(event: InputEvent) -> bool:
 		if mb.button_index == MOUSE_BUTTON_MIDDLE:
 			_middle = mb.pressed
 			_middle_zoom = mb.pressed and mb.shift_pressed
+			if mb.pressed:
+				_begin_nav(mb.global_position)
 			return true
 		if is_curve_mode() and mb.pressed and not mb.ctrl_pressed and not mb.meta_pressed and not mb.shift_pressed \
 				and mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
@@ -421,29 +423,47 @@ func nav_input(event: InputEvent) -> bool:
 		if not (mm.button_mask & MOUSE_BUTTON_MASK_MIDDLE):
 			_middle = false
 			return false
+		# From where the drag started (not step by step), so the result follows the mouse 1:1
+		# and coming back to the start undoes it.
+		var d := mm.global_position - _nav_press
 		if _middle_zoom:
-			zoom_drag(mm.relative)
+			zoom_from_start(d)
 		else:
-			pan_drag(mm.relative)
+			pan_from_start(d)
 		return true
 	return false
 
 
-## Middle-drag: the content follows the mouse.
-func pan_drag(rel: Vector2) -> void:
-	doc.timeline_view.scroll_by(-rel.x)
+## The view as it was when a middle-drag began.
+var _nav_press := Vector2.ZERO
+var _nav0 := {}
+
+
+func _begin_nav(at: Vector2) -> void:
+	var v := doc.timeline_view
+	_nav_press = at
+	_nav0 = {"scroll_x": v.scroll_x, "pps": v.pixels_per_sec, "t0": v.x_to_time(0.0),
+		"row_scroll": row_scroll(), "row_h": grid.row_h, "top_row": grid.y_to_rowf(row_scroll()),
+		"lo": doc.value_view.lo, "span": doc.value_view.span, "unit_h": graph.unit_h()}
+
+
+## Middle-drag by `d` pixels from the start: the content follows the mouse.
+func pan_from_start(d: Vector2) -> void:
+	doc.timeline_view.scroll_to(_nav0.scroll_x - d.x)
 	if is_curve_mode():
-		doc.value_view.scroll_by(rel.y / graph.unit_h())
+		var lo: float = _nav0.lo + d.y / _nav0.unit_h
+		doc.value_view.set_range(lo, lo + _nav0.span)
 	else:
-		set_row_scroll(row_scroll() - rel.y)
+		set_row_scroll(_nav0.row_scroll - d.y)
 
 
-## Shift+middle-drag: right = zoom time in, down = rows taller (values closer), anchored top-left.
-func zoom_drag(rel: Vector2) -> void:
-	if rel.x != 0.0:
-		doc.timeline_view.zoom_by(exp(rel.x * ZOOM_DRAG), 0.0)
-	if rel.y != 0.0:
-		if is_curve_mode():
-			doc.value_view.zoom_top(exp(rel.y * ZOOM_DRAG))
-		else:
-			zoom_rows(exp(rel.y * ZOOM_DRAG))
+## Shift+middle-drag by `d` from the start: right = time in, down = rows taller (values closer),
+## with the time and row (value) at the top-left kept where they were.
+func zoom_from_start(d: Vector2) -> void:
+	doc.timeline_view.set_scale_at(_nav0.pps * exp(d.x * ZOOM_DRAG), 0.0, _nav0.t0)
+	if is_curve_mode():
+		var top: float = _nav0.lo + _nav0.span
+		var span := clampf(_nav0.span / exp(d.y * ZOOM_DRAG), AWValueView.MIN_SPAN, 1.0)
+		doc.value_view.set_range(top - span, top)
+	else:
+		set_row_height(_nav0.row_h * exp(d.y * ZOOM_DRAG), _nav0.top_row)

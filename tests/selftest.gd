@@ -2498,11 +2498,13 @@ static func mid_drag(ctrl: Control, at: Vector2, rel: Vector2, shift := false) -
 	e.pressed = true
 	e.shift_pressed = shift
 	e.position = at
+	e.global_position = ctrl.get_global_transform() * at
 	ctrl._gui_input(e)
 	var m := InputEventMouseMotion.new()
 	m.button_mask = MOUSE_BUTTON_MASK_MIDDLE
 	m.shift_pressed = shift
 	m.position = at + rel
+	m.global_position = ctrl.get_global_transform() * (at + rel)
 	m.relative = rel
 	ctrl._gui_input(m)
 	var r := InputEventMouseButton.new()
@@ -2545,6 +2547,36 @@ static func layer_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	mid_drag(grid, Vector2(300, 30), Vector2(0, 40), true)
 	await frames(tree, 1)
 	check(grid.row_h > rh * 1.3 and absf(tl.row_scroll() / grid.row_h - top_row) < 0.05, "zoom: Shift+middle-drag down makes rows taller, top row fixed (%.2f -> %.2f)" % [top_row, tl.row_scroll() / grid.row_h])
+	# 1:1: a drag out and back in many small steps ends where it began, whatever the path.
+	var pps1 := v.pixels_per_sec
+	var rh1 := grid.row_h
+	var left1 := v.x_to_time(0.0)
+	var top1 := grid.y_to_rowf(tl.row_scroll())
+	var at := Vector2(300, 30)
+	var pe := InputEventMouseButton.new()
+	pe.button_index = MOUSE_BUTTON_MIDDLE
+	pe.pressed = true
+	pe.shift_pressed = true
+	pe.position = at
+	pe.global_position = grid.get_global_transform() * at
+	grid._gui_input(pe)
+	var path: Array[Vector2] = [Vector2(15, 7), Vector2(40, 22), Vector2(-10, 30), Vector2(25, -12), Vector2(0, 0)]
+	var mid_ok := true
+	for off: Vector2 in path:
+		var me := InputEventMouseMotion.new()
+		me.button_mask = MOUSE_BUTTON_MASK_MIDDLE
+		me.shift_pressed = true
+		me.position = at + off
+		me.global_position = grid.get_global_transform() * (at + off)
+		grid._gui_input(me)
+		if off == Vector2(40, 22):
+			mid_ok = absf(v.pixels_per_sec - pps1 * exp(40.0 * AWTimelinePane.ZOOM_DRAG)) < 0.5 and absf(v.x_to_time(0.0) - left1) < 1e-3
+	var re := InputEventMouseButton.new()
+	re.button_index = MOUSE_BUTTON_MIDDLE
+	re.global_position = grid.get_global_transform() * at
+	grid._gui_input(re)
+	await frames(tree, 1)
+	check(mid_ok and absf(v.pixels_per_sec - pps1) < 0.01 and absf(grid.row_h - rh1) < 0.01 and absf(v.x_to_time(0.0) - left1) < 1e-4 and absf(grid.y_to_rowf(tl.row_scroll()) - top1) < 0.05, "zoom: follows the mouse 1:1 from where the drag began; back at the start it is undone")
 
 	# Scale handles on the scrollbars.
 	v.frame(0.0, 2.0)
@@ -2759,6 +2791,20 @@ static func group_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	check(g.collapsed and is_equal_approx(grid.row_height(0), AWClipGrid.COLLAPSED_ROW_H) and grid.content_height() < h_before and d.project.is_clip_audible(a), "group: collapse folds its rows (the clips still play)")
 	if OS.get_environment("AW_SHOTS") != "":
 		await shot(tree, "aw_group_collapsed.png")
+	# Dragging a collapsed group down moves it steadily (no jumping back and forth between rows).
+	var csr := grid.strip_rect(g)
+	var cfrom := Vector2(csr.get_center().x, csr.get_center().y)
+	click(grid, cfrom)
+	var rows_seen: Array[int] = []
+	for k in range(1, 41):
+		move(grid, cfrom + Vector2(0, k * grid.row_h * 3.0 / 40.0))
+		rows_seen.append(g.row)
+	click(grid, cfrom + Vector2(0, grid.row_h * 3.0), MOUSE_BUTTON_LEFT, false)
+	var steady := true
+	for k in range(1, rows_seen.size()):
+		steady = steady and rows_seen[k] >= rows_seen[k - 1]
+	check(steady and g.row >= 1 and g.collapsed, "group: a collapsed group dragged down moves steadily (rows %s)" % str(rows_seen.slice(0, 40, 4)))
+	d.undo()
 	d.undo()
 	await frames(tree, 1)
 	check(not g.collapsed and is_equal_approx(grid.row_height(0), grid.row_h), "group: expand again")
@@ -3994,6 +4040,12 @@ static func run(screen: AWMainScreen) -> void:
 	var fine_a := ak.binding.from_norm(0.5 + 1.0 / 220.0)
 	var wide_a := ak.binding.from_norm(0.75)
 	check(absf(fine_a) <= 0.001 and absf(wide_a) > 0.5 and absf(ak.binding.to_norm(ak.binding.from_norm(0.8)) - 0.8) < 0.01, "Accel knob is fine near 0 and wide at the ends (1 px = %.3f Hz/s, 75%% = %.2f Hz/s)" % [fine_a, wide_a])
+	# Decay and Depth start at 0: the whole sweep is used, fine at the start (not centred on 0).
+	for kname: String in ["decay_sec_knob", "depth_knob"]:
+		var uk := panel.find_child(kname, true, false) as AWKnob
+		var ub := uk.binding if uk else null
+		check(ub != null and is_equal_approx(ub.from_norm(0.0), 0.0) and is_equal_approx(ub.from_norm(1.0), ub.hi) and ub.from_norm(0.5) > 0.0 and ub.from_norm(0.5) <= ub.hi * 0.3 and absf(ub.to_norm(ub.from_norm(0.7)) - 0.7) < 0.01,
+			"%s: 0 at the start, the full range across the sweep (half way = %.3f)" % [kname, ub.from_norm(0.5) if ub else -1.0])
 	sk.open_entry()
 	sk._entry.text_submitted.emit("0.6")
 	check(is_equal_approx(lf.fade_smoothing, 0.6), "typing 0.6 sets the smoothing")
