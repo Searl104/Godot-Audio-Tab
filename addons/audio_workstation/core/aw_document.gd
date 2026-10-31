@@ -393,7 +393,9 @@ func set_export_format(format: String) -> void:
 	project.export_format = format
 	var p := project.export_path
 	var old := p.get_extension().to_lower()
-	if AWProject.FORMATS.has(old) or old == "":
+	if p.strip_edges() == "":
+		pass # automatic: the name follows the format by itself
+	elif AWProject.FORMATS.has(old) or old == "":
 		project.export_path = (p.get_basename() if old != "" else p.trim_suffix(".")) + "." + format
 	touch()
 	export_settings_changed.emit()
@@ -411,10 +413,23 @@ func set_export_path(path: String) -> void:
 	export_settings_changed.emit()
 
 
-## The export file as a loadable path: relative names live under res://.
+## The automatic export file: in the saved sound's folder, named after the sound, e.g.
+## res://sfx/door_slam.tres -> res://sfx/door_slam.wav. Unsaved: res://<title>.wav.
+func export_auto_path() -> String:
+	var dir := project_path.get_base_dir() if project_path != "" else "res://"
+	var base := project_path.get_file().get_basename() if project_path != "" else project.title
+	base = base.strip_edges().validate_filename().replace(" ", "_")
+	if base == "":
+		base = "sound"
+	return dir.path_join(base + "." + project.export_format)
+
+
+## The export file as a loadable path: relative names live under res://; empty = automatic.
 func export_target() -> String:
 	var p := project.export_path.strip_edges().replace("\\", "/")
-	if p == "" or p.begins_with("res://") or p.begins_with("user://") or p.is_absolute_path():
+	if p == "":
+		return export_auto_path()
+	if p.begins_with("res://") or p.begins_with("user://") or p.is_absolute_path():
 		return p
 	return "res://" + p.lstrip("/")
 

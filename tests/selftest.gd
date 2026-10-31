@@ -2170,16 +2170,14 @@ static func row_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	check(not d.is_selected(a) and d.is_selected(b), "rows: box select skips locked rows")
 	d.undo()
 
-	# Header click selects the row's clips; double-click renames; colour.
-	click(hdr, Vector2(30, grid.row_h * 1.5))
+	# Header click selects the row's clips. Headers are narrow: no name or colour, M / S / L stacked.
+	var hb0 := hdr.buttons(1)
+	click(hdr, Vector2(2, grid.row_top(1) + 2.0))
 	check(d.selection.size() == 1 and d.is_selected(b), "rows: clicking a header selects its clips")
-	click(hdr, Vector2(30, grid.row_h * 1.5), MOUSE_BUTTON_LEFT, true, true)
-	check(hdr._edit.visible, "rows: double-click opens the name editor")
-	hdr._edit.text = "Debris"
-	hdr._edit.text_submitted.emit("Debris")
-	check(d.project.row_name(1) == "Debris" and d.project.row_name(0) == "Row 1", "rows: renamed (others keep their default name)")
-	d.set_row_prop(1, "color", AWProject.CLIP_COLORS[2])
-	check(d.project.row(1).color == AWProject.CLIP_COLORS[2], "rows: colour")
+	check(is_equal_approx(hdr.custom_minimum_size.x, AWRowHeaders.WIDTH) and AWRowHeaders.WIDTH < 40.0 and is_equal_approx((hb0.mute as Rect2).position.x, (hb0.lock as Rect2).position.x) and (hb0.solo as Rect2).position.y > (hb0.mute as Rect2).end.y and (hb0.lock as Rect2).end.y <= grid.row_top(1) + grid.row_height(1), "rows: narrow headers with M, S and L stacked inside the row")
+	click(hdr, Vector2(2, grid.row_top(1) + 2.0), MOUSE_BUTTON_LEFT, true, true)
+	check(not hdr._edit.visible, "rows: double-click no longer renames (rows have no names)")
+	d.set_row_prop(1, "name", "Debris")
 
 	# Saved and reopened.
 	d.set_row_prop(0, "muted", true)
@@ -4116,10 +4114,31 @@ static func run(screen: AWMainScreen) -> void:
 	(shape_btns[1] as Button).pressed.emit()
 	check(lf.shape == AWLfo.Shape.TRIANGLE, "shape button picks Triangle")
 	d.undo()
+	var seed_box := panel.find_child("SeedField", true, false) as SpinBox
+	var seed0 := lf.random_seed
+	seed_box.value = 1234
+	check(lf.random_seed == 1234, "seed field sets the LFO's seed")
+	d.undo()
+	check(lf.random_seed == seed0 and int(seed_box.value) == seed0, "seed: undo puts it back (and the field follows)")
+	(panel.find_child("NewSeed", true, false) as Button).pressed.emit()
+	check(lf.random_seed != seed0, "seed: New picks a random seed")
+	d.undo()
 
 	# --- Export group (UI state only; the render itself is milestone 5) ---
 	var ep: AWProject = d.project
-	check(ep.export_bit_depth == 16 and ep.export_end_is_auto() and ep.export_path == "assets/sfx/jump.wav", "export: defaults 16-bit, automatic end, assets/sfx/jump.wav")
+	var fresh := AWProject.create_default()
+	check(fresh.export_bit_depth == 16 and fresh.export_end_is_auto() and fresh.export_path == "", "export: defaults 16-bit, automatic end, automatic file name")
+	d.set_export_path("")
+	var keep_path := d.project_path
+	d.project_path = "res://sfx/door_slam.tres"
+	check(d.export_target() == "res://sfx/door_slam.wav", "export: the automatic file sits next to the saved sound, named after it (%s)" % d.export_target())
+	d.set_export_format("ogg")
+	check(d.export_target() == "res://sfx/door_slam.ogg" and ep.export_path == "", "export: the automatic name follows the format")
+	d.set_export_format("wav")
+	d.project_path = ""
+	check(d.export_target() == "res://" + ep.title.validate_filename().replace(" ", "_") + ".wav", "export: unsaved, the automatic file is named after the title (%s)" % d.export_target())
+	d.project_path = keep_path
+	d.set_export_path("assets/sfx/jump.wav")
 	check(d.export_target() == "res://assets/sfx/jump.wav", "export: relative names live under res://")
 	d.set_export_end(99999.0)
 	check(is_equal_approx(ep.export_end_sec, AWProject.MAX_END_SEC), "export end: clamps to %.0f s" % AWProject.MAX_END_SEC)

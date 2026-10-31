@@ -70,7 +70,8 @@ func _ready() -> void:
 	corner.flat = true
 	corner.focus_mode = Control.FOCUS_NONE
 	corner.name = "HeadersToggle"
-	corner.tooltip_text = "Narrow or widen the row headers"
+	corner.tooltip_text = "Rows: M mutes, S solos (Ctrl+click: only this row), L locks"
+	corner.disabled = true
 	ruler_row.add_child(corner)
 	_ruler = AWTimeRuler.new()
 	_ruler.setup(doc, doc.timeline_view, true)
@@ -159,8 +160,7 @@ func _ready() -> void:
 		corner.custom_minimum_size.x = w
 		hpad.custom_minimum_size.x = w
 		graph.offset_left = w
-		corner.text = "▸ Rows" if headers.collapsed else "◂ Rows"
-	corner.pressed.connect(func() -> void: headers.set_collapsed(not headers.collapsed))
+		corner.text = ""
 	headers.collapsed_changed.connect(sync_corner)
 	sync_corner.call()
 	_ruler_pad.custom_minimum_size.x = AWScaleBar.THICK
