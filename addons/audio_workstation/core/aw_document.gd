@@ -1103,7 +1103,7 @@ func group_selected() -> AWGroup:
 	g.color = selection[0].color
 	_do_undo("Group Clips", _apply_add_group.bind(g, project.groups.size()), _apply_remove_group.bind(g))
 	select_group(g)
-	message.emit("Grouped %d clips. Drag the strip to move the group, the handle on its left to add rows." % selection.size())
+	message.emit("Grouped %d clips. Drag the strip to move the group, the ▼ grip in its corner to add rows." % selection.size())
 	return g
 
 

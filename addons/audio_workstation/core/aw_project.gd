@@ -104,10 +104,9 @@ func row_name(i: int) -> String:
 	return r.name if r and r.name != "" else "Row %d" % (i + 1)
 
 
+## Since 0.19.5 rows have no Mute / Solo / Lock of their own (the row headers are gone); settings
+## saved by older versions stay in the file but no longer apply. Groups mute and solo.
 func any_solo() -> bool:
-	for r in rows:
-		if r and r.solo:
-			return true
 	for g in groups:
 		if g.solo:
 			return true
@@ -139,31 +138,27 @@ func group_overlaps(s: float, e: float, r0: int, r1: int, except: AWGroup = null
 	return false
 
 
-## Whether a row is heard: not muted and, while any row is soloed, soloed itself.
-func row_audible(i: int) -> bool:
-	var r := row(i)
-	if r and r.muted:
-		return false
-	return not any_solo() or (r != null and r.solo)
+## Rows are always heard (row mute / solo no longer apply).
+func row_audible(_i: int) -> bool:
+	return true
 
 
-## Heard in playback and in the export (clip, row and group mute; row and group solo: while
-## anything is soloed, a clip plays when its row or its group is soloed).
+## Heard in playback and in the export: clip mute, group mute and group solo (while a group is
+## soloed, only soloed groups' clips play).
 func is_clip_audible(c: AWClip) -> bool:
 	if c.muted:
 		return false
 	var g := group_of(c)
-	var r := row(c.row)
-	if (r and r.muted) or (g and g.muted):
+	if g and g.muted:
 		return false
 	if not any_solo():
 		return true
-	return (r != null and r.solo) or (g != null and g.solo)
+	return g != null and g.solo
 
 
-func row_locked(i: int) -> bool:
-	var r := row(i)
-	return r != null and r.locked
+## Rows can't be locked any more.
+func row_locked(_i: int) -> bool:
+	return false
 
 
 func max_row() -> int:

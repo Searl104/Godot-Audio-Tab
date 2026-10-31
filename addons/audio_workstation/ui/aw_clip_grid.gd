@@ -517,7 +517,7 @@ func _gui_input(event: InputEvent) -> void:
 						doc.engine.audition_clip(c)
 						doc.message.emit("Audition \"%s\"" % c.name)
 					else:
-						doc.import_requested.emit(row_at(mb.position.y), maxf(0.0, doc.snap(view.x_to_time(mb.position.x))))
+						_press(mb) # empty space: a double-click is just a click (no Import popup)
 				else:
 					_press(mb)
 			else:
@@ -1173,7 +1173,7 @@ func _draw_clip(c: AWClip, c_text: Color, c_acc: Color) -> void:
 func _get_tooltip(at: Vector2) -> String:
 	var c := clip_at(at)
 	if c == null:
-		return "Double-click to import a sound here. Drag to box-select."
+		return "Drag to box-select. Right-click > Import Sound... to bring in a file here."
 	var src: AWEffect = c.chain.effects[0] if c.chain and not c.chain.effects.is_empty() else null
 	var lines := PackedStringArray()
 	lines.append(c.name + ("  (reversed)" if c.reversed else ""))

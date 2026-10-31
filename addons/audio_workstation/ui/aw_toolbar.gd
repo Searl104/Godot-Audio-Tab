@@ -71,7 +71,7 @@ func _ready() -> void:
 	add_child(VSeparator.new())
 
 	# Editing shortcuts (the keys still work).
-	for sc: Array in [["Marker", &"Marker", "Add a marker at the playhead (M)", doc.add_marker.bind(-1.0, "")],
+	for sc: Array in [["Marker", &"Marker", "Add a marker at the playhead (Shift+M)", doc.add_marker.bind(-1.0, "")],
 			["TrimStart", &"PageFirst", "Trim the selected clips' start to the playhead (Q)", doc.trim_selected_to_playhead.bind("start")],
 			["TrimEnd", &"PageLast", "Trim the selected clips' end to the playhead (W)", doc.trim_selected_to_playhead.bind("end")],
 			["Reverse", &"PlayBackwards", "Reverse the selected clips", _reverse_selection],

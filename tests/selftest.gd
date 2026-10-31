@@ -2000,14 +2000,15 @@ static func grid_edit_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	check(d.project.groups.is_empty() and d.project.group_of(a) == null, "groups: Ctrl+Shift+G ungroups")
 	await frames(tree, 1)
 
-	# Double-click on empty space opens Import at that spot.
+	# A double-click on empty space no longer opens Import (it popped up by accident).
 	var opened := [false]
 	var on_req := func(_r: int, _t: float) -> void: opened[0] = true
 	d.import_requested.connect(on_req)
 	click(grid, Vector2(grid.view.time_to_x(6.0), grid.row_h * 5.5), MOUSE_BUTTON_LEFT, true, true)
+	click(grid, Vector2(grid.view.time_to_x(6.0), grid.row_h * 5.5), MOUSE_BUTTON_LEFT, false)
 	d.import_requested.disconnect(on_req)
 	screen.browser.hide()
-	check(opened[0], "double-click on empty space asks to import there")
+	check(not opened[0] and is_equal_approx(d.playhead_sec, 6.0), "double-click on empty space acts as a click (no Import popup)")
 	d.new_project()
 
 
@@ -2115,9 +2116,9 @@ static func _peak_l(r: PackedVector2Array) -> float:
 
 
 static func row_tests(tree: SceneTree, screen: AWMainScreen) -> void:
+	# Since 0.19.5 rows have no headers: no row Mute / Solo / Lock. Clips mute with M; groups solo.
 	var d := screen.doc
 	var e := d.engine
-	var hdr := screen.timeline.headers
 	var grid := screen.timeline.grid
 	write_wav("/tmp/aw_row_dc.wav", 0.5, func(_i: int, _rt: int) -> Vector2i: return Vector2i(8192, 8192))
 	d.new_project()
@@ -2125,24 +2126,39 @@ static func row_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	var b := d.add_clip_from_path("/tmp/aw_row_dc.wav", 1, 0.0) # row 1: 0.25
 	d.clear_selection()
 	await frames(tree, 2)
-	check(hdr != null and hdr.size.x >= AWRowHeaders.WIDTH - 1.0, "rows: headers sit left of the grid")
+	check(screen.timeline.find_child("HeadersToggle", true, false) == null and is_equal_approx(grid.get_global_rect().position.x, screen.timeline.graph.get_global_rect().position.x), "rows: no row headers; the grid starts at the left edge")
 	check(absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.5) < 0.01, "rows: both rows play (0.5)")
 
-	# Mute via the header's M button.
-	var bt := hdr.buttons(1)
-	click(hdr, (bt.mute as Rect2).get_center())
+	# Row settings from older saves no longer apply.
+	d.set_row_prop(1, "muted", true)
+	d.set_row_prop(0, "locked", true)
+	d.set_row_prop(0, "solo", true)
 	await frames(tree, 1)
-	check(d.project.row(1) != null and d.project.row(1).muted, "rows: M mutes the row")
-	check(absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.25) < 0.01, "rows: a muted row is silent")
-	d.undo()
-	check(not d.project.row(1).muted, "rows: mute undoes")
+	check(absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.5) < 0.01 and not d.project.any_solo() and not d.project.row_locked(0), "rows: old row mute / solo / lock settings are ignored")
+	var ra := grid.clip_rect(a)
+	click(grid, ra.get_center())
+	click(grid, ra.get_center(), MOUSE_BUTTON_LEFT, false)
+	check(d.is_selected(a), "rows: clips on a formerly locked row can be selected")
+	d.undo(); d.undo(); d.undo()
 
-	# Solo: only soloed rows play; Ctrl+click solos only that row; export follows.
-	click(hdr, (hdr.buttons(0).solo as Rect2).get_center())
+	# M mutes the selected clips (and Shift+M adds a marker).
+	d.set_selection([b] as Array[AWClip])
+	key(screen, KEY_M)
 	await frames(tree, 1)
-	check(d.project.any_solo() and d.project.row_audible(0) and not d.project.row_audible(1), "rows: S solos the row")
-	check(absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.25) < 0.01, "rows: with a solo, other rows are silent")
-	check(screen.export_panel.solo_note.visible, "rows: the Export dock warns that Solo is on")
+	check(b.muted and absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.25) < 0.01, "M mutes the selected clip (it falls silent)")
+	key(screen, KEY_M)
+	check(not b.muted, "M again unmutes it")
+	var nm := d.project.markers.size()
+	key(screen, KEY_M, false, true)
+	check(d.project.markers.size() == nm + 1 and not b.muted, "Shift+M adds a marker instead")
+	d.undo()
+
+	# Group solo: only the soloed group plays and exports; the Export dock warns.
+	d.set_selection([a] as Array[AWClip])
+	var g := d.group_selected()
+	d.set_group_props(g, {"solo": true}, "Solo Group")
+	await frames(tree, 1)
+	check(d.project.any_solo() and absf(_peak_l(e.render_preview_range(0.0, 0.4)) - 0.25) < 0.01 and screen.export_panel.solo_note.visible, "group solo: only its clips play; the Export dock warns")
 	var path := ProjectSettings.globalize_path("user://aw_row_export.wav")
 	var r: Dictionary = await AWExporter.new().run(d.project, path, 32)
 	var w := _read_wav(path)
@@ -2150,45 +2166,13 @@ static func row_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 	if w.ok:
 		for i in range(0, (w.samples as PackedFloat32Array).size(), 2):
 			pk = maxf(pk, absf((w.samples as PackedFloat32Array)[i]))
-	check(r.ok and absf(pk - 0.25) < 0.01, "rows: the export follows Solo (peak %.3f)" % pk)
+	check(r.ok and absf(pk - 0.25) < 0.01, "group solo: the export follows it (peak %.3f)" % pk)
 	DirAccess.remove_absolute(path)
-	click(hdr, (hdr.buttons(1).solo as Rect2).get_center(), MOUSE_BUTTON_LEFT, true, false, false, true)
-	check(d.project.row(1).solo and not d.project.row(0).solo, "rows: Ctrl+click on S solos only that row")
 	d.undo()
-	d.undo()
-	check(not d.project.any_solo() and not screen.export_panel.solo_note.visible, "rows: solos undo, warning goes")
-
-	# Lock: clips on a locked row can't be selected or dragged.
-	d.select_clip(a)
-	click(hdr, (hdr.buttons(0).lock as Rect2).get_center())
-	check(d.project.row_locked(0) and not d.is_selected(a), "rows: L locks the row and drops its clips from the selection")
-	var ra := grid.clip_rect(a)
-	click(grid, ra.get_center())
-	click(grid, ra.get_center(), MOUSE_BUTTON_LEFT, false)
-	check(not d.is_selected(a), "rows: a click doesn't select a clip on a locked row")
-	drag(grid, Vector2(2, 2), Vector2(grid.size.x - 2, grid.row_h * 2.5))
-	check(not d.is_selected(a) and d.is_selected(b), "rows: box select skips locked rows")
-	d.undo()
-
-	# Header click selects the row's clips. Headers are narrow: no name or colour, M / S / L stacked.
-	var hb0 := hdr.buttons(1)
-	click(hdr, Vector2(2, grid.row_top(1) + 2.0))
-	check(d.selection.size() == 1 and d.is_selected(b), "rows: clicking a header selects its clips")
-	check(is_equal_approx(hdr.custom_minimum_size.x, AWRowHeaders.WIDTH) and AWRowHeaders.WIDTH < 40.0 and is_equal_approx((hb0.mute as Rect2).position.x, (hb0.lock as Rect2).position.x) and (hb0.solo as Rect2).position.y > (hb0.mute as Rect2).end.y and (hb0.lock as Rect2).end.y <= grid.row_top(1) + grid.row_height(1), "rows: narrow headers with M, S and L stacked inside the row")
-	click(hdr, Vector2(2, grid.row_top(1) + 2.0), MOUSE_BUTTON_LEFT, true, true)
-	check(not hdr._edit.visible, "rows: double-click no longer renames (rows have no names)")
-	d.set_row_prop(1, "name", "Debris")
-
-	# Saved and reopened.
-	d.set_row_prop(0, "muted", true)
-	check(d.save_project("user://aw_rows.tres") and d.load_project("user://aw_rows.tres") and d.project.row_name(1) == "Debris" and d.project.row(0).muted, "rows: settings survive save and open")
+	await frames(tree, 1)
+	check(not d.project.any_solo() and not screen.export_panel.solo_note.visible, "group solo: undo, warning goes")
 	if OS.get_environment("AW_SHOTS") != "":
-		d.add_clip_from_path("/tmp/aw_row_dc.wav", 2, 0.3)
-		d.set_row_prop(2, "solo", true)
-		d.set_row_prop(2, "name", "Sweetener")
-		d.set_row_prop(3, "locked", true)
-		await frames(tree, 3)
-		await shot(tree, "aw_row_headers.png")
+		await shot(tree, "aw_no_row_headers.png")
 	d.new_project()
 
 
@@ -2313,10 +2297,10 @@ static func timing_tests(tree: SceneTree, screen: AWMainScreen) -> void:
 
 	# Markers: M adds at the playhead; sorted; jump with Ctrl+arrows; drag on the ruler; rename; delete.
 	d.seek(0.8)
-	key(screen, KEY_M)
+	key(screen, KEY_M, false, true)
 	d.seek(0.3)
-	key(screen, KEY_M)
-	check(d.project.markers.size() == 2 and d.project.markers[0].time_sec == 0.3 and d.project.markers[1].name == "Marker 1", "markers: M adds at the playhead, kept in time order")
+	key(screen, KEY_M, false, true)
+	check(d.project.markers.size() == 2 and d.project.markers[0].time_sec == 0.3 and d.project.markers[1].name == "Marker 1", "markers: Shift+M adds at the playhead, kept in time order")
 	d.seek(0.0)
 	key(screen, KEY_RIGHT, true)
 	check(is_equal_approx(d.playhead_sec, 0.3), "markers: Ctrl+Right jumps to the next marker")
