@@ -881,7 +881,7 @@ int64_t AWCore::set_plan(const Array &p_voices, const Dictionary &p_master) {
 }
 
 int64_t AWCore::get_api_level() const {
-	return 14; // 14: group buses (master["buses"], voice "bus"); 13: LFO ADSR (sustain), normal-pitch scrub; 12: scrub; 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
+	return 15; // 15: Filter card (FX 15: mode, cutoff, resonance, gain, slope); 14: group buses (master["buses"], voice "bus"); 13: LFO ADSR (sustain), normal-pitch scrub; 12: scrub; 11: clip reverse and fade shapes; 10: LFO mode, depth, phase, jitter, glide, decay; 9: effect state kept across plan swaps, get_fx_swaps; 8: get_load; 7: export_configure / export_finish (Ogg Vorbis); 6: export_begin / export_next / export_end; 5: Reverb, Chorus, Phaser, Stereo Enhance, Gate; 4: Distortion, Delay, Compressor, Limiter; 2: set_plan's master dictionary takes end_frame; 3: LFO accel and fade smoothing
 }
 
 PackedInt32Array AWCore::get_effect_types() const {
@@ -900,6 +900,7 @@ PackedInt32Array AWCore::get_effect_types() const {
 	out.push_back(aw::FX_PHASER);
 	out.push_back(aw::FX_STEREO_ENHANCE);
 	out.push_back(aw::FX_GATE);
+	out.push_back(aw::FX_FILTER);
 	return out;
 }
 

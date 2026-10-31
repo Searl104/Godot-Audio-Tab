@@ -80,6 +80,87 @@ static func filter_db(kind: String, f: float, cutoff: float, res: float, sr: flo
 	return _mag_db(lowpass_coeffs(cutoff, res, sr), f, sr)
 
 
+# --- The Filter card (mirrors MultiFilterFx in aw_effects.cpp) ---------------------------
+
+## Complex response of a biquad (b0 b1 b2 a0 a1 a2) at frequency f, as Vector2(re, im).
+static func _h(c: PackedFloat64Array, f: float, sr: float) -> Vector2:
+	var w := TAU * f / sr
+	var n := Vector2(c[0] + c[1] * cos(w) + c[2] * cos(2.0 * w), -(c[1] * sin(w) + c[2] * sin(2.0 * w)))
+	var d := Vector2(c[3] + c[4] * cos(w) + c[5] * cos(2.0 * w), -(c[4] * sin(w) + c[5] * sin(2.0 * w)))
+	return _cdiv(n, d)
+
+
+static func _cmul(a: Vector2, b: Vector2) -> Vector2:
+	return Vector2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x)
+
+
+static func _cdiv(a: Vector2, b: Vector2) -> Vector2:
+	var m := maxf(b.x * b.x + b.y * b.y, 1e-30)
+	return Vector2((a.x * b.x + a.y * b.y) / m, (a.y * b.x - a.x * b.y) / m)
+
+
+## The four biquad stages of a Filter card (stage 0 takes the resonance; pass modes use
+## Butterworth Q for the rest; band pass and notch use the resonance throughout).
+static func filter_card_stages(mode: int, fc: float, res: float, gain: float, sr: float) -> Array:
+	var w0 := TAU * clampf(fc, 10.0, sr * 0.45) / sr
+	var cw := cos(w0)
+	var sw := sin(w0)
+	var q0 := resonance_to_q(res)
+	var out := []
+	for i in 4:
+		var q := q0 if (i == 0 or mode == 2 or mode == 3) else 0.70710678
+		var alpha := sw / (2.0 * q)
+		match mode:
+			0: out.append(PackedFloat64Array([(1 - cw) * 0.5, 1 - cw, (1 - cw) * 0.5, 1 + alpha, -2 * cw, 1 - alpha]))
+			1: out.append(PackedFloat64Array([(1 + cw) * 0.5, -(1 + cw), (1 + cw) * 0.5, 1 + alpha, -2 * cw, 1 - alpha]))
+			2: out.append(PackedFloat64Array([alpha, 0, -alpha, 1 + alpha, -2 * cw, 1 - alpha]))
+			3: out.append(PackedFloat64Array([1, -2 * cw, 1, 1 + alpha, -2 * cw, 1 - alpha]))
+			_:
+				var A := pow(10.0, gain / 40.0)
+				var sa := 2.0 * sqrt(A) * alpha
+				if mode == 4:
+					out.append(PackedFloat64Array([A * ((A + 1) - (A - 1) * cw + sa), 2 * A * ((A - 1) - (A + 1) * cw), A * ((A + 1) - (A - 1) * cw - sa),
+						(A + 1) + (A - 1) * cw + sa, -2 * ((A - 1) + (A + 1) * cw), (A + 1) + (A - 1) * cw - sa]))
+				elif mode == 5:
+					out.append(PackedFloat64Array([A * ((A + 1) + (A - 1) * cw + sa), -2 * A * ((A - 1) + (A + 1) * cw), A * ((A + 1) + (A - 1) * cw - sa),
+						(A + 1) - (A - 1) * cw + sa, 2 * ((A - 1) - (A + 1) * cw), (A + 1) - (A - 1) * cw - sa]))
+				else:
+					out.append(PackedFloat64Array([1 + alpha * A, -2 * cw, 1 - alpha * A, 1 + alpha / A, -2 * cw, 1 - alpha / A]))
+	return out
+
+
+## |H| in dB of a Filter card at frequency f (the slope blend included).
+static func filter_card_db(f: float, mode: int, fc: float, res: float, gain: float, slope: float, sr: float) -> float:
+	var st := filter_card_stages(mode, fc, res, gain, sr)
+	if mode >= 4:
+		return _db(_h(st[0], f, sr))
+	var w := TAU * f / sr
+	var a := 1.0 - exp(-TAU * clampf(fc, 10.0, sr * 0.45) / sr)
+	# One-pole low pass: a / (1 - (1 - a) e^-jw); high pass is 1 minus it.
+	var pole := _cdiv(Vector2(a, 0.0), Vector2(1.0 - (1.0 - a) * cos(w), (1.0 - a) * sin(w)))
+	if mode == 1:
+		pole = Vector2(1.0, 0.0) - pole
+	var ys: Array[Vector2] = [pole]
+	var acc := Vector2(1.0, 0.0)
+	for c: PackedFloat64Array in st:
+		acc = _cmul(acc, _h(c, f, sr))
+		ys.append(acc)
+	var depth := clampf(slope, 6.0, 48.0) / 12.0
+	if mode >= 2:
+		depth = maxf(depth, 1.0)
+	var y: Vector2
+	if depth < 1.0:
+		y = ys[0].lerp(ys[1], (depth - 0.5) / 0.5)
+	else:
+		var lo := mini(4, floori(depth))
+		y = ys[4] if lo >= 4 else ys[lo].lerp(ys[lo + 1], depth - lo)
+	return _db(y)
+
+
+static func _db(h: Vector2) -> float:
+	return 10.0 * log(maxf(h.x * h.x + h.y * h.y, 1e-30)) / log(10.0)
+
+
 ## Total EQ6 response: gains is the six band dB values in EQ_FREQS order.
 static func eq_db(f: float, gains: PackedFloat32Array, sr: float) -> float:
 	var total := 0.0

@@ -159,6 +159,18 @@ func new_project() -> void:
 	message.emit("New sound.")
 
 
+## A new, unsaved sound built around one audio file (FileSystem > Edit in Audio Tab): the file
+## as a clip at 0 s on the first row, the sound named after it.
+func new_project_from_file(path: String) -> AWClip:
+	new_project()
+	project.title = path.get_file().get_basename()
+	var c := add_clip_from_path(path, 0, 0.0)
+	_reset_history()
+	project_changed.emit(true)
+	message.emit("New sound from %s. Save it to keep it (Ctrl+S)." % path.get_file())
+	return c
+
+
 ## Writes the project to `path` (a .tres or .res). Returns true on success.
 func save_project(path: String) -> bool:
 	var err := AWProjectIO.save(project, path)
@@ -421,7 +433,13 @@ func export_auto_path() -> String:
 	base = base.strip_edges().validate_filename().replace(" ", "_")
 	if base == "":
 		base = "sound"
-	return dir.path_join(base + "." + project.export_format)
+	var out := dir.path_join(base + "." + project.export_format)
+	# Never default to overwriting one of the sound's own source files.
+	for c in project.clips:
+		if c.source_path == out:
+			out = dir.path_join(base + "_edit." + project.export_format)
+			break
+	return out
 
 
 ## The export file as a loadable path: relative names live under res://; empty = automatic.

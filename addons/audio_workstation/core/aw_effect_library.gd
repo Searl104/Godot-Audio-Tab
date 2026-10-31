@@ -75,7 +75,21 @@ const EFFECTS := {
 			"keep_hf_hz": [1.0, 20500.0, 16000.0, 1.0, "Hz", "Keep HF"],
 		},
 	},
+	# The Filter card (0.20): one card for every filter shape, with a continuous slope. It replaces the
+	# Low Pass / High Pass / Band Pass cards (kept below as "legacy": not in the + menu; sounds that use
+	# them convert to Filter when opened).
+	"Filter": {
+		"godot_class": "", "engine": {"id": 15, "rings": true}, "color": "#4f9edb",
+		"params": {
+			"mode": [0.0, 6.0, 0.0, 1.0, "", "Type"],
+			"cutoff_hz": [20.0, 20500.0, 1000.0, 1.0, "Hz", "Cutoff"],
+			"resonance": [0.0, 1.0, 0.5, 0.01, "", "Resonance"],
+			"gain_db": [-24.0, 24.0, 0.0, 0.1, "dB", "Gain"],
+			"slope_db": [6.0, 48.0, 12.0, 1.0, "dB/oct", "Slope"],
+		},
+	},
 	"Low Pass": {
+		"legacy": true,
 		"godot_class": "AudioEffectLowPassFilter", "engine": {"id": 1, "rings": true}, "color": "#4f9edb",
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 2000.0, 1.0, "Hz", "Cutoff"],
@@ -83,6 +97,7 @@ const EFFECTS := {
 		},
 	},
 	"High Pass": {
+		"legacy": true,
 		"godot_class": "AudioEffectHighPassFilter", "color": "#e08a4f", "engine": {"id": 2, "rings": true},
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 200.0, 1.0, "Hz", "Cutoff"],
@@ -90,6 +105,7 @@ const EFFECTS := {
 		},
 	},
 	"Band Pass": {
+		"legacy": true,
 		"godot_class": "AudioEffectBandPassFilter", "color": "#b07fe0", "engine": {"id": 3, "rings": true},
 		"params": {
 			"cutoff_hz": [20.0, 20500.0, 1000.0, 1.0, "Hz", "Cutoff"],
@@ -163,9 +179,15 @@ const CURVE_COLORS := [
 static func addable_names() -> PackedStringArray:
 	var out := PackedStringArray()
 	for k: String in EFFECTS:
-		if not EFFECTS[k].get("fixed", false):
+		if not EFFECTS[k].get("fixed", false) and not EFFECTS[k].get("legacy", false):
 			out.append(k)
 	return out
+
+
+## The Filter card's modes, in the order of its "mode" parameter.
+const FILTER_MODES := ["Low Pass", "High Pass", "Band Pass", "Notch", "Low Shelf", "High Shelf", "Peak"]
+## Old single-shape cards and the Filter mode they become.
+const LEGACY_FILTERS := {"Low Pass": 0, "High Pass": 1, "Band Pass": 2}
 
 
 static func is_fixed(effect: String) -> bool:

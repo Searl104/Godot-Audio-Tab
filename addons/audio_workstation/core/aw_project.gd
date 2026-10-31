@@ -3,7 +3,7 @@ class_name AWProject
 extends Resource
 ## The saved sound-effect document. All times are in seconds.
 
-const FORMAT_VERSION := 8 # 8: groups are frames (AWGroup) instead of clip group ids; 7: LFO ADSR (Decay is now attack-peak to Sustain; Sustain added); 6: 6: shared effect chains (clips' own effects move into "<clip> FX" chains); 5: markers; 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
+const FORMAT_VERSION := 9 # 9: Low / High / Band Pass cards become Filter cards; 8: groups are frames (AWGroup) instead of clip group ids; 7: LFO ADSR (Decay is now attack-peak to Sustain; Sustain added); 6: 6: shared effect chains (clips' own effects move into "<clip> FX" chains); 5: markers; 4: rows (mute, solo, lock, name, colour), clip reverse, fade shapes, groups; 3: LFO mode, depth, phase, jitter, glide, decay (defaults keep old sounds unchanged)
 const CLIP_COLORS := [
 	Color("#4f7fd9"), Color("#d9b63f"), Color("#6fae4f"), Color("#e07a3f"),
 	Color("#a77fd9"), Color("#d95f7a"), Color("#3fb8b0"),
